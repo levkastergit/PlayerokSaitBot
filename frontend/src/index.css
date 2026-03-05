@@ -1,0 +1,624 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Светлая тема по умолчанию — приятная глазу, идеальная читаемость */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-root: #f0f4f8;
+  --bg-elevated: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-sidebar: #f8fafc;
+  --border-subtle: #e2e8f0;
+  --accent: #059669;
+  --accent-soft: rgba(5, 150, 105, 0.12);
+  --accent-strong: #047857;
+  --text-main: #0f172a;
+  --text-muted: #334155;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+  --shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --header-bg: rgba(255, 255, 255, 0.9);
+  --header-border: rgba(226, 232, 240, 0.9);
+  --color-error: #b91c1c;
+}
+
+/* Тёмная тема */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-root: #0f172a;
+  --bg-elevated: #1e293b;
+  --bg-panel: #1e293b;
+  --bg-sidebar: #0f172a;
+  --border-subtle: #334155;
+  --accent: #22c55e;
+  --accent-soft: rgba(34, 197, 94, 0.16);
+  --accent-strong: #16a34a;
+  --text-main: #f1f5f9;
+  --text-muted: #cbd5e1;
+  --shadow-soft: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --header-bg: rgba(15, 23, 42, 0.95);
+  --header-border: rgba(30, 41, 59, 0.9);
+  --color-error: #f87171;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 1rem;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+  background: var(--bg-root);
+  color: var(--text-main);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background 0.25s ease, color 0.2s ease;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-root);
+  color: var(--text-main);
+  transition: background 0.25s ease, color 0.2s ease;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--header-border);
+  backdrop-filter: blur(12px);
+  background: var(--header-bg);
+  transition: background 0.25s ease, border-color 0.2s ease;
+}
+
+.app-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.app-logo {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 1rem;
+  color: var(--text-main);
+}
+
+.app-subtitle {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* Переключатель темы — приятный глазу switch */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.theme-toggle__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.theme-toggle__switch {
+  display: inline-flex;
+  align-items: center;
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--border-subtle);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.theme-toggle__knob {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  margin-left: 0.15rem;
+  transition: transform 0.2s ease;
+}
+
+.theme-toggle__input:checked + .theme-toggle__switch {
+  background: var(--accent);
+}
+
+.theme-toggle__input:checked + .theme-toggle__switch .theme-toggle__knob {
+  transform: translateX(1.2rem);
+}
+
+.theme-toggle__input:focus-visible + .theme-toggle__switch {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-toggle:hover .theme-toggle__switch {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.theme-toggle__label {
+  white-space: nowrap;
+}
+
+.theme-toggle:hover {
+  color: var(--text-main);
+}
+
+.app-main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 0;
+  padding: 1.75rem 2rem 2rem;
+}
+
+.app-sidebar {
+  padding-right: 1.5rem;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.app-content {
+  padding-left: 1.75rem;
+}
+
+.tabs-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tab-button {
+  width: 100%;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0.65rem 0.9rem;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.08s ease;
+}
+
+.tab-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-main);
+}
+
+.tab-button--active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-soft);
+  transform: translateY(-1px);
+}
+
+.tab-page {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.tab-page-header {
+  margin-bottom: 1.75rem;
+}
+
+.tab-page-header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  color: var(--text-main);
+}
+
+.tab-page-description {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.tab-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 1.25rem;
+}
+
+@media (max-width: 900px) {
+  .app-main {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 1.25rem 1.5rem 2rem;
+  }
+
+  .app-sidebar {
+    padding-right: 0;
+    border-right: none;
+    margin-bottom: 1rem;
+  }
+
+  .app-content {
+    padding-left: 0;
+  }
+
+  .tab-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  padding: 1.25rem 1.4rem;
+  box-shadow: var(--shadow-soft);
+}
+
+.card-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-main);
+}
+
+.card-text {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.card-text--error {
+  color: var(--color-error);
+}
+
+/* Поля и кнопки в карточках (подстраиваются под тему) */
+.input-theme {
+  width: 100%;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  padding: 0.6rem 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.btn-primary {
+  padding: 0.45rem 1.1rem;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.btn-secondary {
+  padding: 0.42rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-secondary:hover {
+  color: var(--text-main);
+}
+
+.token-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.active-lots-total {
+  margin-bottom: 0.5rem;
+}
+
+.active-lots-filters {
+  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.active-lots-filters__label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.active-lots-filters__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.active-lots-filter-chip {
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.active-lots-filter-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.active-lots-filter-chip--hidden {
+  opacity: 0.55;
+  background: var(--bg-root);
+  color: var(--text-muted);
+}
+
+.active-lots-filter-chip--hidden:hover {
+  opacity: 0.85;
+  color: var(--text-main);
+}
+
+.active-lots-filter-chip--solo {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* Сетка карточек лотов — 5 карточек в ряд */
+.lots-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.lot-card {
+  background: var(--bg-elevated);
+  border-radius: 14px;
+  border: 1px solid var(--border-subtle);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lot-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-soft);
+}
+
+/* Блок изображения — отдельный визуальный блок со скруглением со всех сторон */
+.lot-card__image-wrap {
+  width: calc(100% + 2rem);
+  margin: -1rem -1rem 1rem -1rem;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-root);
+  flex-shrink: 0;
+}
+
+/* Блок текста — визуально отделён от изображения */
+.lot-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+}
+
+.lot-card__image {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.lot-card__image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg-root);
+}
+
+/* Блок цены: текущая цена + бейдж скидки + зачёркнутая старая */
+.lot-card__price-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.5rem;
+  margin: 0;
+}
+
+.lot-card__price {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+  line-height: 1.3;
+}
+
+.lot-card__discount {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #22c55e;
+  color: #fff;
+  line-height: 1.3;
+}
+
+.lot-card__old-price {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-decoration: line-through;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.lot-card__title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-main);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.lot-card__tags {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .lots-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 500px) {
+  .lots-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Экран настроек товара (новая «вкладка» — зашли в карточку) */
+.lot-settings-page {
+  padding-top: 0.25rem;
+}
+
+.lot-settings-page__back {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 1.25rem;
+  padding: 0.4rem 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.lot-settings-page__back:hover {
+  color: var(--accent-strong);
+}
+
+.lot-settings-page__header {
+  margin-bottom: 1.5rem;
+}
+
+.lot-settings-page__title {
+  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lot-settings-page__product-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+  line-height: 1.4;
+}
+
+.lot-settings-page__product-game {
+  margin: 0.25rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.lot-settings-block {
+  margin-bottom: 1.25rem;
+  padding: 1.25rem;
+  background: var(--bg-elevated);
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+}
+
+.lot-settings-block:last-child {
+  margin-bottom: 0;
+}
+
+.lot-settings-block__title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lot-settings-block .card-text {
+  margin: 0;
+  font-size: 0.95rem;
+}
