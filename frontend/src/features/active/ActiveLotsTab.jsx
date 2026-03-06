@@ -1,21 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchActiveLots } from '../../services/playerokApi'
+import { getProductKey, loadProductSettingsList } from '../../services/playerokApi'
 
-export function ActiveLotsTab({ token, lotIdFromUrl }) {
+export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
   const navigate = useNavigate()
-  const [lots, setLots] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set())
   const [soloCategory, setSoloCategory] = useState(null)
+  const [featureFilter, setFeatureFilter] = useState('all')
+  const [settingsList, setSettingsList] = useState([])
   const clickTimeoutRef = useRef(null)
 
   const hasToken = Boolean(token)
-  const selectedLot =
-    lotIdFromUrl && lots.length
-      ? lots.find((l) => l.id === lotIdFromUrl) || null
-      : null
 
   const categories = useMemo(() => {
     const names = new Set()
@@ -26,19 +21,39 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
     return [...names].sort((a, b) => a.localeCompare(b))
   }, [lots])
 
+  const settingsByKey = useMemo(() => {
+    const map = {}
+    settingsList.forEach(({ productKey, settings }) => {
+      if (productKey && settings) map[productKey] = settings
+    })
+    return map
+  }, [settingsList])
+
   const filteredLots = useMemo(() => {
+    let list = lots
     if (soloCategory !== null) {
-      return lots.filter((lot) => {
+      list = list.filter((lot) => {
         const name = (lot.game || '').trim() || 'Без категории'
         return name === soloCategory
       })
+    } else if (hiddenCategories.size > 0) {
+      list = list.filter((lot) => {
+        const name = (lot.game || '').trim() || 'Без категории'
+        return !hiddenCategories.has(name)
+      })
     }
-    if (hiddenCategories.size === 0) return lots
-    return lots.filter((lot) => {
-      const name = (lot.game || '').trim() || 'Без категории'
-      return !hiddenCategories.has(name)
+    if (featureFilter === 'all') return list
+    list = list.filter((lot) => {
+      const key = getProductKey(lot)
+      const s = settingsByKey[key]
+      if (!s) return false
+      if (featureFilter === 'autodelivery') return Boolean(s.autodelivery?.enabled)
+      if (featureFilter === 'autolist') return Boolean(s.autolist?.enabled)
+      if (featureFilter === 'autobump') return Boolean(s.autobump?.enabled)
+      return true
     })
-  }, [lots, hiddenCategories, soloCategory])
+    return list
+  }, [lots, hiddenCategories, soloCategory, featureFilter, settingsByKey])
 
   const toggleCategory = (name) => {
     setSoloCategory(null)
@@ -67,41 +82,15 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
   }
 
   useEffect(() => {
+    if (!token || lots.length === 0) return
     let cancelled = false
-
-    async function load() {
-      if (!hasToken) {
-        setLots([])
-        setLoading(false)
-        setError(null)
-        return
-      }
-
-      setLoading(true)
-      setError(null)
-
-      try {
-        const data = await fetchActiveLots(token)
-        if (!cancelled) {
-          setLots(data)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Неизвестная ошибка')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      }
-    }
-
-    load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [token, hasToken])
+    loadProductSettingsList(token)
+      .then((data) => {
+        if (!cancelled) setSettingsList(data.list || [])
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [token, lots.length])
 
   return (
     <div className="tab-page">
@@ -123,23 +112,23 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
             </p>
           )}
 
-          {hasToken && loading && (
+          {hasToken && loadingLots && (
             <p className="card-text">Загружаем лоты с Playerok...</p>
           )}
 
-          {hasToken && !loading && error && (
+          {hasToken && !loadingLots && errorLots && (
             <p className="card-text card-text--error">
-              Ошибка при загрузке лотов: {error}
+              Ошибка при загрузке лотов: {errorLots}
             </p>
           )}
 
-          {hasToken && !loading && !error && lots.length === 0 && (
+          {hasToken && !loadingLots && !errorLots && lots.length === 0 && (
             <p className="card-text">
               Активных лотов не найдено или API вернул пустой список.
             </p>
           )}
 
-          {hasToken && !loading && !error && lots.length > 0 && !selectedLot && (
+          {hasToken && !loadingLots && !errorLots && lots.length > 0 && (
             <>
               <p className="card-text active-lots-total">
                 Всего лотов: <strong>{lots.length}</strong>
@@ -147,6 +136,24 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
                   <> (показано <strong>{filteredLots.length}</strong>)</>
                 )}
               </p>
+              <div className="active-lots-feature-filters">
+                <span className="active-lots-filters__label">Показать:</span>
+                {[
+                  { id: 'all', label: 'Все' },
+                  { id: 'autodelivery', label: 'Автовыдача' },
+                  { id: 'autolist', label: 'Автовыставление' },
+                  { id: 'autobump', label: 'Автоподнятие' },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`active-lots-filter-chip ${featureFilter === id ? 'active-lots-filter-chip--solo' : ''}`}
+                    onClick={() => setFeatureFilter(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               {categories.length > 0 && (
                 <div className="active-lots-filters">
                   <span className="active-lots-filters__label">Категории:</span>
@@ -175,13 +182,13 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
                   <article
                     key={lot.id}
                     className="lot-card"
-                    onClick={() => navigate('/active/' + lot.id)}
+                    onClick={() => navigate('/lot/' + lot.id)}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
-                        navigate('/active/' + lot.id)
+                        navigate('/lot/' + lot.id)
                       }
                     }}
                   >
@@ -230,47 +237,8 @@ export function ActiveLotsTab({ token, lotIdFromUrl }) {
               </div>
             </>
           )}
-
-          {hasToken && !loading && !error && selectedLot && (
-            <div className="lot-settings-page">
-              <button
-                type="button"
-                className="lot-settings-page__back"
-                onClick={() => navigate('/active')}
-              >
-                ← К списку лотов
-              </button>
-              <div className="lot-settings-page__header">
-                <h2 className="lot-settings-page__title">Настройки товара</h2>
-                <p className="lot-settings-page__product-name">{selectedLot.title}</p>
-                {selectedLot.game && (
-                  <p className="lot-settings-page__product-game">{selectedLot.game}</p>
-                )}
-              </div>
-
-              <section className="lot-settings-block">
-                <h3 className="lot-settings-block__title">Автовыдача</h3>
-                <p className="card-text">
-                  Здесь будут настройки автоматической выдачи товара покупателю.
-                </p>
-              </section>
-              <section className="lot-settings-block">
-                <h3 className="lot-settings-block__title">Автовыставление</h3>
-                <p className="card-text">
-                  Здесь будут настройки автоматического выставления лота.
-                </p>
-              </section>
-              <section className="lot-settings-block">
-                <h3 className="lot-settings-block__title">Автоподнятие</h3>
-                <p className="card-text">
-                  Здесь будут настройки автоматического поднятия лота в выдаче.
-                </p>
-              </section>
-            </div>
-          )}
         </section>
       </div>
     </div>
   )
 }
-
