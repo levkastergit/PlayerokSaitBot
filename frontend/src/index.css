@@ -152,15 +152,15 @@ body {
   transition: transform 0.2s ease;
 }
 
-.theme-toggle__input:checked + .theme-toggle__switch {
+.theme-toggle__input:checked+.theme-toggle__switch {
   background: var(--accent);
 }
 
-.theme-toggle__input:checked + .theme-toggle__switch .theme-toggle__knob {
+.theme-toggle__input:checked+.theme-toggle__switch .theme-toggle__knob {
   transform: translateX(1.2rem);
 }
 
-.theme-toggle__input:focus-visible + .theme-toggle__switch {
+.theme-toggle__input:focus-visible+.theme-toggle__switch {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -422,6 +422,244 @@ body {
   white-space: nowrap;
 }
 
+.chat-messages {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+
+.chat-message {
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.chat-message__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.2rem;
+  gap: 0.5rem;
+}
+
+.chat-message__author {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.chat-message__time {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.chat-message__text {
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+
+.chat-message__placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chat-message__image-wrap {
+  margin-top: 0.35rem;
+}
+
+.chat-message__image-btn {
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: transparent;
+  max-width: 280px;
+}
+
+.chat-message__image-btn:hover {
+  opacity: 0.92;
+}
+
+.chat-message__image {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.chat-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.9);
+  cursor: pointer;
+}
+
+.chat-lightbox__close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  font-size: 1.75rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.chat-lightbox__close:hover {
+  background: var(--border-subtle);
+}
+
+.chat-lightbox__img {
+  max-width: 95vw;
+  max-height: 95vh;
+  object-fit: contain;
+  cursor: default;
+  pointer-events: none;
+}
+
+.deal-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.deal-chat-row {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+
+.deal-chat-row__info {
+  flex: 0 0 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.deal-chat-row__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.deal-chat-row__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.deal-chat-row__price {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.deal-chat-row__chat {
+  flex: 1;
+  min-width: 0;
+}
+
+.deal-chat-row__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.deal-chat-row__toggle-btn {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.deal-chat-row__toggle-btn:hover {
+  background: var(--border-subtle);
+}
+
+.deal-chat-row__toggle-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.deal-chat-row__input {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.deal-chat-row__input-field {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font-size: 0.9rem;
+}
+
+.deal-chat-row__input-field:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.deal-chat-row__input-btn {
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.deal-chat-row__input-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 768px) {
+  .deal-chat-row {
+    flex-direction: column;
+  }
+
+  .deal-chat-row__info {
+    flex: none;
+  }
+}
+
 .profit-tab__total {
   margin-bottom: 1rem;
   font-size: 1.1rem;
@@ -541,6 +779,7 @@ body {
     opacity: 0;
     transform: translateY(-0.5rem);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -815,6 +1054,45 @@ body {
 
 .lot-settings-page__header {
   margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+}
+
+.lot-settings-page__product-image-wrap {
+  width: 180px;
+  height: 180px;
+  flex-shrink: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-root);
+  box-shadow: var(--shadow-soft);
+}
+
+.lot-settings-page__product-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lot-settings-page__product-image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-root);
+}
+
+.lot-settings-page__header-text {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
 }
 
 .lot-settings-page__title {
@@ -833,9 +1111,19 @@ body {
 }
 
 .lot-settings-page__product-game {
-  margin: 0.25rem 0 0;
-  font-size: 0.9rem;
-  color: var(--text-muted);
+  margin: 0.5rem 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent-soft, rgba(99, 102, 241, 0.5));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent-strong, var(--accent));
 }
 
 .lot-settings-page__product-note {
@@ -893,15 +1181,15 @@ body {
   transition: transform 0.2s ease;
 }
 
-.lot-settings-toggle__input:checked + .lot-settings-toggle__switch {
+.lot-settings-toggle__input:checked+.lot-settings-toggle__switch {
   background: var(--accent);
 }
 
-.lot-settings-toggle__input:checked + .lot-settings-toggle__switch .lot-settings-toggle__knob {
+.lot-settings-toggle__input:checked+.lot-settings-toggle__switch .lot-settings-toggle__knob {
   transform: translateX(1.2rem);
 }
 
-.lot-settings-toggle__input:focus-visible + .lot-settings-toggle__switch {
+.lot-settings-toggle__input:focus-visible+.lot-settings-toggle__switch {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1106,8 +1394,13 @@ body {
 }
 
 @keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes modal-in {
@@ -1115,6 +1408,7 @@ body {
     opacity: 0;
     transform: scale(0.96) translateY(-0.5rem);
   }
+
   to {
     opacity: 1;
     transform: scale(1) translateY(0);

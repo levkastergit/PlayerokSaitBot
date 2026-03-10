@@ -22,6 +22,13 @@ db.exec(`
   )
 `)
 db.exec(`
+  CREATE TABLE IF NOT EXISTS tokens (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    token TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+`)
+db.exec(`
   CREATE TABLE IF NOT EXISTS bump_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token_hash TEXT NOT NULL,
@@ -45,6 +52,7 @@ db.exec(`
     status TEXT,
     deal_id TEXT,
     item_id TEXT,
+    buyer_name TEXT,
     UNIQUE(token_hash, deal_id)
   )
 `)
@@ -54,6 +62,9 @@ try {
   const cols = db.prepare('PRAGMA table_info(sales_history)').all()
   if (!cols.some((c) => c.name === 'is_refund')) {
     db.exec('ALTER TABLE sales_history ADD COLUMN is_refund INTEGER DEFAULT 0')
+  }
+  if (!cols.some((c) => c.name === 'buyer_name')) {
+    db.exec('ALTER TABLE sales_history ADD COLUMN buyer_name TEXT')
   }
 } catch (_) {}
 
@@ -98,19 +109,19 @@ const getBumpHistory = db.prepare(`
 `)
 
 const insertSale = db.prepare(`
-  INSERT OR IGNORE INTO sales_history
-    (token_hash, product_key, product_title, sold_at, price, status, deal_id, item_id, is_refund)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR REPLACE INTO sales_history
+    (token_hash, product_key, product_title, sold_at, price, status, deal_id, item_id, buyer_name, is_refund)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 const getSalesHistory = db.prepare(`
-  SELECT product_key, product_title, sold_at, price, status, is_refund
+  SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name
   FROM sales_history
   WHERE token_hash = ?
   ORDER BY sold_at DESC
   LIMIT 500
 `)
 const getSalesHistoryAll = db.prepare(`
-  SELECT product_key, product_title, sold_at, price, status, is_refund
+  SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name
   FROM sales_history
   WHERE token_hash = ?
   ORDER BY sold_at DESC
@@ -126,6 +137,20 @@ const insertListingFee = db.prepare(`
 const getListingFees = db.prepare(`
   SELECT product_key, fee, relisted_at FROM listing_fees
   WHERE token_hash = ? ORDER BY relisted_at DESC
+`)
+
+const getStoredToken = db.prepare(`
+  SELECT token, updated_at FROM tokens WHERE id = 1
+`)
+const upsertStoredToken = db.prepare(`
+  INSERT INTO tokens (id, token, updated_at)
+  VALUES (1, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    token = excluded.token,
+    updated_at = excluded.updated_at
+`)
+const deleteStoredToken = db.prepare(`
+  DELETE FROM tokens WHERE id = 1
 `)
 
 const getSalesYears = db.prepare(`
@@ -165,6 +190,8 @@ const ITEM_PERSISTED_HASH =
   '37d2d9f947e950c09322e2f5e3056451ee5f12dc38565eb811423e915c094c22'
 const DEAL_PERSISTED_HASH =
   '5652037a966d8da6d41180b0be8226051fe0ed1357d460c6ae348c3138a0fba3'
+const CHAT_PERSISTED_HASH =
+  '38efcc58bdc432cc05bc743345e9ef9653a3ca1c0f45db822f4166d0f0cc17c4'
 
 const AUTOLIST_LAST_CHAT_FRESH_SEC = 90
 
@@ -826,6 +853,10 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
           .filter(Boolean)
           .map((node) => {
             const item = node.item || {}
+            const buyerName =
+              (node.user && node.user.username) ||
+              (item.buyer && item.buyer.username) ||
+              null
             const game = item.game?.name || ''
             const title = item.name || item.title || 'Товар'
             const price = node.transaction?.value ?? item.price ?? node.price ?? 0
@@ -854,6 +885,8 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
               productTitle: title,
               soldAt,
               price: Number(price) || 0,
+              buyerName,
+              chatId: node.chat?.id || node.chatId || null,
             }
           })
         resolve({
@@ -924,6 +957,188 @@ function requestUserChatsPage(token, userAgent, userId) {
       })
     })
     req.on('error', reject)
+    req.end()
+  })
+}
+
+function requestChatById(token, userAgent, chatId) {
+  return new Promise((resolve, reject) => {
+    const variables = { id: String(chatId) }
+    const params = new URLSearchParams({
+      operationName: 'chat',
+      variables: JSON.stringify(variables),
+      extensions: JSON.stringify({
+        persistedQuery: { version: 1, sha256Hash: CHAT_PERSISTED_HASH },
+      }),
+    })
+    const options = {
+      hostname: 'playerok.com',
+      path: `/graphql?${params.toString()}`,
+      method: 'GET',
+      headers: {
+        accept: '*/*',
+        'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'content-type': 'application/json',
+        cookie: `token=${token}`,
+        origin: 'https://playerok.com',
+        referer: 'https://playerok.com/chats',
+        'apollographql-client-name': 'web',
+        'apollo-require-preflight': 'true',
+        'user-agent':
+          userAgent ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      },
+    }
+    const req = https.request(options, (resp) => {
+      let data = ''
+      resp.on('data', (chunk) => { data += chunk })
+      resp.on('end', () => {
+        if (resp.statusCode !== 200) {
+          const preview = String(data || '').slice(0, 500)
+          return reject(new Error(`Playerok chat: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')))
+        }
+        let json
+        try {
+          json = JSON.parse(data)
+        } catch (err) {
+          return reject(new Error(`Invalid JSON from chat: ${err.message}`))
+        }
+        if (json.errors && json.errors.length) {
+          return reject(new Error(json.errors.map((e) => e.message || 'GraphQL error').join('; ')))
+        }
+        resolve(json?.data?.chat || null)
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+/** Страница сообщений чата (аналог get_chat_messages из PlayerokAPI) */
+function requestChatMessagesPage(token, userAgent, chatId, afterCursor = null, count = 24, opts = {}) {
+  const referer = opts.referer || 'https://playerok.com/chats'
+  return new Promise((resolve, reject) => {
+    const bodyJson = {
+      operationName: 'chatMessages',
+      // Используем обычный текстовый запрос вместо persistedQuery,
+      // чтобы не зависеть от хеша Playerok.
+      query: `query chatMessages {
+  chatMessages(
+    pagination: { first: ${Number(count) || 24}, after: ${afterCursor ? `"${String(afterCursor)}"` : 'null'} },
+    filter: { chatId: "${String(chatId)}" }
+  ) {
+    edges {
+      node {
+        __typename
+        id
+        text
+        createdAt
+        user {
+          id
+          username
+        }
+        file {
+          id
+          url
+        }
+        deal {
+          id
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+`,
+      variables: {},
+    }
+
+    const body = JSON.stringify(bodyJson)
+    const options = {
+      hostname: 'playerok.com',
+      path: '/graphql',
+      method: 'POST',
+      headers: {
+        accept: '*/*',
+        'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'content-type': 'application/json',
+        cookie: `token=${token}`,
+        origin: 'https://playerok.com',
+        referer,
+        'apollographql-client-name': 'web',
+        'apollo-require-preflight': 'true',
+        'user-agent':
+          userAgent ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'Content-Length': Buffer.byteLength(body, 'utf8'),
+      },
+    }
+
+    const req = https.request(options, (resp) => {
+      let data = ''
+      resp.on('data', (chunk) => { data += chunk })
+      resp.on('end', () => {
+        if (resp.statusCode !== 200) {
+          const preview = String(data || '').slice(0, 600)
+          return reject(
+            new Error(
+              `Playerok chatMessages: status ${resp.statusCode}` +
+                (preview ? `; ${preview}` : '')
+            )
+          )
+        }
+        let json
+        try {
+          json = JSON.parse(data)
+        } catch (err) {
+          return reject(new Error(`Invalid JSON from chatMessages: ${err.message}`))
+        }
+        if (json.errors && json.errors.length) {
+          return reject(
+            new Error(json.errors.map((e) => e.message || 'GraphQL error').join('; '))
+          )
+        }
+        const cm = json?.data?.chatMessages
+        if (!cm) {
+          return resolve({ messages: [], pageInfo: { hasNextPage: false, endCursor: null } })
+        }
+        const edges = Array.isArray(cm.edges) ? cm.edges : []
+        const messages = edges
+          .map((edge) => edge && edge.node)
+          .filter(Boolean)
+          .map((node) => {
+            const file = node.file || node.attachment || node.image
+            const fileUrl = file && (file.url || file.link || file.src)
+            const imageUrl = fileUrl || (node.attachments && node.attachments[0] && (node.attachments[0].url || node.attachments[0].link)) || null
+            return {
+            id: node.id,
+            text: node.text || '',
+            createdAt: node.createdAt || null,
+            imageUrl,
+            dealId: node.deal && node.deal.id ? node.deal.id : null,
+            user: node.user
+              ? {
+                  id: node.user.id || null,
+                  username: node.user.username || '',
+                }
+              : null,
+            }
+          })
+        const pageInfo = cm.pageInfo || {}
+        resolve({
+          messages,
+          pageInfo: {
+            hasNextPage: !!pageInfo.hasNextPage,
+            endCursor: pageInfo.endCursor || null,
+          },
+        })
+      })
+    })
+    req.on('error', reject)
+    req.write(body)
     req.end()
   })
 }
@@ -1077,6 +1292,74 @@ async function fetchDealsFromPlayerok(token, userAgent) {
   return { deals: allDeals }
 }
 
+/** Актуальные сделки в выполнении (напрямую с Playerok, без БД) */
+async function fetchInProgressDealsFromPlayerok(token, userAgent) {
+  const viewer = await getViewer(token, userAgent)
+  const statusList = ['PAID']
+  const allDeals = []
+  let afterCursor = null
+  do {
+    const page = await requestDealsPage(
+      token,
+      userAgent,
+      viewer.id,
+      afterCursor,
+      statusList,
+      'OUT'
+    )
+    allDeals.push(...page.deals)
+    afterCursor = page.hasNextPage ? page.endCursor : null
+  } while (afterCursor)
+  return { deals: allDeals }
+}
+
+/** Все сообщения чата по chatId или по dealId (если chatId не передан). Подгружаем все страницы. */
+async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatIdFromDeal) {
+  let chatId = chatIdFromDeal || null
+  if (!chatId && dealId) {
+    const fullDeal = await requestDealById(token, userAgent, dealId)
+    chatId = fullDeal?.chat?.id || fullDeal?.chatId || null
+  }
+  if (!chatId) {
+    return { messages: [] }
+  }
+  const referer = dealId ? `https://playerok.com/deal/${dealId}` : undefined
+  const allMessages = []
+  let afterCursor = null
+  const maxPages = 10
+  let pageCount = 0
+  do {
+    const page = await requestChatMessagesPage(token, userAgent, chatId, afterCursor, 24, { referer })
+    allMessages.push(...(page.messages || []))
+    afterCursor = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null
+    pageCount++
+  } while (afterCursor && pageCount < maxPages)
+  return { messages: allMessages }
+}
+
+// Отправить текстовое сообщение в чат по chatId или dealId.
+async function sendChatMessageToPlayerok(token, userAgent, dealId, chatIdFromBody, text) {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) {
+    throw new Error('Пустое сообщение')
+  }
+  let chatId = chatIdFromBody || null
+  if (!chatId && dealId) {
+    const fullDeal = await requestDealById(token, userAgent, dealId)
+    chatId = fullDeal?.chat?.id || fullDeal?.chatId || null
+  }
+  if (!chatId) {
+    throw new Error('Не удалось определить чат для отправки сообщения')
+  }
+  const msg = await createChatMessage(token, userAgent, chatId, trimmed)
+  const nowIso = new Date().toISOString()
+  return {
+    id: msg?.id || null,
+    text: msg?.text || trimmed,
+    createdAt: nowIso,
+  }
+}
+
 /** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
 async function fetchAllDealsFromPlayerok(token, userAgent) {
   const viewer = await getViewer(token, userAgent)
@@ -1160,6 +1443,53 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname
   const query = Object.fromEntries(parsedUrl.searchParams)
   const nowTs = Math.floor(Date.now() / 1000)
+
+  if (req.method === 'GET' && pathname === '/api/token') {
+    try {
+      const row = getStoredToken.get()
+      if (!row) {
+        return sendJson(res, 200, { token: null, updated_at: null })
+      }
+      return sendJson(res, 200, { token: row.token, updated_at: row.updated_at })
+    } catch (err) {
+      return sendJson(res, 500, {
+        error: 'Failed to load token',
+        details: err && err.message ? String(err.message) : String(err),
+      })
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/token') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const rawToken = payload && Object.prototype.hasOwnProperty.call(payload, 'token')
+        ? payload.token
+        : ''
+      const token = String(rawToken || '').trim()
+      const updatedAt = Math.floor(Date.now() / 1000)
+      try {
+        if (!token) {
+          deleteStoredToken.run()
+          return sendJson(res, 200, { ok: true, token: null, updated_at: null })
+        }
+        upsertStoredToken.run(token, updatedAt)
+        return sendJson(res, 200, { ok: true, token, updated_at: updatedAt })
+      } catch (err) {
+        return sendJson(res, 500, {
+          error: 'Failed to save token',
+          details: err && err.message ? String(err.message) : String(err),
+        })
+      }
+    })
+    return
+  }
 
   if (req.method === 'GET' && pathname === '/api/product-settings') {
     const token = query.token
@@ -1285,6 +1615,7 @@ const server = http.createServer(async (req, res) => {
         soldAt: row.sold_at,
         price: row.price ?? 0,
         status: row.status || null,
+        buyerName: row.buyer_name || null,
       }))
       return sendJson(res, 200, { list })
     } catch (err) {
@@ -1343,14 +1674,21 @@ const server = http.createServer(async (req, res) => {
           const dealId = d.id || null
           if (!dealId) continue
           let soldAt = d.soldAt
-            if (!soldAt) {
+          let buyerName = d.buyerName || null
+          let fullDeal = null
+          if (!soldAt || !buyerName) {
             try {
-              const fullDeal = await requestDealById(token, userAgent, dealId)
-              soldAt = fullDeal
-                ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
-                : 0
+              fullDeal = await requestDealById(token, userAgent, dealId)
+              if (!soldAt) {
+                soldAt = fullDeal
+                  ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
+                  : 0
+              }
+              if (!buyerName) {
+                buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
+              }
             } catch (_) {
-              soldAt = 0
+              if (!soldAt) soldAt = 0
             }
           }
           try {
@@ -1363,6 +1701,7 @@ const server = http.createServer(async (req, res) => {
               d.status || null,
               dealId,
               d.itemId || null,
+              buyerName || null,
               String(d.status || '') === 'ROLLED_BACK' ? 1 : 0
             )
             if (result.changes > 0) inserted += 1
@@ -1427,14 +1766,20 @@ const server = http.createServer(async (req, res) => {
           for (const d of page.deals) {
             const dealId = d.id || null
             let soldAt = d.soldAt
-            if (!soldAt && dealId) {
+            let buyerName = d.buyerName || null
+            if (dealId && (!soldAt || !buyerName)) {
               try {
                 const fullDeal = await requestDealById(token, userAgent, dealId)
-                soldAt = fullDeal
-                  ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
-                  : 0
+                if (!soldAt) {
+                  soldAt = fullDeal
+                    ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
+                    : 0
+                }
+                if (!buyerName) {
+                  buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
+                }
               } catch (_) {
-                soldAt = 0
+                if (!soldAt) soldAt = 0
               }
             }
             if (dealId) {
@@ -1448,6 +1793,7 @@ const server = http.createServer(async (req, res) => {
                   d.status || null,
                   dealId,
                   d.itemId || null,
+                  buyerName || null,
                   String(d.status || '') === 'ROLLED_BACK' ? 1 : 0
                 )
                 if (result.changes > 0) inserted += 1
@@ -1840,6 +2186,13 @@ const server = http.createServer(async (req, res) => {
               : typeof item.rawPrice === 'number'
                 ? item.rawPrice
                 : 0
+          let buyerName = null
+          try {
+            const fullDeal = await requestDealById(token, userAgent, dealId)
+            buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
+          } catch (_) {
+            buyerName = null
+          }
           insertSale.run(
             tokenHash,
             productKey,
@@ -1849,6 +2202,7 @@ const server = http.createServer(async (req, res) => {
             dealStatus || null,
             dealId || null,
             dealItemId || null,
+            buyerName,
             String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
           )
         } catch (e) {
@@ -2033,6 +2387,139 @@ const server = http.createServer(async (req, res) => {
       }
     })
 
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/in-progress-deals') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      if (!token) {
+        return sendJson(res, 400, { error: 'Token is required' })
+      }
+      try {
+        const { deals } = await fetchInProgressDealsFromPlayerok(token, userAgent)
+        // Возвращаем только нужные поля
+        const list = deals.map((d) => ({
+          id: d.id,
+          itemId: d.itemId || null,
+          status: d.status || null,
+          productKey: d.productKey,
+          productTitle: d.productTitle,
+          soldAt: d.soldAt || 0,
+          price: Number(d.price) || 0,
+          buyerName: d.buyerName || null,
+          chatId: d.chatId || null,
+        }))
+        return sendJson(res, 200, { list })
+      } catch (err) {
+        const message =
+          err && err.message
+            ? String(err.message)
+            : 'Не удалось загрузить сделки в выполнении с Playerok'
+        return sendJson(res, 500, { error: message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      const dealId = payload.dealId || null
+      const chatId = payload.chatId || null
+      if (!token || (!dealId && !chatId)) {
+        return sendJson(res, 400, { error: 'token and (dealId or chatId) are required' })
+      }
+      try {
+        const { messages } = await fetchDealChatMessagesFromPlayerok(
+          token,
+          userAgent,
+          dealId,
+          chatId
+        )
+        return sendJson(res, 200, { list: messages })
+      } catch (err) {
+        const message =
+          err && err.message
+            ? String(err.message)
+            : 'Не удалось загрузить сообщения чата с Playerok'
+        return sendJson(res, 500, { error: message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/send-chat-message') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      const dealId = payload.dealId || null
+      const chatId = payload.chatId || null
+      const text = payload.text
+      if (!token) {
+        return sendJson(res, 400, { error: 'token is required' })
+      }
+      if (!dealId && !chatId) {
+        return sendJson(res, 400, { error: 'dealId or chatId is required' })
+      }
+      try {
+        const message = await sendChatMessageToPlayerok(
+          token,
+          userAgent,
+          dealId,
+          chatId,
+          text
+        )
+        return sendJson(res, 200, { ok: true, message })
+      } catch (err) {
+        const message =
+          err && err.message
+            ? String(err.message)
+            : 'Не удалось отправить сообщение в чат Playerok'
+        return sendJson(res, 500, { error: message })
+      }
+    })
     return
   }
 

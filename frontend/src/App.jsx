@@ -9,28 +9,32 @@ import {
   fetchBumpHistory,
   recordBump,
   autolistTick,
+  loadStoredToken,
+  saveStoredToken,
 } from './services/playerokApi'
 import { AutoListingTab } from './features/auto-listing/AutoListingTab.jsx'
 import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
 import { ActiveLotsTab } from './features/active/ActiveLotsTab.jsx'
 import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
+import { InProgressLotsTab } from './features/completed/InProgressLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { TokenTab } from './features/token/TokenTab.jsx'
-import { HistoryTab } from './features/history/HistoryTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
+import { ChatTab } from './features/chat/ChatTab.jsx'
 
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
 const TABS = [
   { id: 'active', label: 'Активные' },
+  { id: 'in-progress', label: 'Выполнение' },
   { id: 'completed', label: 'Завершенные' },
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
   { id: 'token', label: 'Токен' },
-  { id: 'history', label: 'История' },
-  { id: 'profit', label: 'Прибыль' },
+  { id: 'profit', label: 'Статистика' },
+  { id: 'chat', label: 'Чат (тест)' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -49,20 +53,8 @@ function App() {
       navigate('/active', { replace: true })
     }
   }, [location.pathname, navigate])
-  const [darkTheme, setDarkTheme] = useState(() => {
-    try {
-      return window.localStorage.getItem('theme') === 'dark'
-    } catch {
-      return false
-    }
-  })
-  const [token, setToken] = useState(() => {
-    try {
-      return window.localStorage.getItem('playerokToken') || ''
-    } catch {
-      return ''
-    }
-  })
+  const [darkTheme, setDarkTheme] = useState(false)
+  const [token, setToken] = useState('')
 
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
@@ -74,6 +66,17 @@ function App() {
   const [loadingCompletedLots, setLoadingCompletedLots] = useState(false)
   const [errorCompletedLots, setErrorCompletedLots] = useState(null)
   const lastFetchedCompletedTokenRef = useRef(null)
+
+  const handleTokenChange = (nextToken) => {
+    setToken(nextToken)
+    ;(async () => {
+      try {
+        await saveStoredToken(nextToken)
+      } catch {
+        // ignore token persistence errors
+      }
+    })()
+  }
 
   const selectedLot =
     lotIdFromUrl
@@ -140,25 +143,20 @@ function App() {
   }, [token, activeTab, pathParts[0]])
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem('theme', darkTheme ? 'dark' : 'light')
-      document.documentElement.setAttribute('data-theme', darkTheme ? 'dark' : 'light')
-    } catch {
-      // ignore
-    }
+    document.documentElement.setAttribute('data-theme', darkTheme ? 'dark' : 'light')
   }, [darkTheme])
 
   useEffect(() => {
-    try {
-      if (token) {
-        window.localStorage.setItem('playerokToken', token)
-      } else {
-        window.localStorage.removeItem('playerokToken')
-      }
-    } catch {
-      // игнорируем ошибки работы с localStorage
+    let cancelled = false
+    ;(async () => {
+      const stored = await loadStoredToken()
+      if (cancelled) return
+      if (stored) setToken(stored)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [token])
+  }, [])
 
   useEffect(() => {
     if (!token) return
@@ -380,11 +378,12 @@ function App() {
               errorLots={errorCompletedLots}
             />
           )}
+          {activeTab === 'in-progress' && <InProgressLotsTab token={token} />}
           {activeTab === 'token' && (
-            <TokenTab token={token} onTokenChange={setToken} />
+            <TokenTab token={token} onTokenChange={handleTokenChange} />
           )}
-          {activeTab === 'history' && <HistoryTab token={token} />}
           {activeTab === 'profit' && <ProfitTab token={token} />}
+          {activeTab === 'chat' && <ChatTab token={token} />}
         </section>
       </main>
     </div>

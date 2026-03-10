@@ -1,8 +1,12 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 
 export function TokenTab({ token, onTokenChange }) {
   const [value, setValue] = useState(token ?? '')
   const [savedAt, setSavedAt] = useState(null)
+
+  useEffect(() => {
+    setValue(token ?? '')
+  }, [token])
 
   const handleSave = (event) => {
     event.preventDefault()
@@ -20,20 +24,10 @@ export function TokenTab({ token, onTokenChange }) {
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Токен</h1>
-        <p className="tab-page-description">
-          Введите токен доступа к аккаунту на Playerok. Он будет использован для
-          загрузки активных лотов и других действий.
-        </p>
       </div>
 
       <div className="tab-grid">
         <section className="card">
-          <h2 className="card-title">Токен доступа</h2>
-          <p className="card-text">
-            Токен хранится только локально в вашем браузере (localStorage) и не
-            отправляется никуда кроме запросов к Playerok.
-          </p>
-
           <form onSubmit={handleSave} style={{ marginTop: '1rem' }}>
             <label
               htmlFor="playerok-token"
@@ -65,14 +59,6 @@ export function TokenTab({ token, onTokenChange }) {
               )}
             </div>
           </form>
-        </section>
-
-        <section className="card">
-          <h2 className="card-title">Безопасность</h2>
-          <p className="card-text">
-            Не передавайте токен третьим лицам. При утечке просто сгенерируйте
-            новый токен на сайте Playerok и замените его здесь.
-          </p>
         </section>
       </div>
     </div>

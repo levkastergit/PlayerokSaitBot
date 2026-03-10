@@ -6,7 +6,10 @@ const BACKEND_ACTIVE_LOTS_URL =
 const BACKEND_COMPLETED_LOTS_URL =
   import.meta.env.VITE_BACKEND_COMPLETED_LOTS_URL ||
   `${BACKEND_ORIGIN}/api/playerok/completed-lots`
+const BACKEND_IN_PROGRESS_DEALS_URL = `${BACKEND_ORIGIN}/api/playerok/in-progress-deals`
+const BACKEND_DEAL_CHAT_MESSAGES_URL = `${BACKEND_ORIGIN}/api/playerok/deal-chat-messages`
 const BACKEND_PRODUCT_SETTINGS_URL = `${BACKEND_ORIGIN}/api/product-settings`
+const BACKEND_TOKEN_URL = `${BACKEND_ORIGIN}/api/token`
 
 function mapLotItem(item) {
   return {
@@ -62,6 +65,36 @@ export async function fetchActiveLots(token) {
   const rawItems = Array.isArray(data) ? data : data.items || []
 
   return rawItems.map(mapLotItem)
+}
+
+export async function loadStoredToken() {
+  try {
+    const response = await fetch(BACKEND_TOKEN_URL)
+    if (!response.ok) {
+      if (response.status === 404) {
+        return ''
+      }
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.error || `Ошибка загрузки токена: ${response.status}`)
+    }
+    const data = await response.json().catch(() => ({}))
+    return (data && typeof data.token === 'string' ? data.token : '') || ''
+  } catch (_err) {
+    return ''
+  }
+}
+
+export async function saveStoredToken(token) {
+  const response = await fetch(BACKEND_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка сохранения токена: ${response.status}`)
+  }
+  return data
 }
 
 export async function fetchCompletedLots(token) {
@@ -156,6 +189,7 @@ const BACKEND_RELIST_ITEM_URL = `${BACKEND_ORIGIN}/api/playerok/relist-item`
 const BACKEND_AUTOLIST_TICK_URL = `${BACKEND_ORIGIN}/api/playerok/autolist-tick`
 const BACKEND_BUMP_URL = `${BACKEND_ORIGIN}/api/playerok/bump`
 const BACKEND_PRIORITY_STATUSES_URL = `${BACKEND_ORIGIN}/api/playerok/item-priority-statuses`
+const BACKEND_SEND_CHAT_MESSAGE_URL = `${BACKEND_ORIGIN}/api/playerok/send-chat-message`
 
 /** История поднятий лотов */
 export async function fetchBumpHistory(token) {
@@ -180,6 +214,74 @@ export async function fetchSalesHistory(token) {
     throw new Error(err.error || `Ошибка загрузки истории продаж: ${response.status}`)
   }
   const data = await response.json()
+  return data
+}
+
+/** Актуальные сделки в выполнении напрямую с Playerok (без БД) */
+export async function fetchInProgressDeals(token) {
+  if (!token) return { list: [] }
+  const response = await fetch(BACKEND_IN_PROGRESS_DEALS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки сделок в выполнении: ${response.status}`)
+  }
+  const data = await response.json()
+  const list = Array.isArray(data?.list) ? data.list : []
+  return { list }
+}
+
+/** Сообщения чата по сделке (для вкладки Выполнение). chatId — если есть (из списка сделок), иначе бэкенд возьмёт по dealId. */
+export async function fetchDealChatMessages(token, dealId, chatId) {
+  if (!token) return { list: [] }
+  if (!dealId && !chatId) return { list: [] }
+  const response = await fetch(BACKEND_DEAL_CHAT_MESSAGES_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token,
+      dealId: dealId || undefined,
+      chatId: chatId || undefined,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки чата сделки: ${response.status}`)
+  }
+  const data = await response.json()
+  const list = Array.isArray(data?.list) ? data.list : []
+  return { list }
+}
+
+/** Отправить сообщение в чат по сделке или chatId. */
+export async function sendDealChatMessage(token, { dealId, chatId, text }) {
+  if (!token) throw new Error('Токен обязателен')
+  const trimmed = (text || '').trim()
+  if (!trimmed) throw new Error('Пустое сообщение')
+  if (!dealId && !chatId) throw new Error('dealId или chatId обязателен')
+
+  const response = await fetch(BACKEND_SEND_CHAT_MESSAGE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token,
+      dealId: dealId || undefined,
+      chatId: chatId || undefined,
+      text: trimmed,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка отправки сообщения: ${response.status}`)
+  }
   return data
 }
 
