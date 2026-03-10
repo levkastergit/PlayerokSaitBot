@@ -883,6 +883,7 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
               status: node.status,
               productKey: game ? `${game}::${title}` : title,
               productTitle: title,
+              category: game,
               soldAt,
               price: Number(price) || 0,
               buyerName,
@@ -2411,19 +2412,63 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Token is required' })
       }
       try {
-        const { deals } = await fetchInProgressDealsFromPlayerok(token, userAgent)
-        // Возвращаем только нужные поля
-        const list = deals.map((d) => ({
-          id: d.id,
-          itemId: d.itemId || null,
-          status: d.status || null,
-          productKey: d.productKey,
-          productTitle: d.productTitle,
-          soldAt: d.soldAt || 0,
-          price: Number(d.price) || 0,
-          buyerName: d.buyerName || null,
-          chatId: d.chatId || null,
-        }))
+        const [{ deals }, { items: activeItems }, { items: completedItems }] = await Promise.all([
+          fetchInProgressDealsFromPlayerok(token, userAgent),
+          fetchActiveItemsFromPlayerok(token, userAgent),
+          fetchCompletedItemsFromPlayerok(token, userAgent),
+        ])
+        // В API сделок у item часто нет game; стараемся восстановить категорию максимально надёжно.
+        // 1) маппим по itemId (если совпадает id товара);
+        // 2) дополнительно маппим по названию товара (productTitle);
+        const itemIdToGame = new Map()
+        const titleToGame = new Map()
+        for (const it of [...activeItems, ...completedItems]) {
+          const id = it.id != null ? String(it.id) : null
+          const game = (it.game || '').trim()
+          const title = (it.title || '').trim()
+          if (id && game) {
+            if (!itemIdToGame.has(id)) itemIdToGame.set(id, game)
+          }
+          if (title && game) {
+            // если одно и то же название в разных играх, останется первое попавшееся
+            if (!titleToGame.has(title)) titleToGame.set(title, game)
+          }
+        }
+        const list = deals.map((d) => {
+          let category =
+            (d.category && String(d.category).trim()) ||
+            (d.itemId ? itemIdToGame.get(String(d.itemId)) : null) ||
+            null
+
+          // если по itemId не нашли, пробуем вытащить игру из productKey (формат \"Game::Title\")
+          if (!category && d.productKey && typeof d.productKey === 'string') {
+            const pk = d.productKey
+            const sepIndex = pk.indexOf('::')
+            if (sepIndex > 0) {
+              const gameFromPk = pk.slice(0, sepIndex).trim()
+              if (gameFromPk) category = gameFromPk
+            }
+          }
+
+          // если всё ещё пусто — пробуем по названию товара, как на вкладке Активные
+          if (!category && d.productTitle) {
+            const byTitle = titleToGame.get(String(d.productTitle).trim())
+            if (byTitle) category = byTitle
+          }
+
+          return {
+            id: d.id,
+            itemId: d.itemId || null,
+            status: d.status || null,
+            productKey: d.productKey,
+            productTitle: d.productTitle,
+            category: category || '',
+            soldAt: d.soldAt || 0,
+            price: Number(d.price) || 0,
+            buyerName: d.buyerName || null,
+            chatId: d.chatId || null,
+          }
+        })
         return sendJson(res, 200, { list })
       } catch (err) {
         const message =

@@ -48,6 +48,28 @@ export function InProgressLotsTab({ token }) {
     )
   }, [sales])
 
+  // Сделки, сгруппированные по категории (категории отсортированы, внутри категории — по названию товара).
+  const salesByCategory = useMemo(() => {
+    const grouped = new Map()
+    for (const item of inProgressSales) {
+      const cat = String(item.category ?? '').trim() || 'Без категории'
+      if (!grouped.has(cat)) grouped.set(cat, [])
+      grouped.get(cat).push(item)
+    }
+    const categories = [...grouped.keys()].sort((a, b) =>
+      a.localeCompare(b, 'ru')
+    )
+    const result = []
+    for (const cat of categories) {
+      const list = grouped.get(cat)
+      list.sort((a, b) =>
+        (a.productTitle || '').localeCompare(b.productTitle || '', 'ru')
+      )
+      result.push({ category: cat, deals: list })
+    }
+    return result
+  }, [inProgressSales])
+
   // Сообщения после последнего {{ITEM_PAID}} (остальное свернуто).
   const getMessagesAfterLastBoundary = (messages) => {
     if (!messages || messages.length === 0) return []
@@ -114,6 +136,47 @@ export function InProgressLotsTab({ token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, inProgressSales])
 
+  // Периодическое обновление чатов, чтобы новые сообщения подтягивались без перезагрузки страницы.
+  useEffect(() => {
+    if (!token || inProgressSales.length === 0) return
+    let cancelled = false
+
+    const refreshChats = async () => {
+      for (const deal of inProgressSales) {
+        const dealId = deal.id
+        if (!dealId) continue
+        try {
+          const { list } = await fetchDealChatMessages(token, dealId, deal.chatId)
+          if (cancelled) return
+          const sorted = [...(list || [])].sort((a, b) => {
+            const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
+            const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
+            return ta - tb
+          })
+          setChatsByDealId((prev) => ({
+            ...prev,
+            [dealId]: {
+              ...(prev[dealId] || { loading: false, error: null, loaded: true, messages: [] }),
+              loading: false,
+              error: null,
+              messages: sorted,
+              loaded: true,
+            },
+          }))
+        } catch (_err) {
+          if (cancelled) return
+          // Ошибки периодического обновления игнорируем, чтобы не перезаписывать уже загруженный чат
+        }
+      }
+    }
+
+    const interval = setInterval(refreshChats, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [token, inProgressSales])
+
   return (
     <div className="tab-page">
       <div className="tab-page-header">
@@ -152,27 +215,33 @@ export function InProgressLotsTab({ token }) {
                 Всего сделок в выполнении: <strong>{inProgressSales.length}</strong>
               </p>
               <div className="deal-chat-list">
-                {inProgressSales.map((item) => {
-                  const chat = chatsByDealId[item.id] || {
-                    loading: true,
-                    error: null,
-                    messages: [],
-                  }
-                  const showFull = showFullChatByDealId[item.id]
-                  const afterLastBoundary = getMessagesAfterLastBoundary(chat.messages)
-                  const displayedMessages = showFull ? chat.messages : afterLastBoundary
-                  const hiddenCount = Math.max(
-                    0,
-                    (chat.messages?.length || 0) - (afterLastBoundary.length || 0)
-                  )
-                  const hasHiddenMessages = hiddenCount > 1
-                  return (
-                    <div key={item.id} className="deal-chat-row">
-                      <div className="deal-chat-row__info">
-                        <div className="deal-chat-row__title">
-                          {item.productTitle || 'Товар'}
-                        </div>
-                        <div className="deal-chat-row__meta">
+                {salesByCategory.map(({ category, deals }) => (
+                  <div key={category} className="deal-chat-list__category">
+                    <h3 className="deal-chat-list__category-title">{category}</h3>
+                    {deals.map((item) => {
+                      const chat = chatsByDealId[item.id] || {
+                        loading: true,
+                        error: null,
+                        messages: [],
+                      }
+                      const showFull = showFullChatByDealId[item.id]
+                      const afterLastBoundary = getMessagesAfterLastBoundary(chat.messages)
+                      const displayedMessages = showFull ? chat.messages : afterLastBoundary
+                      const hiddenCount = Math.max(
+                        0,
+                        (chat.messages?.length || 0) - (afterLastBoundary.length || 0)
+                      )
+                      const hasHiddenMessages = hiddenCount > 1
+                      return (
+                        <div key={item.id} className="deal-chat-row">
+                          <div className="deal-chat-row__info">
+                            <div className="deal-chat-row__title">
+                              {item.productTitle || 'Товар'}
+                            </div>
+                            <div className="deal-chat-row__category">
+                              {category}
+                            </div>
+                            <div className="deal-chat-row__meta">
                           <span className="deal-chat-row__buyer">
                             Покупатель: {item.buyerName || '—'}
                           </span>
@@ -347,8 +416,10 @@ export function InProgressLotsTab({ token }) {
                         )}
                       </div>
                     </div>
-                  )
-                })}
+                      )
+                    })}
+                  </div>
+                ))}
               </div>
             </>
           )}

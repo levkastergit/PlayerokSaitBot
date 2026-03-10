@@ -566,6 +566,28 @@ body {
   font-size: 0.95rem;
 }
 
+.deal-chat-row__category {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.deal-chat-list__category {
+  margin-bottom: 1.25rem;
+}
+
+.deal-chat-list__category:last-child {
+  margin-bottom: 0;
+}
+
+.deal-chat-list__category-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 0.6rem 0;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
 .deal-chat-row__meta {
   display: flex;
   flex-direction: column;
