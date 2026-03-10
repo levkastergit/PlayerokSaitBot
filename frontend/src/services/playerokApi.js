@@ -183,6 +183,148 @@ export async function fetchSalesHistory(token) {
   return data
 }
 
+/** Очистить таблицу продаж (история прибыли) для текущего токена */
+export async function clearSalesHistory(token) {
+  if (!token) throw new Error('Токен обязателен')
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sales-history/clear`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка очистки: ${response.status}`)
+  }
+  return data
+}
+
+/** Аналитика прибыли: продажи с себестоимостью, расходами и прибылью */
+export async function fetchProfitAnalytics(token, opts = {}) {
+  if (!token) return { list: [], total: 0 }
+  const params = new URLSearchParams({ token })
+  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
+  if (opts.month != null && opts.month !== '') params.set('month', String(opts.month))
+  if (opts.limit != null) params.set('limit', String(opts.limit))
+  if (opts.offset != null) params.set('offset', String(opts.offset))
+  const url = `${BACKEND_ORIGIN}/api/profit-analytics?${params.toString()}`
+  const response = await fetch(url)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки аналитики: ${response.status}`)
+  }
+  const data = await response.json()
+  return data
+}
+
+/** Метаданные для фильтров прибыли (доступные годы/месяцы) */
+export async function fetchProfitMeta(token, opts = {}) {
+  if (!token) return { years: [], months: [] }
+  const params = new URLSearchParams({ token })
+  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
+  const url = `${BACKEND_ORIGIN}/api/profit-analytics/meta?${params.toString()}`
+  const response = await fetch(url)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки метаданных: ${response.status}`)
+  }
+  return response.json()
+}
+
+/** Статистика по прибыли (агрегаты + самое прибыльное время) */
+export async function fetchProfitStats(token, opts = {}) {
+  if (!token) {
+    return {
+      scope: { year: null, month: null },
+      totals: { profit: 0, revenue: 0, cost: 0, listingCost: 0, bumpCost: 0 },
+      counts: { sales: 0, refunds: 0 },
+      averages: { profitPerSale: 0 },
+      best: { hour: { hour: 0, profit: 0 }, weekday: { weekday: 0, profit: 0 } },
+    }
+  }
+  const params = new URLSearchParams({ token })
+  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
+  if (opts.month != null && opts.month !== '') params.set('month', String(opts.month))
+  const url = `${BACKEND_ORIGIN}/api/profit-stats?${params.toString()}`
+  const response = await fetch(url)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки статистики: ${response.status}`)
+  }
+  return response.json()
+}
+
+/** Синхронизировать все продажи с Playerok в локальную БД (вкладка «Прибыль») */
+export async function syncSalesFromPlayerok(token) {
+  if (!token) throw new Error('Токен обязателен')
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sync-sales`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка синхронизации: ${response.status}`)
+  }
+  return data
+}
+
+/**
+ * Синхронизация с прогрессом (SSE). Вызывает onProgress({ fetched, total, inserted }) по мере обработки.
+ * @returns {Promise<{ total: number, inserted: number }>}
+ */
+export async function syncSalesFromPlayerokStream(token, onProgress) {
+  if (!token) throw new Error('Токен обязателен')
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sync-sales-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка: ${response.status}`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          if (data.error) throw new Error(data.error)
+          if (data.done) {
+            result = { total: data.total ?? 0, inserted: data.inserted ?? 0 }
+          } else if (onProgress && data.fetched != null) {
+            onProgress({
+              fetched: data.fetched,
+              inserted: data.inserted ?? 0,
+            })
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue
+          throw e
+        }
+      }
+    }
+  }
+  if (buffer.startsWith('data: ')) {
+    try {
+      const data = JSON.parse(buffer.slice(6))
+      if (data.error) throw new Error(data.error)
+      if (data.done) result = { total: data.total ?? 0, inserted: data.inserted ?? 0 }
+    } catch (e) {
+      if (!(e instanceof SyntaxError)) throw e
+    }
+  }
+  return result ?? { total: 0, inserted: 0 }
+}
+
 /** Записать поднятие лота (вызов после поднятия на Playerok или для учёта) */
 export async function recordBump(token, { productKey, productTitle, itemId, price = 0, priorityStatusId }) {
   if (!token || !productKey) throw new Error('Токен и productKey обязательны')

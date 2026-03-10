@@ -305,6 +305,81 @@ body {
   color: var(--text-main);
 }
 
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 10rem;
+}
+
+.field-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.profit-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+}
+
+.profit-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-root);
+}
+
+.profit-view-toggle__btn {
+  padding: 0.42rem 0.9rem;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.profit-view-toggle__btn:hover {
+  color: var(--text-main);
+}
+
+.profit-view-toggle__btn--active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .history-table-wrap {
   overflow-x: auto;
   margin-top: 0.5rem;
@@ -345,6 +420,24 @@ body {
 
 .history-table__price {
   white-space: nowrap;
+}
+
+.profit-tab__total {
+  margin-bottom: 1rem;
+  font-size: 1.1rem;
+}
+
+.profit-table__profit {
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.profit-table__profit--positive {
+  color: var(--color-success, #22c55e);
+}
+
+.profit-table__profit--negative {
+  color: var(--color-error, #ef4444);
 }
 
 .card-text {
@@ -452,6 +545,45 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.profit-sync-progress {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.05));
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.profit-sync-progress__bar-wrap {
+  height: 8px;
+  background: var(--border-subtle, rgba(0, 0, 0, 0.15));
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.profit-sync-progress__bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.25s ease;
+}
+
+.profit-sync-progress__bar--indeterminate {
+  animation: profit-bar-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes profit-bar-pulse {
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.profit-sync-progress__text {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .active-lots-filters {
@@ -841,7 +973,39 @@ body {
   flex: 0 0 auto;
 }
 
+.lot-settings-input--price {
+  width: 7rem;
+  min-width: 7rem;
+  flex: 0 0 auto;
+}
+
 .lot-settings-schedule__remove {
+  flex-shrink: 0;
+}
+
+.lot-settings-automessage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lot-settings-automessage-list .lot-settings-field__label {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.lot-settings-automessage-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.lot-settings-automessage-row .lot-settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.lot-settings-automessage-remove {
   flex-shrink: 0;
 }
 

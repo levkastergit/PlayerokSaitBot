@@ -18,6 +18,7 @@ import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { TokenTab } from './features/token/TokenTab.jsx'
 import { HistoryTab } from './features/history/HistoryTab.jsx'
+import { ProfitTab } from './features/profit/ProfitTab.jsx'
 
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
@@ -29,6 +30,7 @@ const TABS = [
   { id: 'auto-delivery', label: 'Автовыдача' },
   { id: 'token', label: 'Токен' },
   { id: 'history', label: 'История' },
+  { id: 'profit', label: 'Прибыль' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -382,6 +384,7 @@ function App() {
             <TokenTab token={token} onTokenChange={setToken} />
           )}
           {activeTab === 'history' && <HistoryTab token={token} />}
+          {activeTab === 'profit' && <ProfitTab token={token} />}
         </section>
       </main>
     </div>

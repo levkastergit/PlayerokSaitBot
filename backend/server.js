@@ -50,6 +50,24 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sales_history_token ON sales_history(token_hash)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sales_history_sold_at ON sales_history(sold_at DESC)`)
+try {
+  const cols = db.prepare('PRAGMA table_info(sales_history)').all()
+  if (!cols.some((c) => c.name === 'is_refund')) {
+    db.exec('ALTER TABLE sales_history ADD COLUMN is_refund INTEGER DEFAULT 0')
+  }
+} catch (_) {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS listing_fees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL,
+    product_key TEXT NOT NULL,
+    fee REAL NOT NULL DEFAULT 0,
+    relisted_at INTEGER NOT NULL
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_listing_fees_token ON listing_fees(token_hash)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_listing_fees_product ON listing_fees(token_hash, product_key, relisted_at)`)
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 32)
@@ -81,15 +99,46 @@ const getBumpHistory = db.prepare(`
 
 const insertSale = db.prepare(`
   INSERT OR IGNORE INTO sales_history
-    (token_hash, product_key, product_title, sold_at, price, status, deal_id, item_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    (token_hash, product_key, product_title, sold_at, price, status, deal_id, item_id, is_refund)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 const getSalesHistory = db.prepare(`
-  SELECT product_key, product_title, sold_at, price, status
+  SELECT product_key, product_title, sold_at, price, status, is_refund
   FROM sales_history
   WHERE token_hash = ?
   ORDER BY sold_at DESC
   LIMIT 500
+`)
+const getSalesHistoryAll = db.prepare(`
+  SELECT product_key, product_title, sold_at, price, status, is_refund
+  FROM sales_history
+  WHERE token_hash = ?
+  ORDER BY sold_at DESC
+`)
+const deleteSalesHistoryByToken = db.prepare(`
+  DELETE FROM sales_history WHERE token_hash = ?
+`)
+
+const insertListingFee = db.prepare(`
+  INSERT INTO listing_fees (token_hash, product_key, fee, relisted_at)
+  VALUES (?, ?, ?, ?)
+`)
+const getListingFees = db.prepare(`
+  SELECT product_key, fee, relisted_at FROM listing_fees
+  WHERE token_hash = ? ORDER BY relisted_at DESC
+`)
+
+const getSalesYears = db.prepare(`
+  SELECT DISTINCT CAST(strftime('%Y', sold_at, 'unixepoch') AS INTEGER) AS year
+  FROM sales_history
+  WHERE token_hash = ? AND sold_at > 0
+  ORDER BY year DESC
+`)
+const getSalesMonthsForYear = db.prepare(`
+  SELECT DISTINCT CAST(strftime('%m', sold_at, 'unixepoch') AS INTEGER) AS month
+  FROM sales_history
+  WHERE token_hash = ? AND sold_at > 0 AND strftime('%Y', sold_at, 'unixepoch') = ?
+  ORDER BY month ASC
 `)
 
 function sendJson(res, statusCode, data) {
@@ -118,6 +167,92 @@ const DEAL_PERSISTED_HASH =
   '5652037a966d8da6d41180b0be8226051fe0ed1357d460c6ae348c3138a0fba3'
 
 const AUTOLIST_LAST_CHAT_FRESH_SEC = 90
+
+function parseIntSafe(v, fallback = null) {
+  if (v == null || v === '') return fallback
+  const n = parseInt(String(v), 10)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function clampInt(n, min, max) {
+  if (!Number.isFinite(n)) return min
+  return Math.min(max, Math.max(min, n))
+}
+
+function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows }) {
+  const settingsByKey = {}
+  for (const row of settingsRows || []) {
+    try {
+      const s = row.settings ? JSON.parse(row.settings) : {}
+      settingsByKey[row.product_key] = s
+    } catch (_) {}
+  }
+
+  const listingFeesByProduct = {}
+  for (const row of listingFeesRows || []) {
+    const k = row.product_key
+    if (!listingFeesByProduct[k]) listingFeesByProduct[k] = []
+    listingFeesByProduct[k].push({ relistedAt: row.relisted_at, fee: Number(row.fee) || 0 })
+  }
+  for (const k of Object.keys(listingFeesByProduct)) {
+    listingFeesByProduct[k].sort((a, b) => b.relistedAt - a.relistedAt)
+  }
+
+  const bumpsByProduct = {}
+  for (const b of bumpsRows || []) {
+    const k = b.product_key
+    if (!bumpsByProduct[k]) bumpsByProduct[k] = []
+    bumpsByProduct[k].push({ bumpedAt: b.bumped_at, price: Number(b.price) || 0 })
+  }
+  for (const k of Object.keys(bumpsByProduct)) {
+    bumpsByProduct[k].sort((a, b) => a.bumpedAt - b.bumpedAt)
+  }
+
+  // Для корректного расчёта "поднятия между продажами" нужно идти по продажам по возрастанию времени.
+  const salesAsc = [...(salesRows || [])].sort((a, b) => a.sold_at - b.sold_at)
+  const prevSoldByKey = {}
+  const computed = []
+
+  for (const row of salesAsc) {
+    const productKey = row.product_key
+    const soldAt = row.sold_at
+    const salePrice = Number(row.price) || 0
+    const isRefund = (row.is_refund || 0) === 1
+
+    const s = settingsByKey[productKey] || {}
+    const cost = typeof s.cost === 'number' ? s.cost : (parseFloat(s.cost) || 0)
+
+    const productListingFees = listingFeesByProduct[productKey] || []
+    const listingCost = productListingFees.find((lf) => lf.relistedAt < soldAt)?.fee ?? 0
+
+    const prevSold = prevSoldByKey[productKey] || 0
+    const productBumps = bumpsByProduct[productKey] || []
+    let bumpCost = 0
+    for (const b of productBumps) {
+      if (b.bumpedAt > prevSold && b.bumpedAt <= soldAt) {
+        bumpCost += b.price
+      }
+    }
+    prevSoldByKey[productKey] = soldAt
+
+    const expenses = cost + listingCost + bumpCost
+    const profit = isRefund ? -(listingCost + bumpCost) : salePrice - expenses
+
+    computed.push({
+      productTitle: row.product_title,
+      productKey,
+      soldAt,
+      salePrice,
+      isRefund,
+      cost,
+      listingCost,
+      bumpCost,
+      profit,
+    })
+  }
+
+  return computed.sort((a, b) => (b.soldAt || 0) - (a.soldAt || 0))
+}
 
 function getViewer(token, userAgent) {
   return new Promise((resolve, reject) => {
@@ -303,6 +438,11 @@ function publishItem(token, userAgent, itemId, opts = {}) {
       name
       price
       status
+      statusPayment {
+        value
+        fee
+        __typename
+      }
       __typename
     }
   }
@@ -349,7 +489,74 @@ function publishItem(token, userAgent, itemId, opts = {}) {
         if (!item || !item.id) {
           return reject(new Error('Playerok publishItem: empty response'))
         }
-        resolve(item)
+        const sp = item.statusPayment || {}
+        const listingFee = Number(sp.value) || Number(sp.fee) || 0
+        resolve({ ...item, listingFee })
+      })
+    })
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
+/** Отправить сообщение в чат */
+function createChatMessage(token, userAgent, chatId, text) {
+  return new Promise((resolve, reject) => {
+    const bodyJson = {
+      operationName: 'createChatMessage',
+      variables: {
+        input: {
+          chatId: String(chatId),
+          text: String(text || ''),
+        },
+      },
+      query: `mutation createChatMessage($input: CreateChatMessageInput!) {
+  createChatMessage(input: $input) {
+    id
+    text
+    __typename
+  }
+}
+`,
+    }
+    const body = JSON.stringify(bodyJson)
+    const options = {
+      hostname: 'playerok.com',
+      path: '/graphql',
+      method: 'POST',
+      headers: {
+        accept: '*/*',
+        'content-type': 'application/json',
+        cookie: `token=${token}`,
+        origin: 'https://playerok.com',
+        referer: 'https://playerok.com/chats',
+        'apollographql-client-name': 'web',
+        'apollo-require-preflight': 'true',
+        'user-agent':
+          userAgent ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'Content-Length': Buffer.byteLength(body, 'utf8'),
+      },
+    }
+    const req = https.request(options, (resp) => {
+      let data = ''
+      resp.on('data', (chunk) => { data += chunk })
+      resp.on('end', () => {
+        if (resp.statusCode !== 200) {
+          const preview = String(data || '').slice(0, 600)
+          return reject(new Error(`Playerok createChatMessage: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')))
+        }
+        let json
+        try {
+          json = JSON.parse(data)
+        } catch (err) {
+          return reject(new Error(`Invalid JSON: ${err.message}`))
+        }
+        if (json.errors && json.errors.length) {
+          return reject(new Error(json.errors.map((e) => e.message || 'GraphQL error').join('; ')))
+        }
+        resolve(json?.data?.createChatMessage || {})
       })
     })
     req.on('error', reject)
@@ -605,6 +812,15 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
         const dealsData = json?.data?.deals
         const edges = dealsData?.edges || []
         const pageInfo = dealsData?.pageInfo || {}
+        const toTs = (v) => {
+          if (v == null) return 0
+          if (typeof v === 'number') {
+            if (v < 1e12) return v
+            return Math.floor(v / 1000)
+          }
+          const d = new Date(v)
+          return isNaN(d.getTime()) ? 0 : Math.floor(d.getTime() / 1000)
+        }
         const deals = edges
           .map((edge) => edge && edge.node)
           .filter(Boolean)
@@ -613,18 +829,30 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
             const game = item.game?.name || ''
             const title = item.name || item.title || 'Товар'
             const price = node.transaction?.value ?? item.price ?? node.price ?? 0
-            const toTs = (v) => {
-              if (v == null) return 0
-              if (typeof v === 'number') return v
-              const d = new Date(v)
-              return isNaN(d.getTime()) ? 0 : Math.floor(d.getTime() / 1000)
-            }
+            const tx = node.transaction || {}
+            const soldAt =
+              toTs(node.completedAt) ||
+              toTs(node.createdAt) ||
+              toTs(node.updatedAt) ||
+              toTs(node.completed_at) ||
+              toTs(node.created_at) ||
+              toTs(node.updated_at) ||
+              toTs(tx.completedAt) ||
+              toTs(tx.createdAt) ||
+              toTs(tx.created_at) ||
+              toTs(item.updatedAt) ||
+              toTs(item.createdAt) ||
+              toTs(item.soldAt) ||
+              toTs(item.updated_at) ||
+              toTs(item.created_at) ||
+              0
             return {
               id: node.id,
+              itemId: item.id || null,
               status: node.status,
               productKey: game ? `${game}::${title}` : title,
               productTitle: title,
-              soldAt: toTs(node.completedAt) || toTs(node.createdAt) || 0,
+              soldAt,
               price: Number(price) || 0,
             }
           })
@@ -818,7 +1046,10 @@ function requestDealById(token, userAgent, dealId) {
 
 function toUnixTs(v) {
   if (v == null) return 0
-  if (typeof v === 'number') return v
+  if (typeof v === 'number') {
+    if (v < 1e12) return v
+    return Math.floor(v / 1000)
+  }
   const d = new Date(v)
   return isNaN(d.getTime()) ? 0 : Math.floor(d.getTime() / 1000)
 }
@@ -843,6 +1074,27 @@ async function fetchDealsFromPlayerok(token, userAgent) {
     allDeals.push(...page.deals)
     afterCursor = page.hasNextPage ? page.endCursor : null
   } while (afterCursor && allDeals.length < SALES_HISTORY_LIMIT)
+  return { deals: allDeals }
+}
+
+/** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
+async function fetchAllDealsFromPlayerok(token, userAgent) {
+  const viewer = await getViewer(token, userAgent)
+  const statusList = ['PAID', 'PENDING', 'SENT', 'CONFIRMED', 'ROLLED_BACK']
+  const allDeals = []
+  let afterCursor = null
+  do {
+    const page = await requestDealsPage(
+      token,
+      userAgent,
+      viewer.id,
+      afterCursor,
+      statusList,
+      'OUT'
+    )
+    allDeals.push(...page.deals)
+    afterCursor = page.hasNextPage ? page.endCursor : null
+  } while (afterCursor)
   return { deals: allDeals }
 }
 
@@ -1042,6 +1294,180 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === 'POST' && pathname === '/api/sales-history/clear') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      if (!token) {
+        return sendJson(res, 400, { error: 'token is required' })
+      }
+      try {
+        const result = deleteSalesHistoryByToken.run(hashToken(token))
+        return sendJson(res, 200, { ok: true, deleted: result.changes })
+      } catch (err) {
+        return sendJson(res, 500, {
+          error: err && err.message ? String(err.message) : 'Failed to clear sales history',
+        })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/sync-sales') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      if (!token) {
+        return sendJson(res, 400, { error: 'token is required' })
+      }
+      try {
+        const { deals } = await fetchAllDealsFromPlayerok(token, userAgent)
+        const tokenHash = hashToken(token)
+        let inserted = 0
+        for (const d of deals) {
+          const dealId = d.id || null
+          if (!dealId) continue
+          let soldAt = d.soldAt
+            if (!soldAt) {
+            try {
+              const fullDeal = await requestDealById(token, userAgent, dealId)
+              soldAt = fullDeal
+                ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
+                : 0
+            } catch (_) {
+              soldAt = 0
+            }
+          }
+          try {
+            const result = insertSale.run(
+              tokenHash,
+              d.productKey || 'Товар',
+              d.productTitle || 'Товар',
+              soldAt,
+              Number(d.price) || 0,
+              d.status || null,
+              dealId,
+              d.itemId || null,
+              String(d.status || '') === 'ROLLED_BACK' ? 1 : 0
+            )
+            if (result.changes > 0) inserted += 1
+          } catch (_) {
+            // UNIQUE conflict or other — skip
+          }
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          total: deals.length,
+          inserted,
+        })
+      } catch (err) {
+        return sendJson(res, 500, {
+          error: err && err.message ? String(err.message) : 'Не удалось загрузить продажи с Playerok',
+        })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/sync-sales-stream') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      if (!token) {
+        return sendJson(res, 400, { error: 'token is required' })
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      const sendEvent = (data) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`)
+      }
+      try {
+        const viewer = await getViewer(token, userAgent)
+        const tokenHash = hashToken(token)
+        const statusList = ['PAID', 'PENDING', 'SENT', 'CONFIRMED', 'ROLLED_BACK']
+        let afterCursor = null
+        let fetched = 0
+        let inserted = 0
+        // Каждая сделка (deal) = одна покупка: свой товар и дата; в одном чате может быть несколько сделок
+        do {
+          const page = await requestDealsPage(
+            token,
+            userAgent,
+            viewer.id,
+            afterCursor,
+            statusList,
+            'OUT'
+          )
+          for (const d of page.deals) {
+            const dealId = d.id || null
+            let soldAt = d.soldAt
+            if (!soldAt && dealId) {
+              try {
+                const fullDeal = await requestDealById(token, userAgent, dealId)
+                soldAt = fullDeal
+                  ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
+                  : 0
+              } catch (_) {
+                soldAt = 0
+              }
+            }
+            if (dealId) {
+              try {
+                const result = insertSale.run(
+                  tokenHash,
+                  d.productKey || 'Товар',
+                  d.productTitle || 'Товар',
+                  soldAt,
+                  Number(d.price) || 0,
+                  d.status || null,
+                  dealId,
+                  d.itemId || null,
+                  String(d.status || '') === 'ROLLED_BACK' ? 1 : 0
+                )
+                if (result.changes > 0) inserted += 1
+              } catch (_) {}
+            }
+            fetched += 1
+          }
+          sendEvent({ fetched, inserted })
+          afterCursor = page.hasNextPage ? page.endCursor : null
+        } while (afterCursor)
+        sendEvent({ done: true, total: fetched, inserted })
+      } catch (err) {
+        sendEvent({ error: err && err.message ? String(err.message) : 'Ошибка синхронизации' })
+      } finally {
+        res.end()
+      }
+    })
+    return
+  }
+
   if (req.method === 'GET' && pathname === '/api/bump-history') {
     const token = query.token
     if (!token) {
@@ -1058,6 +1484,152 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { list })
     } catch (err) {
       return sendJson(res, 500, { error: 'Failed to load bump history', details: err.message })
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/profit-analytics/meta') {
+    const token = query.token
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
+    try {
+      const tokenHash = hashToken(token)
+      const years = getSalesYears.all(tokenHash).map((r) => r.year).filter((y) => y != null)
+      const yearQ = parseIntSafe(query.year, null)
+      const months =
+        yearQ != null
+          ? getSalesMonthsForYear.all(tokenHash, String(yearQ)).map((r) => r.month).filter((m) => m != null)
+          : []
+      return sendJson(res, 200, { years, months })
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'Failed to load profit meta' })
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/profit-analytics') {
+    const token = query.token
+    if (!token) {
+      return sendJson(res, 400, { error: 'token is required' })
+    }
+    try {
+      const tokenHash = hashToken(token)
+      const salesRows = getSalesHistoryAll.all(tokenHash)
+      const bumpsRows = getBumpHistory.all(tokenHash)
+      const settingsRows = getAllSettings.all(tokenHash)
+      const listingFeesRows = getListingFees.all(tokenHash)
+      const allList = computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows })
+
+      const year = parseIntSafe(query.year, null)
+      const month = parseIntSafe(query.month, null)
+      const filtered =
+        year == null
+          ? allList
+          : allList.filter((it) => {
+              if (!it?.soldAt) return false
+              const d = new Date(it.soldAt * 1000)
+              const y = d.getFullYear()
+              const m = d.getMonth() + 1
+              if (y !== year) return false
+              if (month != null && m !== month) return false
+              return true
+            })
+
+      const limit = clampInt(parseIntSafe(query.limit, 100), 1, 1000)
+      const offset = clampInt(parseIntSafe(query.offset, 0), 0, 2_000_000_000)
+      const total = filtered.length
+      const list = filtered.slice(offset, offset + limit)
+      return sendJson(res, 200, { list, total, limit, offset })
+    } catch (err) {
+      return sendJson(res, 500, {
+        error: err && err.message ? String(err.message) : 'Failed to load profit analytics',
+      })
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/profit-stats') {
+    const token = query.token
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
+    try {
+      const tokenHash = hashToken(token)
+      const salesRows = getSalesHistoryAll.all(tokenHash)
+      const bumpsRows = getBumpHistory.all(tokenHash)
+      const settingsRows = getAllSettings.all(tokenHash)
+      const listingFeesRows = getListingFees.all(tokenHash)
+
+      const allList = computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows })
+
+      const year = parseIntSafe(query.year, null)
+      const month = parseIntSafe(query.month, null)
+      const list =
+        year == null
+          ? allList
+          : allList.filter((it) => {
+              if (!it?.soldAt) return false
+              const d = new Date(it.soldAt * 1000)
+              const y = d.getFullYear()
+              const m = d.getMonth() + 1
+              if (y !== year) return false
+              if (month != null && m !== month) return false
+              return true
+            })
+
+      let totalProfit = 0
+      let totalListingCost = 0
+      let totalBumpCost = 0
+      let totalCost = 0
+      let totalRevenue = 0
+      let salesCount = 0
+      let refundCount = 0
+
+      const profitByHour = Array.from({ length: 24 }, () => 0)
+      const profitByWeekday = Array.from({ length: 7 }, () => 0) // 0=Sun..6=Sat
+
+      for (const it of list) {
+        const p = Number(it.profit) || 0
+        totalProfit += p
+        totalListingCost += Number(it.listingCost) || 0
+        totalBumpCost += Number(it.bumpCost) || 0
+        totalCost += Number(it.cost) || 0
+        if (!it.isRefund) totalRevenue += Number(it.salePrice) || 0
+        salesCount += 1
+        if (it.isRefund) refundCount += 1
+
+        if (it.soldAt) {
+          const d = new Date(it.soldAt * 1000)
+          const hour = d.getHours()
+          const wd = d.getDay()
+          if (hour >= 0 && hour < 24) profitByHour[hour] += p
+          if (wd >= 0 && wd < 7) profitByWeekday[wd] += p
+        }
+      }
+
+      const bestHour = profitByHour.reduce(
+        (acc, val, idx) => (val > acc.profit ? { hour: idx, profit: val } : acc),
+        { hour: 0, profit: profitByHour[0] || 0 }
+      )
+      const bestWeekday = profitByWeekday.reduce(
+        (acc, val, idx) => (val > acc.profit ? { weekday: idx, profit: val } : acc),
+        { weekday: 0, profit: profitByWeekday[0] || 0 }
+      )
+
+      const avgProfit = salesCount ? totalProfit / salesCount : 0
+
+      return sendJson(res, 200, {
+        scope: { year: year ?? null, month: month ?? null },
+        totals: {
+          profit: totalProfit,
+          revenue: totalRevenue,
+          cost: totalCost,
+          listingCost: totalListingCost,
+          bumpCost: totalBumpCost,
+        },
+        counts: { sales: salesCount, refunds: refundCount },
+        averages: { profitPerSale: avgProfit },
+        best: {
+          hour: bestHour,
+          weekday: bestWeekday,
+        },
+      })
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'Failed to load profit stats' })
     }
   }
 
@@ -1276,24 +1848,53 @@ const server = http.createServer(async (req, res) => {
             Number(salePrice) || 0,
             dealStatus || null,
             dealId || null,
-            dealItemId || null
+            dealItemId || null,
+            String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
           )
         } catch (e) {
           // ignore sale record failure
         }
 
-        // проверяем настройку автовыставления для товара
+        // Автосообщение: при покупке отправить сообщения покупателю в чат
         let autolistEnabled = false
         try {
           const row = getSettings.get(hashToken(token), String(productKey))
           if (row?.settings) {
             const s = JSON.parse(row.settings)
             autolistEnabled = Boolean(s?.autolist?.enabled)
+            const am = s?.automessage
+            if (am?.enabled) {
+              const raw = am.messages
+              const messages = Array.isArray(raw)
+                ? raw.map((m) => String(m).trim()).filter(Boolean)
+                : typeof raw === 'string' && raw.trim()
+                  ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
+                  : []
+              if (messages.length && lastChat?.id) {
+                const chatId = lastChat.id
+                for (let i = 0; i < messages.length; i++) {
+                  try {
+                    await createChatMessage(token, userAgent, chatId, messages[i])
+                    if (i < messages.length - 1) {
+                      await new Promise((r) => setTimeout(r, 800))
+                    }
+                  } catch (_) {
+                    // ignore single message failure
+                  }
+                }
+              }
+            }
           }
         } catch (_) {
           // ignore
         }
         if (!autolistEnabled) {
+          global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
+            eventKey,
+            processedAt: nowTs,
+            oldItemId: dealItemId,
+            newItemId: null,
+          }
           return sendJson(res, 200, { ok: true, skipped: 'disabled', productKey })
         }
 
@@ -1302,6 +1903,10 @@ const server = http.createServer(async (req, res) => {
         }
 
         const relisted = await publishItem(token, userAgent, dealItemId, {})
+
+        try {
+          insertListingFee.run(tokenHash, String(productKey), Number(relisted.listingFee) || 0, nowTs)
+        } catch (_) {}
 
         global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
           eventKey,
