@@ -1,3 +1,8 @@
+try {
+  require('dotenv').config()
+} catch (_) {
+  // dotenv не установлен — запустите в папке backend: npm install dotenv
+}
 const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
@@ -6,6 +11,45 @@ const fs = require('fs')
 const { URLSearchParams } = require('url')
 
 const PORT = process.env.PORT || 3000
+
+// Аутентификация: логин и пароль из .env (AUTH_LOGIN, AUTH_PASSWORD)
+const AUTH_LOGIN = (process.env.AUTH_LOGIN || '').trim()
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD == null ? '' : String(process.env.AUTH_PASSWORD)
+const AUTH_ENABLED = AUTH_LOGIN !== ''
+
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 часа
+const sessions = new Map() // sessionId -> { expiresAt }
+
+function getSessionIdFromRequest(req) {
+  const cookie = req.headers.cookie || ''
+  const match = cookie.match(/\bsession=([a-f0-9]+)/i)
+  if (match) return match[1]
+  const auth = req.headers.authorization || ''
+  if (auth.startsWith('Bearer ')) return auth.slice(7).trim()
+  return null
+}
+
+function isSessionValid(sessionId) {
+  if (!sessionId) return false
+  const s = sessions.get(sessionId)
+  if (!s || Date.now() > s.expiresAt) {
+    if (s) sessions.delete(sessionId)
+    return false
+  }
+  return true
+}
+
+function createSession() {
+  const sessionId = crypto.randomBytes(32).toString('hex')
+  sessions.set(sessionId, { expiresAt: Date.now() + SESSION_TTL_MS })
+  return sessionId
+}
+
+function destroySession(sessionId) {
+  if (sessionId) sessions.delete(sessionId)
+}
+
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist')
 
 const Database = require('better-sqlite3')
 const DATA_DIR = path.join(__dirname, 'data')
@@ -66,7 +110,7 @@ try {
   if (!cols.some((c) => c.name === 'buyer_name')) {
     db.exec('ALTER TABLE sales_history ADD COLUMN buyer_name TEXT')
   }
-} catch (_) {}
+} catch (_) { }
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS listing_fees (
@@ -97,6 +141,9 @@ const upsertSettings = db.prepare(`
   ON CONFLICT (token_hash, product_key) DO UPDATE SET
     settings = excluded.settings,
     updated_at = excluded.updated_at
+`)
+const deleteSettings = db.prepare(`
+  DELETE FROM product_settings WHERE token_hash = ? AND product_key = ?
 `)
 
 const insertBump = db.prepare(`
@@ -166,6 +213,48 @@ const getSalesMonthsForYear = db.prepare(`
   ORDER BY month ASC
 `)
 
+const CATEGORY_SETTINGS_PREFIX = '__category__::'
+const GROUP_SETTINGS_PREFIX = '__group__::'
+
+function getCategorySettingsKey(category) {
+  const name = String(category || '').trim()
+  return `${CATEGORY_SETTINGS_PREFIX}${name}`
+}
+
+function getGroupSettingsKey(label) {
+  const name = String(label || '').trim()
+  return name ? `${GROUP_SETTINGS_PREFIX}${name}` : ''
+}
+
+// Миграция product_settings: нормализуем ключи (игра::название), старые кривые записи удаляем.
+try {
+  const all = db
+    .prepare('SELECT token_hash, product_key, settings, updated_at, rowid FROM product_settings')
+    .all()
+  const seen = new Set()
+  for (const row of all) {
+    const key = String(row.product_key || '')
+    // Не трогаем служебные ключи категорий и групп
+    if (key.startsWith(CATEGORY_SETTINGS_PREFIX) || key.startsWith(GROUP_SETTINGS_PREFIX)) {
+      continue
+    }
+    const normalized = normalizeProductKey(key)
+    if (!normalized || normalized === key) {
+      continue
+    }
+    const sig = `${row.token_hash}::${normalized}`
+    if (!seen.has(sig)) {
+      // Переносим настройки под нормализованный ключ
+      upsertSettings.run(row.token_hash, normalized, row.settings, row.updated_at)
+      seen.add(sig)
+    }
+    // Удаляем старую "кривую" запись
+    deleteSettings.run(row.token_hash, key)
+  }
+} catch (_) {
+  // миграция не критична для работы — ошибки игнорируем
+}
+
 function sendJson(res, statusCode, data) {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -206,13 +295,39 @@ function clampInt(n, min, max) {
   return Math.min(max, Math.max(min, n))
 }
 
+function normalizeKeyPart(v) {
+  return String(v == null ? '' : v)
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+function normalizeProductKey(productKey) {
+  const raw = String(productKey == null ? '' : productKey)
+  const sepIndex = raw.indexOf('::')
+  if (sepIndex === -1) return normalizeKeyPart(raw)
+  const game = raw.slice(0, sepIndex)
+  const title = raw.slice(sepIndex + 2)
+  return `${normalizeKeyPart(game)}::${normalizeKeyPart(title)}`
+}
+
+function buildProductKey(game, title) {
+  const g = normalizeKeyPart(game)
+  const t = normalizeKeyPart(title)
+  return g ? `${g}::${t}` : t
+}
+
 function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows }) {
   const settingsByKey = {}
   for (const row of settingsRows || []) {
     try {
       const s = row.settings ? JSON.parse(row.settings) : {}
-      settingsByKey[row.product_key] = s
-    } catch (_) {}
+      const rawKey = row.product_key
+      if (rawKey != null && rawKey !== '') {
+        settingsByKey[String(rawKey)] = s
+        const normalized = normalizeProductKey(rawKey)
+        if (normalized && !settingsByKey[normalized]) settingsByKey[normalized] = s
+      }
+    } catch (_) { }
   }
 
   const listingFeesByProduct = {}
@@ -246,7 +361,10 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
     const salePrice = Number(row.price) || 0
     const isRefund = (row.is_refund || 0) === 1
 
-    const s = settingsByKey[productKey] || {}
+    const s =
+      settingsByKey[productKey] ||
+      settingsByKey[normalizeProductKey(productKey)] ||
+      {}
     const cost = typeof s.cost === 'number' ? s.cost : (parseFloat(s.cost) || 0)
 
     const productListingFees = listingFeesByProduct[productKey] || []
@@ -416,7 +534,7 @@ function increaseItemPriorityStatus(token, userAgent, itemId, opts = {}) {
           return reject(
             new Error(
               `Playerok bump: status ${resp.statusCode}` +
-                (bodyPreview ? `; body: ${bodyPreview}` : '')
+              (bodyPreview ? `; body: ${bodyPreview}` : '')
             )
           )
         }
@@ -592,6 +710,80 @@ function createChatMessage(token, userAgent, chatId, text) {
   })
 }
 
+/** Обновить статус сделки (например, SENT / ROLLED_BACK) */
+function updateDealStatus(token, userAgent, dealId, newStatus) {
+  return new Promise((resolve, reject) => {
+    const bodyJson = {
+      operationName: 'updateDeal',
+      variables: {
+        input: {
+          id: String(dealId),
+          status: String(newStatus),
+        },
+      },
+      query: `mutation updateDeal($input: UpdateItemDealInput!) {
+  updateDeal(input: $input) {
+    id
+    status
+    statusDescription
+    __typename
+  }
+}
+`,
+    }
+    const body = JSON.stringify(bodyJson)
+    const options = {
+      hostname: 'playerok.com',
+      path: '/graphql',
+      method: 'POST',
+      headers: {
+        accept: '*/*',
+        'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'content-type': 'application/json',
+        cookie: `token=${token}`,
+        origin: 'https://playerok.com',
+        referer: `https://playerok.com/deal/${String(dealId)}`,
+        'apollographql-client-name': 'web',
+        'apollo-require-preflight': 'true',
+        'x-timezone-offset': String(new Date().getTimezoneOffset()),
+        'x-gql-op': 'updateDeal',
+        'x-gql-path': '/',
+        'user-agent':
+          userAgent ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'Content-Length': Buffer.byteLength(body, 'utf8'),
+      },
+    }
+    const req = https.request(options, (resp) => {
+      let data = ''
+      resp.on('data', (chunk) => { data += chunk })
+      resp.on('end', () => {
+        if (resp.statusCode !== 200) {
+          const preview = String(data || '').slice(0, 800)
+          return reject(new Error(`Playerok updateDeal: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')))
+        }
+        let json
+        try {
+          json = JSON.parse(data)
+        } catch (err) {
+          return reject(new Error(`Invalid JSON from updateDeal: ${err.message}`))
+        }
+        if (json.errors && json.errors.length) {
+          return reject(new Error(json.errors.map((e) => e.message || 'GraphQL error').join('; ')))
+        }
+        const deal = json?.data?.updateDeal || null
+        if (!deal || !deal.id) {
+          return reject(new Error('Playerok updateDeal: empty response'))
+        }
+        resolve(deal)
+      })
+    })
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
 function fetchItemPriorityStatuses(token, userAgent, itemId, price) {
   return new Promise((resolve, reject) => {
     const variables = {
@@ -637,7 +829,7 @@ function fetchItemPriorityStatuses(token, userAgent, itemId, price) {
           return reject(
             new Error(
               `Playerok itemPriorityStatuses: status ${resp.statusCode}` +
-                (bodyPreview ? `; body: ${bodyPreview}` : '')
+              (bodyPreview ? `; body: ${bodyPreview}` : '')
             )
           )
         }
@@ -881,9 +1073,9 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
               id: node.id,
               itemId: item.id || null,
               status: node.status,
-              productKey: game ? `${game}::${title}` : title,
-              productTitle: title,
-              category: game,
+              productKey: buildProductKey(game, title),
+              productTitle: normalizeKeyPart(title) || 'Товар',
+              category: normalizeKeyPart(game),
               soldAt,
               price: Number(price) || 0,
               buyerName,
@@ -1087,7 +1279,7 @@ function requestChatMessagesPage(token, userAgent, chatId, afterCursor = null, c
           return reject(
             new Error(
               `Playerok chatMessages: status ${resp.statusCode}` +
-                (preview ? `; ${preview}` : '')
+              (preview ? `; ${preview}` : '')
             )
           )
         }
@@ -1115,17 +1307,17 @@ function requestChatMessagesPage(token, userAgent, chatId, afterCursor = null, c
             const fileUrl = file && (file.url || file.link || file.src)
             const imageUrl = fileUrl || (node.attachments && node.attachments[0] && (node.attachments[0].url || node.attachments[0].link)) || null
             return {
-            id: node.id,
-            text: node.text || '',
-            createdAt: node.createdAt || null,
-            imageUrl,
-            dealId: node.deal && node.deal.id ? node.deal.id : null,
-            user: node.user
-              ? {
+              id: node.id,
+              text: node.text || '',
+              createdAt: node.createdAt || null,
+              imageUrl,
+              dealId: node.deal && node.deal.id ? node.deal.id : null,
+              user: node.user
+                ? {
                   id: node.user.id || null,
                   username: node.user.username || '',
                 }
-              : null,
+                : null,
             }
           })
         const pageInfo = cm.pageInfo || {}
@@ -1322,7 +1514,7 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
     chatId = fullDeal?.chat?.id || fullDeal?.chatId || null
   }
   if (!chatId) {
-    return { messages: [] }
+    return { messages: [], buyerSupercellEmail: null }
   }
   const referer = dealId ? `https://playerok.com/deal/${dealId}` : undefined
   const allMessages = []
@@ -1335,7 +1527,52 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
     afterCursor = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null
     pageCount++
   } while (afterCursor && pageCount < maxPages)
-  return { messages: allMessages }
+
+  // Пытаемся определить сделку и вытащить почту Supercell ID из полей сделки
+  let effectiveDealId = dealId || null
+  if (!effectiveDealId) {
+    for (const m of allMessages) {
+      if (m.dealId) {
+        effectiveDealId = m.dealId
+        break
+      }
+    }
+  }
+
+  let buyerSupercellEmail = null
+  if (effectiveDealId) {
+    try {
+      const fullDeal = await requestDealById(token, userAgent, effectiveDealId)
+      const fields =
+        (fullDeal && Array.isArray(fullDeal.obtainingFields) && fullDeal.obtainingFields) ||
+        (fullDeal &&
+          fullDeal.item &&
+          Array.isArray(fullDeal.item.dataFields) &&
+          fullDeal.item.dataFields) ||
+        []
+      for (const f of fields) {
+        const label = (f && typeof f.label === 'string' && f.label) || ''
+        const value =
+          f && Object.prototype.hasOwnProperty.call(f, 'value') ? f.value : null
+        if (!value) continue
+        const normalized = label.toLowerCase()
+        if (
+          normalized.includes('supercell') ||
+          normalized.includes('super cell') ||
+          normalized.includes('super sell') ||
+          normalized === 'почта supercell id' ||
+          normalized === 'supercell id'
+        ) {
+          buyerSupercellEmail = String(value)
+          break
+        }
+      }
+    } catch (_) {
+      // ignore errors when fetching full deal
+    }
+  }
+
+  return { messages: allMessages, buyerSupercellEmail }
 }
 
 // Отправить текстовое сообщение в чат по chatId или dealId.
@@ -1425,25 +1662,66 @@ async function fetchCompletedItemsFromPlayerok(token, userAgent) {
 }
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  res.setHeader('Access-Control-Allow-Origin', AUTH_ENABLED && origin ? origin : '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  if (AUTH_ENABLED) res.setHeader('Access-Control-Allow-Credentials', 'true')
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204
     return res.end()
   }
 
-  if (req.method === 'GET' && req.url === '/') {
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-    return res.end('OK\n')
-  }
-
   const parsedUrl = new URL(req.url || '/', `http://localhost:${PORT}`)
   const pathname = parsedUrl.pathname
   const query = Object.fromEntries(parsedUrl.searchParams)
   const nowTs = Math.floor(Date.now() / 1000)
+
+  // POST /api/auth/login — единственный публичный API при включённой аутентификации
+  if (req.method === 'POST' && pathname === '/api/auth/login') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const login = (payload.login != null ? String(payload.login) : '').trim()
+      const password = payload.password != null ? String(payload.password) : ''
+      if (!AUTH_ENABLED) {
+        return sendJson(res, 200, { ok: true, sessionToken: 'disabled' })
+      }
+      if (login !== AUTH_LOGIN || password !== AUTH_PASSWORD) {
+        return sendJson(res, 401, { error: 'Неверный логин или пароль' })
+      }
+      const sessionId = createSession()
+      res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; Max-Age=86400; SameSite=Lax`)
+      return sendJson(res, 200, { ok: true, sessionToken: sessionId })
+    })
+    return
+  }
+
+  // Требуем сессию для всех остальных /api/* при включённой аутентификации
+  if (AUTH_ENABLED && pathname.startsWith('/api/')) {
+    const sessionId = getSessionIdFromRequest(req)
+    if (!sessionId || !isSessionValid(sessionId)) {
+      return sendJson(res, 401, { error: 'Unauthorized' })
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/auth/me') {
+    return sendJson(res, 200, { ok: true })
+  }
+
+  if (req.method === 'POST' && pathname === '/api/auth/logout') {
+    const sessionId = getSessionIdFromRequest(req)
+    destroySession(sessionId)
+    res.setHeader('Set-Cookie', 'session=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax')
+    return sendJson(res, 200, { ok: true })
+  }
 
   if (req.method === 'GET' && pathname === '/api/token') {
     try {
@@ -1499,8 +1777,12 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 400, { error: 'token and productKey are required' })
     }
     try {
-      const row = getSettings.get(hashToken(token), String(productKey))
+      const tokenHash = hashToken(token)
+      const key = String(productKey)
+      console.info('[settings:get]', { tokenHash, productKey: key })
+      const row = getSettings.get(tokenHash, key)
       if (!row) {
+        console.info('[settings:get] not_found', { tokenHash, productKey: key })
         return sendJson(res, 200, { settings: null })
       }
       let settings
@@ -1508,6 +1790,25 @@ const server = http.createServer(async (req, res) => {
         settings = JSON.parse(row.settings)
       } catch {
         settings = null
+      }
+      try {
+        const s = settings || {}
+        console.info('[settings:get] hit', {
+          tokenHash,
+          productKey: key,
+          hasAutodelivery: Boolean(s && s.autodelivery),
+          autodeliveryEnabled: Boolean(s && s.autodelivery && s.autodelivery.enabled),
+          codesCount: Array.isArray(s && s.autodelivery && s.autodelivery.codes)
+            ? s.autodelivery.codes.length
+            : 0,
+          hasAutomessage: Boolean(s && s.automessage),
+          automessageEnabled: Boolean(s && s.automessage && s.automessage.enabled),
+          hasAutolist: Boolean(s && s.autolist),
+          autolistEnabled: Boolean(s && s.autolist && s.autolist.enabled),
+          settingsLabel: typeof s.settingsLabel === 'string' ? s.settingsLabel : null,
+        })
+      } catch (_) {
+        // логирование не должно ломать ответ
       }
       return sendJson(res, 200, { settings, updated_at: row.updated_at })
     } catch (err) {
@@ -1537,6 +1838,84 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === 'GET' && pathname === '/api/category-commands/list') {
+    const token = query.token
+    if (!token) {
+      return sendJson(res, 400, { error: 'token is required' })
+    }
+    try {
+      const rows = getAllSettings.all(hashToken(token))
+      const list = []
+      for (const row of rows) {
+        const key = row.product_key || ''
+        if (!key.startsWith(CATEGORY_SETTINGS_PREFIX)) continue
+        const category = key.slice(CATEGORY_SETTINGS_PREFIX.length)
+        let settings = null
+        try {
+          settings = row.settings ? JSON.parse(row.settings) : null
+        } catch {
+          settings = null
+        }
+        const commands = Array.isArray(settings?.commands)
+          ? settings.commands.map((c) => ({
+            id: c && c.id ? String(c.id) : null,
+            label: c && c.label ? String(c.label) : '',
+            text: c && c.text ? String(c.text) : '',
+          }))
+          : []
+        list.push({ category, commands })
+      }
+      return sendJson(res, 200, { list })
+    } catch (err) {
+      return sendJson(res, 500, { error: 'Failed to load category commands', details: err.message })
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/category-commands') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const rawCategory = payload.category
+      const rawCommands = payload.commands
+      const category = String(rawCategory || '').trim()
+      if (!token || !category) {
+        return sendJson(res, 400, { error: 'token and category are required' })
+      }
+      const commands = Array.isArray(rawCommands)
+        ? rawCommands.map((c, index) => {
+          const safe = typeof c === 'object' && c !== null ? c : {}
+          const id =
+            safe.id != null && safe.id !== ''
+              ? String(safe.id)
+              : `cmd-${Date.now()}-${index}`
+          return {
+            id,
+            label: safe.label ? String(safe.label) : '',
+            text: safe.text ? String(safe.text) : '',
+          }
+        })
+        : []
+      const settings = { commands }
+      const settingsStr = JSON.stringify(settings)
+      const updatedAt = Math.floor(Date.now() / 1000)
+      try {
+        const productKey = getCategorySettingsKey(category)
+        upsertSettings.run(hashToken(token), String(productKey), settingsStr, updatedAt)
+        return sendJson(res, 200, { ok: true, category, updated_at: updatedAt })
+      } catch (err) {
+        return sendJson(res, 500, { error: 'Failed to save category commands', details: err.message })
+      }
+    })
+    return
+  }
+
   if (req.method === 'POST' && pathname === '/api/product-settings') {
     let body = ''
     req.on('data', (chunk) => { body += chunk })
@@ -1553,15 +1932,64 @@ const server = http.createServer(async (req, res) => {
       if (!token || productKey == null || productKey === '') {
         return sendJson(res, 400, { error: 'token and productKey are required' })
       }
+      const tokenHash = hashToken(token)
+      const key = String(productKey)
       const settingsStr = typeof settings === 'object' && settings !== null
         ? JSON.stringify(settings)
         : '{}'
       const updatedAt = Math.floor(Date.now() / 1000)
       try {
-        upsertSettings.run(hashToken(token), String(productKey), settingsStr, updatedAt)
+        upsertSettings.run(tokenHash, key, settingsStr, updatedAt)
+        try {
+          const s = typeof settings === 'object' && settings !== null ? settings : {}
+          console.info('[settings:save]', {
+            tokenHash,
+            productKey: key,
+            hasAutodelivery: Boolean(s && s.autodelivery),
+            autodeliveryEnabled: Boolean(s && s.autodelivery && s.autodelivery.enabled),
+            codesCount: Array.isArray(s && s.autodelivery && s.autodelivery.codes)
+              ? s.autodelivery.codes.length
+              : 0,
+            hasAutomessage: Boolean(s && s.automessage),
+            automessageEnabled: Boolean(s && s.automessage && s.automessage.enabled),
+            hasAutolist: Boolean(s && s.autolist),
+            autolistEnabled: Boolean(s && s.autolist && s.autolist.enabled),
+            settingsLabel: typeof s.settingsLabel === 'string' ? s.settingsLabel : null,
+          })
+        } catch (_) {
+          // ignore log errors
+        }
         return sendJson(res, 200, { ok: true, updated_at: updatedAt })
       } catch (err) {
         return sendJson(res, 500, { error: 'Failed to save settings', details: err.message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/product-settings/delete') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const productKey = payload.productKey
+      if (!token || productKey == null || productKey === '') {
+        return sendJson(res, 400, { error: 'token and productKey are required' })
+      }
+      try {
+        const tokenHash = hashToken(token)
+        const key = String(productKey)
+        const result = deleteSettings.run(tokenHash, key)
+        console.info('[settings:delete]', { tokenHash, productKey: key, deleted: result.changes || 0 })
+        return sendJson(res, 200, { ok: true, deleted: result.changes || 0 })
+      } catch (err) {
+        return sendJson(res, 500, { error: 'Failed to delete settings', details: err.message })
       }
     })
     return
@@ -1798,7 +2226,7 @@ const server = http.createServer(async (req, res) => {
                   String(d.status || '') === 'ROLLED_BACK' ? 1 : 0
                 )
                 if (result.changes > 0) inserted += 1
-              } catch (_) {}
+              } catch (_) { }
             }
             fetched += 1
           }
@@ -1870,14 +2298,14 @@ const server = http.createServer(async (req, res) => {
         year == null
           ? allList
           : allList.filter((it) => {
-              if (!it?.soldAt) return false
-              const d = new Date(it.soldAt * 1000)
-              const y = d.getFullYear()
-              const m = d.getMonth() + 1
-              if (y !== year) return false
-              if (month != null && m !== month) return false
-              return true
-            })
+            if (!it?.soldAt) return false
+            const d = new Date(it.soldAt * 1000)
+            const y = d.getFullYear()
+            const m = d.getMonth() + 1
+            if (y !== year) return false
+            if (month != null && m !== month) return false
+            return true
+          })
 
       const limit = clampInt(parseIntSafe(query.limit, 100), 1, 1000)
       const offset = clampInt(parseIntSafe(query.offset, 0), 0, 2_000_000_000)
@@ -1909,14 +2337,14 @@ const server = http.createServer(async (req, res) => {
         year == null
           ? allList
           : allList.filter((it) => {
-              if (!it?.soldAt) return false
-              const d = new Date(it.soldAt * 1000)
-              const y = d.getFullYear()
-              const m = d.getMonth() + 1
-              if (y !== year) return false
-              if (month != null && m !== month) return false
-              return true
-            })
+            if (!it?.soldAt) return false
+            const d = new Date(it.soldAt * 1000)
+            const y = d.getFullYear()
+            const m = d.getMonth() + 1
+            if (y !== year) return false
+            if (month != null && m !== month) return false
+            return true
+          })
 
       let totalProfit = 0
       let totalListingCost = 0
@@ -2175,9 +2603,9 @@ const server = http.createServer(async (req, res) => {
         }
 
         const itemStatus = item.status || null
-        const title = (item.name || '').trim()
-        const game = (item.game?.name || '').trim()
-        const productKey = `${game}::${title}`
+        const title = normalizeKeyPart(item.name || '')
+        const game = normalizeKeyPart(item.game?.name || '')
+        const productKey = buildProductKey(game, title)
 
         // Записываем продажу в локальную историю, чтобы /history сразу показывал дату продажи из чата
         try {
@@ -2210,39 +2638,85 @@ const server = http.createServer(async (req, res) => {
           // ignore sale record failure
         }
 
-        // Автосообщение: при покупке отправить сообщения покупателю в чат
+        // Настройки: по productKey; если есть settingsLabel — берём из группы __group__::метка
         let autolistEnabled = false
+        let effectiveSettings = null
+        let effectiveKey = String(productKey)
         try {
-          const row = getSettings.get(hashToken(token), String(productKey))
+          const row = getSettings.get(hashToken(token), effectiveKey)
           if (row?.settings) {
-            const s = JSON.parse(row.settings)
-            autolistEnabled = Boolean(s?.autolist?.enabled)
-            const am = s?.automessage
-            if (am?.enabled) {
-              const raw = am.messages
-              const messages = Array.isArray(raw)
-                ? raw.map((m) => String(m).trim()).filter(Boolean)
-                : typeof raw === 'string' && raw.trim()
-                  ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
-                  : []
-              if (messages.length && lastChat?.id) {
-                const chatId = lastChat.id
-                for (let i = 0; i < messages.length; i++) {
-                  try {
-                    await createChatMessage(token, userAgent, chatId, messages[i])
-                    if (i < messages.length - 1) {
-                      await new Promise((r) => setTimeout(r, 800))
-                    }
-                  } catch (_) {
-                    // ignore single message failure
-                  }
-                }
+            effectiveSettings = JSON.parse(row.settings)
+            const label = (effectiveSettings && typeof effectiveSettings.settingsLabel === 'string')
+              ? effectiveSettings.settingsLabel.trim()
+              : ''
+            if (label) {
+              const gk = getGroupSettingsKey(label)
+              const groupRow = getSettings.get(hashToken(token), gk)
+              if (groupRow?.settings) {
+                effectiveSettings = JSON.parse(groupRow.settings)
+                effectiveKey = gk
               }
             }
           }
         } catch (_) {
           // ignore
         }
+
+        const s = effectiveSettings
+        if (s) {
+          autolistEnabled = Boolean(s.autolist?.enabled)
+
+          // Автосообщение: при покупке отправить сообщения покупателю в чат
+          const am = s.automessage
+          if (am?.enabled && lastChat?.id) {
+            const raw = am.messages
+            const messages = Array.isArray(raw)
+              ? raw.map((m) => String(m).trim()).filter(Boolean)
+              : typeof raw === 'string' && raw.trim()
+                ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
+                : []
+            for (let i = 0; i < messages.length; i++) {
+              try {
+                await createChatMessage(token, userAgent, lastChat.id, messages[i])
+                if (i < messages.length - 1) {
+                  await new Promise((r) => setTimeout(r, 800))
+                }
+              } catch (_) {
+                // ignore single message failure
+              }
+            }
+          }
+
+          // Автовыдача: сообщение при покупке (если задано), затем первый код в чат и убрать его из списка
+          if (s.autodelivery?.enabled && lastChat?.id) {
+            const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
+            if (messageOnPurchase) {
+              try {
+                await createChatMessage(token, userAgent, lastChat.id, messageOnPurchase)
+              } catch (err) {
+                console.warn('[autolist-tick] autodelivery messageOnPurchase failed', { error: err?.message })
+              }
+            }
+            if (Array.isArray(s.autodelivery.codes) && s.autodelivery.codes.length > 0) {
+            const codeToSend = String(s.autodelivery.codes[0]).trim()
+            if (codeToSend) {
+              try {
+                await createChatMessage(token, userAgent, lastChat.id, codeToSend)
+                const newCodes = s.autodelivery.codes.slice(1)
+                const updated = {
+                  ...s,
+                  autodelivery: { ...s.autodelivery, codes: newCodes },
+                }
+                const updatedAt = Math.floor(Date.now() / 1000)
+                upsertSettings.run(hashToken(token), effectiveKey, JSON.stringify(updated), updatedAt)
+              } catch (err) {
+                console.warn('[autolist-tick] autodelivery send code failed', { productKey: effectiveKey, error: err?.message })
+              }
+            }
+            }
+          }
+        }
+
         if (!autolistEnabled) {
           global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
             eventKey,
@@ -2261,7 +2735,7 @@ const server = http.createServer(async (req, res) => {
 
         try {
           insertListingFee.run(tokenHash, String(productKey), Number(relisted.listingFee) || 0, nowTs)
-        } catch (_) {}
+        } catch (_) { }
 
         global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
           eventKey,
@@ -2434,7 +2908,7 @@ const server = http.createServer(async (req, res) => {
             if (!titleToGame.has(title)) titleToGame.set(title, game)
           }
         }
-        const list = deals.map((d) => {
+        const list = await Promise.all(deals.map(async (d) => {
           let category =
             (d.category && String(d.category).trim()) ||
             (d.itemId ? itemIdToGame.get(String(d.itemId)) : null) ||
@@ -2456,6 +2930,36 @@ const server = http.createServer(async (req, res) => {
             if (byTitle) category = byTitle
           }
 
+          let supercellEmail = null
+          try {
+            const fullDeal = await requestDealById(token, userAgent, d.id)
+            const fields =
+              (fullDeal && Array.isArray(fullDeal.obtainingFields) && fullDeal.obtainingFields) ||
+              (fullDeal &&
+                fullDeal.item &&
+                Array.isArray(fullDeal.item.dataFields) &&
+                fullDeal.item.dataFields) ||
+              []
+            for (const f of fields) {
+              const label = (f && typeof f.label === 'string' && f.label) || ''
+              const value = (f && Object.prototype.hasOwnProperty.call(f, 'value') && f.value) || null
+              if (!value) continue
+              const normalized = label.toLowerCase()
+              if (
+                normalized.includes('supercell') ||
+                normalized.includes('super cell') ||
+                normalized.includes('super sell') ||
+                normalized === 'почта supercell id' ||
+                normalized === 'supercell id'
+              ) {
+                supercellEmail = String(value)
+                break
+              }
+            }
+          } catch (_) {
+            // ignore details fetch errors
+          }
+
           return {
             id: d.id,
             itemId: d.itemId || null,
@@ -2466,9 +2970,10 @@ const server = http.createServer(async (req, res) => {
             soldAt: d.soldAt || 0,
             price: Number(d.price) || 0,
             buyerName: d.buyerName || null,
+            buyerSupercellEmail: supercellEmail,
             chatId: d.chatId || null,
           }
-        })
+        }))
         return sendJson(res, 200, { list })
       } catch (err) {
         const message =
@@ -2504,13 +3009,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'token and (dealId or chatId) are required' })
       }
       try {
-        const { messages } = await fetchDealChatMessagesFromPlayerok(
+        const { messages, buyerSupercellEmail } = await fetchDealChatMessagesFromPlayerok(
           token,
           userAgent,
           dealId,
           chatId
         )
-        return sendJson(res, 200, { list: messages })
+        return sendJson(res, 200, { list: messages, buyerSupercellEmail })
       } catch (err) {
         const message =
           err && err.message
@@ -2566,6 +3071,102 @@ const server = http.createServer(async (req, res) => {
       }
     })
     return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/cancel-deal') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) req.connection.destroy()
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      const dealId = payload.dealId || payload.id || null
+      if (!token || !dealId) {
+        return sendJson(res, 400, { error: 'token and dealId are required' })
+      }
+      try {
+        const deal = await updateDealStatus(token, userAgent, dealId, 'ROLLED_BACK')
+        return sendJson(res, 200, { ok: true, deal })
+      } catch (err) {
+        return sendJson(res, 500, {
+          error: err && err.message ? String(err.message) : 'Не удалось отменить сделку на Playerok',
+        })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/confirm-deal') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) req.connection.destroy()
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      const dealId = payload.dealId || payload.id || null
+      if (!token || !dealId) {
+        return sendJson(res, 400, { error: 'token and dealId are required' })
+      }
+      try {
+        const deal = await updateDealStatus(token, userAgent, dealId, 'SENT')
+        return sendJson(res, 200, { ok: true, deal })
+      } catch (err) {
+        return sendJson(res, 500, {
+          error: err && err.message ? String(err.message) : 'Не удалось подтвердить выполнение сделки на Playerok',
+        })
+      }
+    })
+    return
+  }
+
+  // Раздача фронтенда (статика из frontend/dist)
+  if (req.method === 'GET' && !pathname.startsWith('/api/')) {
+    const safePath = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '').replace(/\.\./g, '')
+    const filePath = path.join(FRONTEND_DIST, safePath)
+    if (fs.existsSync(FRONTEND_DIST) && fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath)
+      if (stat.isFile()) {
+        const ext = path.extname(filePath)
+        const types = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'application/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.ico': 'image/x-icon',
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.svg': 'image/svg+xml',
+          '.woff': 'font/woff',
+          '.woff2': 'font/woff2',
+        }
+        res.setHeader('Content-Type', types[ext] || 'application/octet-stream')
+        res.statusCode = 200
+        return res.end(fs.readFileSync(filePath))
+      }
+    }
+    // SPA: неизвестный путь — отдаём index.html (клиентский роутинг)
+    const indexHtml = path.join(FRONTEND_DIST, 'index.html')
+    if (fs.existsSync(indexHtml)) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.statusCode = 200
+      return res.end(fs.readFileSync(indexHtml))
+    }
   }
 
   sendJson(res, 404, { error: 'Not found' })

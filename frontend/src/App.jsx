@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './index.css'
+import { checkAuth } from './services/authApi'
 import {
   fetchActiveLots,
   fetchCompletedLots,
@@ -12,6 +13,7 @@ import {
   loadStoredToken,
   saveStoredToken,
 } from './services/playerokApi'
+import { LoginPage } from './features/auth/LoginPage.jsx'
 import { AutoListingTab } from './features/auto-listing/AutoListingTab.jsx'
 import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
@@ -19,9 +21,9 @@ import { ActiveLotsTab } from './features/active/ActiveLotsTab.jsx'
 import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { InProgressLotsTab } from './features/completed/InProgressLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
+import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { TokenTab } from './features/token/TokenTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
-import { ChatTab } from './features/chat/ChatTab.jsx'
 
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
@@ -32,9 +34,9 @@ const TABS = [
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
+  { id: 'commands', label: 'Команды' },
   { id: 'token', label: 'Токен' },
   { id: 'profit', label: 'Статистика' },
-  { id: 'chat', label: 'Чат (тест)' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -43,10 +45,36 @@ function App() {
   const location = useLocation()
   const navigate = useNavigate()
   const pathParts = location.pathname.split('/').filter(Boolean)
+  const isLoginPage = pathParts[0] === 'login'
   const isLotPage = pathParts[0] === 'lot' && pathParts[1]
   const lotIdFromUrl = isLotPage ? pathParts[1] : null
   const activeTab =
     isLotPage ? 'lot' : (TAB_IDS.has(pathParts[0]) ? pathParts[0] : 'active')
+
+  const [authChecked, setAuthChecked] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    checkAuth().then((ok) => {
+      if (!cancelled) {
+        setAuthChecked(true)
+        setIsAuthenticated(ok)
+      }
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!authChecked) return
+    if (isLoginPage && isAuthenticated) {
+      navigate('/active', { replace: true })
+      return
+    }
+    if (!isLoginPage && !isAuthenticated) {
+      navigate('/login', { replace: true })
+    }
+  }, [authChecked, isLoginPage, isAuthenticated, navigate])
 
   useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
@@ -69,20 +97,20 @@ function App() {
 
   const handleTokenChange = (nextToken) => {
     setToken(nextToken)
-    ;(async () => {
-      try {
-        await saveStoredToken(nextToken)
-      } catch {
-        // ignore token persistence errors
-      }
-    })()
+      ; (async () => {
+        try {
+          await saveStoredToken(nextToken)
+        } catch {
+          // ignore token persistence errors
+        }
+      })()
   }
 
   const selectedLot =
     lotIdFromUrl
       ? (lots.find((l) => String(l.id) === String(lotIdFromUrl)) ||
-          completedLots.find((l) => String(l.id) === String(lotIdFromUrl)) ||
-          null)
+        completedLots.find((l) => String(l.id) === String(lotIdFromUrl)) ||
+        null)
       : null
 
   useEffect(() => {
@@ -148,11 +176,11 @@ function App() {
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      const stored = await loadStoredToken()
-      if (cancelled) return
-      if (stored) setToken(stored)
-    })()
+      ; (async () => {
+        const stored = await loadStoredToken()
+        if (cancelled) return
+        if (stored) setToken(stored)
+      })()
     return () => {
       cancelled = true
     }
@@ -170,16 +198,16 @@ function App() {
           fetchBumpHistory(token),
         ])
         const settingsByKey = {}
-        ;(settingsRes.list || []).forEach(({ productKey, settings }) => {
-          if (productKey && settings) settingsByKey[productKey] = settings
-        })
+          ; (settingsRes.list || []).forEach(({ productKey, settings }) => {
+            if (productKey && settings) settingsByKey[productKey] = settings
+          })
         const lastBumpByKey = {}
-        ;(historyRes.list || []).forEach((item) => {
-          const k = item.productKey || item.productTitle
-          if (!lastBumpByKey[k] || item.bumpedAt > lastBumpByKey[k]) {
-            lastBumpByKey[k] = item.bumpedAt
-          }
-        })
+          ; (historyRes.list || []).forEach((item) => {
+            const k = item.productKey || item.productTitle
+            if (!lastBumpByKey[k] || item.bumpedAt > lastBumpByKey[k]) {
+              lastBumpByKey[k] = item.bumpedAt
+            }
+          })
 
         const now = new Date()
         const nowMins = now.getHours() * 60 + now.getMinutes()
@@ -265,8 +293,8 @@ function App() {
         const res = await autolistTick(token)
         if (cancelled) return
         if (res?.action === 'relisted') {
-          fetchActiveLots(token).then(setLots).catch(() => {})
-          fetchCompletedLots(token).then(setCompletedLots).catch(() => {})
+          fetchActiveLots(token).then(setLots).catch(() => { })
+          fetchCompletedLots(token).then(setCompletedLots).catch(() => { })
         }
       } catch (_err) {
         // ignore
@@ -279,6 +307,21 @@ function App() {
       clearInterval(interval)
     }
   }, [token])
+
+  if (!authChecked || (!isAuthenticated && !isLoginPage)) {
+    if (isLoginPage) {
+      return <LoginPage onLoginSuccess={() => setIsAuthenticated(true)} />
+    }
+    return (
+      <div className="app-root" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <p style={{ color: 'var(--text-muted)' }}>Загрузка…</p>
+      </div>
+    )
+  }
+
+  if (isLoginPage) {
+    return <LoginPage onLoginSuccess={() => setIsAuthenticated(true)} />
+  }
 
   return (
     <div className="app-root">
@@ -379,11 +422,18 @@ function App() {
             />
           )}
           {activeTab === 'in-progress' && <InProgressLotsTab token={token} />}
+          {activeTab === 'commands' && (
+            <CommandsTab
+              token={token}
+              lots={lots}
+              loadingLots={loadingLots}
+              errorLots={errorLots}
+            />
+          )}
           {activeTab === 'token' && (
             <TokenTab token={token} onTokenChange={handleTokenChange} />
           )}
           {activeTab === 'profit' && <ProfitTab token={token} />}
-          {activeTab === 'chat' && <ChatTab token={token} />}
         </section>
       </main>
     </div>
