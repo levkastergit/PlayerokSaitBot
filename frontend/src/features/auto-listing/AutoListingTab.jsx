@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   getProductKey,
+  getGroupSettingsKey,
   loadProductSettingsList,
 } from '../../services/playerokApi'
 
@@ -46,10 +47,20 @@ export function AutoListingTab({
     return map
   }, [settingsList])
 
+  const resolveSettingsForLot = (lot) => {
+    const key = getProductKey(lot)
+    let s = settingsByKey[key]
+    const label = s && typeof s.settingsLabel === 'string' ? s.settingsLabel.trim() : ''
+    if (label) {
+      const gk = getGroupSettingsKey(label)
+      if (settingsByKey[gk]) s = settingsByKey[gk]
+    }
+    return s
+  }
+
   const filteredLots = useMemo(() => {
     return allLots.filter((lot) => {
-      const key = getProductKey(lot)
-      const s = settingsByKey[key]
+      const s = resolveSettingsForLot(lot)
       return Boolean(s?.autolist?.enabled)
     })
   }, [allLots, settingsByKey])

@@ -3,20 +3,25 @@ import React, { useEffect, useState } from 'react'
 export function TokenTab({ token, onTokenChange }) {
   const [value, setValue] = useState(token ?? '')
   const [savedAt, setSavedAt] = useState(null)
+  const [isSaved, setIsSaved] = useState(Boolean(token))
 
   useEffect(() => {
     setValue(token ?? '')
+    setIsSaved(Boolean(token))
   }, [token])
 
   const handleSave = (event) => {
     event.preventDefault()
     onTokenChange?.(value.trim())
+    setValue('')
+    setIsSaved(true)
     setSavedAt(new Date())
   }
 
   const handleClear = () => {
     setValue('')
     onTokenChange?.('')
+    setIsSaved(false)
     setSavedAt(new Date())
   }
 
@@ -35,13 +40,14 @@ export function TokenTab({ token, onTokenChange }) {
             >
               Токен Playerok
             </label>
-            <textarea
+            <input
               id="playerok-token"
               className="input-theme"
+              type="password"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              rows={3}
-              placeholder="Вставьте токен сюда"
+              placeholder={isSaved ? 'Токен сохранён (скрыт)' : 'Вставьте токен сюда'}
+              autoComplete="off"
             />
 
             <div className="token-actions">

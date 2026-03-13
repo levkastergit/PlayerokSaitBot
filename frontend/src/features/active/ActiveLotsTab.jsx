@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getProductKey, loadProductSettingsList } from '../../services/playerokApi'
+import { getProductKey, getGroupSettingsKey, loadProductSettingsList } from '../../services/playerokApi'
 
 export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
   const navigate = useNavigate()
@@ -29,6 +29,17 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
     return map
   }, [settingsList])
 
+  const resolveSettingsForLot = (lot) => {
+    const key = getProductKey(lot)
+    let s = settingsByKey[key]
+    const label = s && typeof s.settingsLabel === 'string' ? s.settingsLabel.trim() : ''
+    if (label) {
+      const gk = getGroupSettingsKey(label)
+      if (settingsByKey[gk]) s = settingsByKey[gk]
+    }
+    return s
+  }
+
   const filteredLots = useMemo(() => {
     let list = lots
     if (soloCategory !== null) {
@@ -44,8 +55,7 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
     }
     if (featureFilter === 'all') return list
     list = list.filter((lot) => {
-      const key = getProductKey(lot)
-      const s = settingsByKey[key]
+      const s = resolveSettingsForLot(lot)
       if (!s) return false
       if (featureFilter === 'autodelivery') return Boolean(s.autodelivery?.enabled)
       if (featureFilter === 'autolist') return Boolean(s.autolist?.enabled)

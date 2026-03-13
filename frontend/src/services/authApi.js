@@ -1,5 +1,8 @@
+import { trackedFetch } from './requestTracker'
+
 const BACKEND_ORIGIN =
-  import.meta.env.VITE_BACKEND_ORIGIN || 'http://localhost:3000'
+  import.meta.env.VITE_BACKEND_ORIGIN ||
+  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
 const AUTH_LOGIN_URL = `${BACKEND_ORIGIN}/api/auth/login`
 const AUTH_ME_URL = `${BACKEND_ORIGIN}/api/auth/me`
 const AUTH_LOGOUT_URL = `${BACKEND_ORIGIN}/api/auth/logout`
@@ -12,7 +15,7 @@ const opts = { credentials: 'include' }
  */
 export async function checkAuth() {
   try {
-    const res = await fetch(AUTH_ME_URL, opts)
+    const res = await trackedFetch(AUTH_ME_URL, opts)
     return res.ok
   } catch {
     return false
@@ -25,7 +28,7 @@ export async function checkAuth() {
  */
 export async function login(loginValue, password) {
   try {
-    const res = await fetch(AUTH_LOGIN_URL, {
+    const res = await trackedFetch(AUTH_LOGIN_URL, {
       ...opts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -46,7 +49,7 @@ export async function login(loginValue, password) {
  */
 export async function logout() {
   try {
-    await fetch(AUTH_LOGOUT_URL, { ...opts, method: 'POST' })
+    await trackedFetch(AUTH_LOGOUT_URL, { ...opts, method: 'POST' })
   } catch {
     // ignore
   }

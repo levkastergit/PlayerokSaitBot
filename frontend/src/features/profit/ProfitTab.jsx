@@ -13,6 +13,22 @@ function formatDate(ts) {
   })
 }
 
+/** Только день и время (без года и месяца) — для таблицы продаж */
+function formatDateShort(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts * 1000)
+  const day = d.getDate()
+  const h = String(d.getHours()).padStart(2, '0')
+  const m = String(d.getMinutes()).padStart(2, '0')
+  return `${day}, ${h}:${m}`
+}
+
+function getDaysInMonth(year, month) {
+  if (!year || !month) return []
+  const last = new Date(Number(year), Number(month), 0).getDate()
+  return Array.from({ length: last }, (_, i) => i + 1)
+}
+
 function formatPrice(v) {
   if (v == null || (typeof v === 'number' && isNaN(v))) return '—'
   return `${Number(v).toLocaleString('ru-RU')} ₽`
@@ -45,10 +61,12 @@ export function ProfitTab({ token }) {
   const [syncMessage, setSyncMessage] = useState(null)
   const [syncProgress, setSyncProgress] = useState(null) // { fetched, total, inserted }
   const [clearing, setClearing] = useState(false)
-  const [years, setYears] = useState([])
+  const now = useMemo(() => new Date(), [])
+  const [years, setYears] = useState(() => [now.getFullYear()])
   const [months, setMonths] = useState([])
-  const [year, setYear] = useState('')
-  const [month, setMonth] = useState('')
+  const [year, setYear] = useState(String(now.getFullYear()))
+  const [month, setMonth] = useState(String(now.getMonth() + 1))
+  const [day, setDay] = useState(String(now.getDate()))
   const [pageSize, setPageSize] = useState(100)
   const [page, setPage] = useState(1)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -68,8 +86,6 @@ export function ProfitTab({ token }) {
     setLoading(true)
     setError(null)
     return fetchProfitAnalytics(token, {
-      year: year || undefined,
-      month: month || undefined,
       limit: pageSize,
       offset,
     })
@@ -83,13 +99,13 @@ export function ProfitTab({ token }) {
         setTotal(0)
       })
       .finally(() => setLoading(false))
-  }, [token, year, month, pageSize, offset])
+  }, [token, pageSize, offset])
 
   const refreshStats = useCallback(() => {
     if (!token) return Promise.resolve()
     setStatsLoading(true)
     setStatsError(null)
-    return fetchProfitStats(token, { year: year || undefined, month: month || undefined })
+    return fetchProfitStats(token, { year: year || undefined, month: month || undefined, day: day || undefined })
       .then((data) => {
         setStats(data || null)
       })
@@ -98,7 +114,7 @@ export function ProfitTab({ token }) {
         setStats(null)
       })
       .finally(() => setStatsLoading(false))
-  }, [token, year, month])
+  }, [token, year, month, day])
 
   useEffect(() => {
     let cancelled = false
@@ -113,12 +129,14 @@ export function ProfitTab({ token }) {
     setLoading(true)
     setError(null)
 
-    // meta (years/months)
+    // meta (years/months) — добавляем текущий год, если его ещё нет
     fetchProfitMeta(token)
       .then((meta) => {
         if (cancelled) return
         const ys = Array.isArray(meta?.years) ? meta.years : []
-        setYears(ys)
+        const currentY = now.getFullYear()
+        if (ys.indexOf(currentY) === -1) setYears([...ys, currentY].sort((a, b) => a - b))
+        else setYears(ys)
       })
       .catch(() => {})
 
@@ -128,7 +146,7 @@ export function ProfitTab({ token }) {
     return () => { cancelled = true }
   }, [token])
 
-  // months list when year changes
+  // months list when year changes (если API вернул пусто — показываем 1..12 для выбора)
   useEffect(() => {
     if (!token) return
     const y = year ? String(year) : ''
@@ -140,9 +158,9 @@ export function ProfitTab({ token }) {
     fetchProfitMeta(token, { year: y })
       .then((meta) => {
         const ms = Array.isArray(meta?.months) ? meta.months : []
-        setMonths(ms)
-        // если выбран месяц, которого нет — сбросим
-        if (month && !ms.includes(parseInt(String(month), 10))) {
+        const list = ms.length > 0 ? ms : Array.from({ length: 12 }, (_, i) => i + 1)
+        setMonths(list)
+        if (month && !list.includes(parseInt(String(month), 10))) {
           setMonth('')
           setPage(1)
         }
@@ -150,12 +168,23 @@ export function ProfitTab({ token }) {
       .catch(() => {})
   }, [token, year])
 
+  // при смене месяца/года проверяем день (если выбранного дня нет в месяце — сбросим)
+  const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month])
+  useEffect(() => {
+    if (!day || daysInMonth.length === 0) return
+    const dNum = parseInt(String(day), 10)
+    if (!daysInMonth.includes(dNum)) {
+      setDay('')
+      setPage(1)
+    }
+  }, [year, month, day, daysInMonth])
+
   // reload when filters/pagination change
   useEffect(() => {
     if (!token) return
     if (view === 'sales') refresh()
     if (view === 'stats') refreshStats()
-  }, [token, view, year, month, pageSize, page])
+  }, [token, view, year, month, day, pageSize, page])
 
   // when switching to stats, ensure it loads immediately
   useEffect(() => {
@@ -177,7 +206,7 @@ export function ProfitTab({ token }) {
         const now = Date.now()
         if (!refreshDuringSyncRef.current || now - refreshDuringSyncRef.current > 1500) {
           refreshDuringSyncRef.current = now
-          fetchProfitAnalytics(token, { year: year || undefined, month: month || undefined, limit: pageSize, offset })
+          fetchProfitAnalytics(token, { limit: pageSize, offset })
             .then((data) => {
               setList(Array.isArray(data?.list) ? data.list : [])
               setTotal(Number(data?.total) || 0)
@@ -200,7 +229,7 @@ export function ProfitTab({ token }) {
         setSyncProgress(null)
       })
       .finally(() => setSyncing(false))
-  }, [token, syncing, refresh, year, month, pageSize, offset])
+  }, [token, syncing, refresh, pageSize, offset])
 
   const handleClearSales = useCallback(() => {
     if (!token || clearing || syncing) return
@@ -265,51 +294,53 @@ export function ProfitTab({ token }) {
             </div>
             {hasToken && (
               <div className="profit-toolbar">
-                <label className="field">
-                  <span className="field-label">Год</span>
-                  <select
-                    value={year}
-                    onChange={(e) => { setYear(e.target.value); setPage(1) }}
-                    disabled={loading || syncing || statsLoading}
-                    className="input"
-                  >
-                    <option value="">Все</option>
-                    {years.map((y) => (
-                      <option key={String(y)} value={String(y)}>{String(y)}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span className="field-label">Месяц</span>
-                  <select
-                    value={month}
-                    onChange={(e) => { setMonth(e.target.value); setPage(1) }}
-                    disabled={loading || syncing || statsLoading || !year}
-                    className="input"
-                  >
-                    <option value="">Все</option>
-                    {months.map((m) => (
-                      <option key={String(m)} value={String(m)}>
-                        {MONTHS_RU[Number(m) - 1] || `Месяц ${String(m)}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {view === 'sales' && (
-                  <label className="field">
-                    <span className="field-label">На странице</span>
-                    <select
-                      value={String(pageSize)}
-                      onChange={(e) => { setPageSize(parseInt(e.target.value, 10) || 100); setPage(1) }}
-                      disabled={loading || syncing}
-                      className="input"
-                    >
-                      <option value="50">50</option>
-                      <option value="100">100</option>
-                      <option value="200">200</option>
-                      <option value="500">500</option>
-                    </select>
-                  </label>
+                {view === 'stats' && (
+                  <>
+                    <label className="field">
+                      <span className="field-label">Год</span>
+                      <select
+                        value={year}
+                        onChange={(e) => { setYear(e.target.value); setPage(1) }}
+                        disabled={loading || syncing || statsLoading}
+                        className="input"
+                      >
+                        <option value="">Все</option>
+                        {years.map((y) => (
+                          <option key={String(y)} value={String(y)}>{String(y)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span className="field-label">Месяц</span>
+                      <select
+                        value={month}
+                        onChange={(e) => { setMonth(e.target.value); setPage(1) }}
+                        disabled={loading || syncing || statsLoading || !year}
+                        className="input"
+                      >
+                        <option value="">Все</option>
+                        {months.map((m) => (
+                          <option key={String(m)} value={String(m)}>
+                            {MONTHS_RU[Number(m) - 1] || `Месяц ${String(m)}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span className="field-label">День</span>
+                      <select
+                        value={day}
+                        onChange={(e) => { setDay(e.target.value); setPage(1) }}
+                        disabled={loading || syncing || statsLoading || !year || !month}
+                        className="input"
+                      >
+                        <option value="">Все</option>
+                        {daysInMonth.map((d) => (
+                          <option key={String(d)} value={String(d)}>{String(d)}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
                 )}
                 {view === 'sales' && (
                   <>
@@ -379,41 +410,6 @@ export function ProfitTab({ token }) {
 
           {hasToken && view === 'sales' && !loading && !error && list.length > 0 && (
             <>
-              <p className="card-text profit-tab__total">
-                Итого прибыль (текущая страница): <strong>{formatPrice(totalProfit)}</strong>
-                <span style={{ marginLeft: '0.75rem', opacity: 0.8 }}>
-                  Показано: {list.length} из {total}
-                </span>
-              </p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={loading || syncing || page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                >
-                  Назад
-                </button>
-                <span className="card-text" style={{ margin: 0 }}>
-                  Страница <strong>{page}</strong> из <strong>{totalPages}</strong>
-                </span>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={loading || syncing || page >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                >
-                  Вперёд
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={loading || syncing}
-                  onClick={() => refresh()}
-                >
-                  Обновить
-                </button>
-              </div>
               <div className="history-table-wrap">
                 <table className="history-table profit-table">
                   <thead>
@@ -443,6 +439,52 @@ export function ProfitTab({ token }) {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                <span className="card-text" style={{ margin: 0 }}>
+                  Показано: {list.length} из {total}
+                </span>
+                <label className="field" style={{ marginLeft: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <span className="field-label" style={{ margin: 0 }}>На странице</span>
+                  <select
+                    value={String(pageSize)}
+                    onChange={(e) => { setPageSize(parseInt(e.target.value, 10) || 100); setPage(1) }}
+                    disabled={loading || syncing}
+                    className="input"
+                  >
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={loading || syncing || page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Назад
+                </button>
+                <span className="card-text" style={{ margin: 0 }}>
+                  Страница <strong>{page}</strong> из <strong>{totalPages}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={loading || syncing || page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                >
+                  Вперёд
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={loading || syncing}
+                  onClick={() => refresh()}
+                >
+                  Обновить
+                </button>
               </div>
             </>
           )}

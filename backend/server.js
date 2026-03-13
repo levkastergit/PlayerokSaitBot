@@ -12,13 +12,84 @@ const { URLSearchParams } = require('url')
 
 const PORT = process.env.PORT || 3000
 
-// Аутентификация: логин и пароль из .env (AUTH_LOGIN, AUTH_PASSWORD)
+// Аутентификация: логин и пароль из .env.
+// - AUTH_LOGIN: логин (включает аутентификацию, если задан)
+// - AUTH_PASSWORD_HASH: предпочтительно (scrypt) — пароль в виде хэша
+// - AUTH_PASSWORD: legacy/plaintext (не рекомендуется)
 const AUTH_LOGIN = (process.env.AUTH_LOGIN || '').trim()
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD == null ? '' : String(process.env.AUTH_PASSWORD)
+const AUTH_PASSWORD_HASH =
+  process.env.AUTH_PASSWORD_HASH == null ? '' : String(process.env.AUTH_PASSWORD_HASH).trim()
 const AUTH_ENABLED = AUTH_LOGIN !== ''
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 часа
 const sessions = new Map() // sessionId -> { expiresAt }
+
+// "Код от хеда": user-agent для запросов к Playerok берём из .env, чтобы не был захардкожен в коде.
+const PLAYEROK_USER_AGENT =
+  process.env.PLAYEROK_USER_AGENT == null ? '' : String(process.env.PLAYEROK_USER_AGENT).trim()
+
+// Секрет для хранения токена (шифрование). Нужен, чтобы не держать токен в открытом виде в БД.
+// Поддерживаем два имени, чтобы проще было настроить: TOKEN_SECRET или HEAD_CODE.
+const TOKEN_SECRET_RAW =
+  (process.env.TOKEN_SECRET == null ? '' : String(process.env.TOKEN_SECRET)) ||
+  (process.env.HEAD_CODE == null ? '' : String(process.env.HEAD_CODE))
+
+function parseScryptHash(encoded) {
+  const raw = String(encoded || '').trim()
+  // format: scrypt$<saltB64>$<keyB64>
+  const parts = raw.split('$')
+  if (parts.length !== 3) return null
+  if (parts[0] !== 'scrypt') return null
+  try {
+    const salt = Buffer.from(parts[1], 'base64')
+    const key = Buffer.from(parts[2], 'base64')
+    if (!salt.length || !key.length) return null
+    return { salt, key }
+  } catch {
+    return null
+  }
+}
+
+function verifyPassword(password, encodedHash) {
+  const parsed = parseScryptHash(encodedHash)
+  if (!parsed) return false
+  const derived = crypto.scryptSync(String(password || ''), parsed.salt, parsed.key.length)
+  return crypto.timingSafeEqual(derived, parsed.key)
+}
+
+function getTokenCryptoKey() {
+  const secret = String(TOKEN_SECRET_RAW || '')
+  if (!secret) return null
+  // 32 bytes key for AES-256-GCM
+  return crypto.createHash('sha256').update(secret).digest()
+}
+
+function encryptToken(plainToken) {
+  const key = getTokenCryptoKey()
+  if (!key) throw new Error('TOKEN_SECRET (or HEAD_CODE) is required to encrypt token')
+  const iv = crypto.randomBytes(12) // GCM recommended IV length
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(String(plainToken || ''), 'utf8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  // payload = iv.tag.ciphertext (all base64)
+  return [iv.toString('base64'), tag.toString('base64'), ciphertext.toString('base64')].join('.')
+}
+
+function decryptToken(payload) {
+  const key = getTokenCryptoKey()
+  if (!key) throw new Error('TOKEN_SECRET (or HEAD_CODE) is required to decrypt token')
+  const raw = String(payload || '')
+  const parts = raw.split('.')
+  if (parts.length !== 3) throw new Error('Invalid encrypted token payload')
+  const iv = Buffer.from(parts[0], 'base64')
+  const tag = Buffer.from(parts[1], 'base64')
+  const ciphertext = Buffer.from(parts[2], 'base64')
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+  decipher.setAuthTag(tag)
+  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+  return plain.toString('utf8')
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -115,6 +186,24 @@ db.exec(`
     updated_at INTEGER NOT NULL
   )
 `)
+// Миграция tokens: добавляем безопасные поля (шифротекст + хэш), старое поле token оставляем для совместимости.
+try {
+  const cols = db.prepare('PRAGMA table_info(tokens)').all()
+  if (!cols.some((c) => c.name === 'token_hash')) {
+    db.exec('ALTER TABLE tokens ADD COLUMN token_hash TEXT')
+  }
+  if (!cols.some((c) => c.name === 'token_enc')) {
+    db.exec('ALTER TABLE tokens ADD COLUMN token_enc TEXT')
+  }
+} catch (_) { }
+// Миграция bump_history: добавляем item_id для подсчёта поднятий конкретного лота.
+try {
+  const bumpCols = db.prepare('PRAGMA table_info(bump_history)').all()
+  if (!bumpCols.some((c) => c.name === 'item_id')) {
+    db.exec('ALTER TABLE bump_history ADD COLUMN item_id TEXT')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_bump_history_item ON bump_history(item_id)')
+  }
+} catch (_) { }
 db.exec(`
   CREATE TABLE IF NOT EXISTS bump_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,7 +211,8 @@ db.exec(`
     product_key TEXT NOT NULL,
     product_title TEXT NOT NULL,
     bumped_at INTEGER NOT NULL,
-    price REAL NOT NULL DEFAULT 0
+    price REAL NOT NULL DEFAULT 0,
+    item_id TEXT
   )
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_bump_history_token ON bump_history(token_hash)`)
@@ -171,6 +261,55 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 32)
 }
 
+function loadStoredTokenPlain() {
+  const row = getStoredToken.get()
+  if (!row) return { token: '', tokenHash: null, updatedAt: null }
+  const updatedAt = row.updated_at != null ? row.updated_at : null
+
+  // Предпочтительно: token_enc (шифрованный токен) + token_hash
+  if (row.token_enc) {
+    try {
+      const t = decryptToken(row.token_enc)
+      const h = row.token_hash || hashToken(t)
+      return { token: t, tokenHash: h, updatedAt }
+    } catch (e) {
+      // если секрет сменили/повреждено — не отдаём токен
+      return { token: '', tokenHash: row.token_hash || null, updatedAt }
+    }
+  }
+
+  // Legacy: token в открытом виде (хэшируем и по возможности мигрируем в безопасный формат)
+  const legacy = row.token ? String(row.token) : ''
+  if (!legacy) return { token: '', tokenHash: row.token_hash || null, updatedAt }
+  const legacyHash = row.token_hash || hashToken(legacy)
+  try {
+    const enc = encryptToken(legacy)
+    // сохраняем миграцию: оставляем token как есть, но добавляем token_hash/token_enc
+    upsertStoredToken.run(legacy, legacyHash, enc, updatedAt || Math.floor(Date.now() / 1000))
+    return { token: legacy, tokenHash: legacyHash, updatedAt }
+  } catch {
+    // если нет секрета — хотя бы возвращаем legacy токен в рантайм, но фронтенду не будем его показывать
+    return { token: legacy, tokenHash: legacyHash, updatedAt }
+  }
+}
+
+function getTokenFromBodyOrStored(payload) {
+  const raw = payload && Object.prototype.hasOwnProperty.call(payload, 'token') ? payload.token : null
+  const provided = raw == null ? '' : String(raw || '').trim()
+  if (provided) return { token: provided, tokenHash: hashToken(provided) }
+  const stored = loadStoredTokenPlain()
+  if (!stored.token) return { token: '', tokenHash: stored.tokenHash || null }
+  return { token: stored.token, tokenHash: stored.tokenHash || hashToken(stored.token) }
+}
+
+function getTokenFromQueryOrStored(query) {
+  const provided = query && query.token != null ? String(query.token || '').trim() : ''
+  if (provided) return { token: provided, tokenHash: hashToken(provided) }
+  const stored = loadStoredTokenPlain()
+  if (!stored.token) return { token: '', tokenHash: stored.tokenHash || null }
+  return { token: stored.token, tokenHash: stored.tokenHash || hashToken(stored.token) }
+}
+
 const getSettings = db.prepare(`
   SELECT settings, updated_at FROM product_settings
   WHERE token_hash = ? AND product_key = ?
@@ -190,11 +329,11 @@ const deleteSettings = db.prepare(`
 `)
 
 const insertBump = db.prepare(`
-  INSERT INTO bump_history (token_hash, product_key, product_title, bumped_at, price)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO bump_history (token_hash, product_key, product_title, bumped_at, price, item_id)
+  VALUES (?, ?, ?, ?, ?, ?)
 `)
 const getBumpHistory = db.prepare(`
-  SELECT product_key, product_title, bumped_at, price FROM bump_history
+  SELECT product_key, product_title, bumped_at, price, item_id FROM bump_history
   WHERE token_hash = ? ORDER BY bumped_at DESC LIMIT 500
 `)
 
@@ -252,13 +391,15 @@ const getHiddenChats = db.prepare(`
 `)
 
 const getStoredToken = db.prepare(`
-  SELECT token, updated_at FROM tokens WHERE id = 1
+  SELECT token, token_hash, token_enc, updated_at FROM tokens WHERE id = 1
 `)
 const upsertStoredToken = db.prepare(`
-  INSERT INTO tokens (id, token, updated_at)
-  VALUES (1, ?, ?)
+  INSERT INTO tokens (id, token, token_hash, token_enc, updated_at)
+  VALUES (1, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     token = excluded.token,
+    token_hash = excluded.token_hash,
+    token_enc = excluded.token_enc,
     updated_at = excluded.updated_at
 `)
 const deleteStoredToken = db.prepare(`
@@ -491,6 +632,13 @@ function buildProductKey(game, title) {
   return g ? `${g}::${t}` : t
 }
 
+function productTitleKeyFromProductKey(productKey) {
+  const raw = String(productKey == null ? '' : productKey)
+  const sepIndex = raw.indexOf('::')
+  const title = sepIndex === -1 ? raw : raw.slice(sepIndex + 2)
+  return normalizeKeyPart(title)
+}
+
 function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows }) {
   const settingsByKey = {}
   for (const row of settingsRows || []) {
@@ -507,20 +655,20 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
 
   const listingFeesByProduct = {}
   for (const row of listingFeesRows || []) {
-    const raw = row.product_key
-    const k = (raw && normalizeProductKey(raw)) || raw
+    const k = productTitleKeyFromProductKey(row.product_key)
     if (!k) continue
     if (!listingFeesByProduct[k]) listingFeesByProduct[k] = []
     listingFeesByProduct[k].push({ relistedAt: row.relisted_at, fee: Number(row.fee) || 0 })
   }
   for (const k of Object.keys(listingFeesByProduct)) {
-    listingFeesByProduct[k].sort((a, b) => b.relistedAt - a.relistedAt)
+    // Для корректного расчёта суммарной стоимости выставлений между продажами
+    // сортируем по возрастанию времени перевыставления.
+    listingFeesByProduct[k].sort((a, b) => a.relistedAt - b.relistedAt)
   }
 
   const bumpsByProduct = {}
   for (const b of bumpsRows || []) {
-    const raw = b.product_key
-    const k = (raw && normalizeProductKey(raw)) || raw
+    const k = productTitleKeyFromProductKey(b.product_key)
     if (!k) continue
     if (!bumpsByProduct[k]) bumpsByProduct[k] = []
     bumpsByProduct[k].push({ bumpedAt: b.bumped_at, price: Number(b.price) || 0 })
@@ -536,7 +684,7 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
 
   for (const row of salesAsc) {
     const productKey = row.product_key
-    const lookupKey = (productKey && normalizeProductKey(productKey)) || productKey
+    const lookupKey = productTitleKeyFromProductKey(productKey)
     const soldAt = row.sold_at
     const salePrice = Number(row.price) || 0
     const isRefund = (row.is_refund || 0) === 1
@@ -548,7 +696,13 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
     const cost = typeof s.cost === 'number' ? s.cost : (parseFloat(s.cost) || 0)
 
     const productListingFees = listingFeesByProduct[lookupKey] || []
-    const listingCost = productListingFees.find((lf) => lf.relistedAt < soldAt)?.fee ?? 0
+    let listingCost = 0
+    for (const lf of productListingFees) {
+      // Считаем все платные перевыставления между предыдущей продажей и этой продажей (включительно).
+      if (lf.relistedAt > (prevSoldByKey[lookupKey] || 0) && lf.relistedAt <= soldAt) {
+        listingCost += lf.fee
+      }
+    }
 
     const prevSold = prevSoldByKey[lookupKey] || 0
     const productBumps = bumpsByProduct[lookupKey] || []
@@ -579,6 +733,106 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
   return computed.sort((a, b) => (b.soldAt || 0) - (a.soldAt || 0))
 }
 
+/**
+ * Дополнительные строки для вкладки «Прибыль» по активным товарам:
+ * показываем текущие расходы на выставление и поднятия до первой продажи.
+ */
+function computeActiveProfitItems({ activeItems, salesRows, bumpsRows, settingsRows, listingFeesRows }) {
+  const settingsByKey = {}
+  for (const row of settingsRows || []) {
+    try {
+      const s = row.settings ? JSON.parse(row.settings) : {}
+      const rawKey = row.product_key
+      if (rawKey != null && rawKey !== '') {
+        settingsByKey[String(rawKey)] = s
+        const normalized = normalizeProductKey(rawKey)
+        if (normalized && !settingsByKey[normalized]) settingsByKey[normalized] = s
+      }
+    } catch (_) {}
+  }
+
+  const listingFeesByProduct = {}
+  for (const row of listingFeesRows || []) {
+    const raw = row.product_key
+    const k = (raw && normalizeProductKey(raw)) || raw
+    if (!k) continue
+    if (!listingFeesByProduct[k]) listingFeesByProduct[k] = []
+    listingFeesByProduct[k].push({ relistedAt: row.relisted_at, fee: Number(row.fee) || 0 })
+  }
+
+  const bumpsByProduct = {}
+  for (const b of bumpsRows || []) {
+    const raw = b.product_key
+    const k = (raw && normalizeProductKey(raw)) || raw
+    if (!k) continue
+    if (!bumpsByProduct[k]) bumpsByProduct[k] = []
+    bumpsByProduct[k].push({ bumpedAt: b.bumped_at, price: Number(b.price) || 0 })
+  }
+
+  // Последняя продажа по товару (без возвратов): расходы считаем только после неё.
+  const lastSaleByKey = {}
+  for (const row of salesRows || []) {
+    if (row.is_refund) continue
+    const raw = row.product_key
+    const k = (raw && normalizeProductKey(raw)) || raw
+    if (!k) continue
+    const t = row.sold_at || 0
+    if (!lastSaleByKey[k] || t > lastSaleByKey[k]) lastSaleByKey[k] = t
+  }
+
+  const computed = []
+
+  for (const lot of activeItems || []) {
+    const rawTitle = lot.title || lot.name || ''
+    const rawGame = lot.game || (lot.game && lot.game.name) || lot.game_name || ''
+    const title = normalizeKeyPart(rawTitle) || 'Товар'
+    const game = normalizeKeyPart(rawGame)
+    const productKey = buildProductKey(game, title)
+    const lookupKey = (productKey && normalizeProductKey(productKey)) || productKey
+
+    const s =
+      settingsByKey[productKey] ||
+      settingsByKey[lookupKey] ||
+      {}
+    const cost = typeof s.cost === 'number' ? s.cost : (parseFloat(s.cost) || 0)
+
+    const lastSold = lastSaleByKey[lookupKey] || 0
+
+    let listingCost = 0
+    const productListingFees = listingFeesByProduct[lookupKey] || []
+    for (const lf of productListingFees) {
+      if (lf.relistedAt > lastSold) {
+        listingCost += lf.fee
+      }
+    }
+
+    let bumpCost = 0
+    const productBumps = bumpsByProduct[lookupKey] || []
+    for (const b of productBumps) {
+      if (b.bumpedAt > lastSold) {
+        bumpCost += b.price
+      }
+    }
+
+    const salePrice = Number(lot.price) || 0
+    const profit = -(listingCost + bumpCost)
+
+    computed.push({
+      productTitle: title,
+      productKey,
+      soldAt: null,
+      salePrice,
+      isRefund: false,
+      cost,
+      listingCost,
+      bumpCost,
+      profit,
+    })
+  }
+
+  return computed
+}
+
 function getViewer(token, userAgent) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -601,6 +855,7 @@ function getViewer(token, userAgent) {
         'apollo-require-preflight': 'true',
         'user-agent':
           userAgent ||
+          PLAYEROK_USER_AGENT ||
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
         'Content-Length': Buffer.byteLength(body, 'utf8'),
       },
@@ -1674,18 +1929,7 @@ function extractItemImageUrl(item) {
       }
     }
   }
-  try {
-    const debugId = item.id || item.itemId || null
-    const debugTitle = item.title || item.name || null
-    const keys = Object.keys(item || {})
-    console.debug('[chat-image] no image found in item', {
-      id: debugId,
-      title: debugTitle,
-      keys,
-    })
-  } catch (_) {
-    // ignore logging errors
-  }
+  // chat-image debug logging removed
   return null
 }
 
@@ -1809,17 +2053,7 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
         fullDeal?.productTitle ||
         null
       itemImageUrl = extractItemImageUrl(item) || itemImageUrl
-      try {
-        const debugId = item && (item.id || item.itemId) || null
-        console.debug('[chat-image] deal item image', {
-          dealId: effectiveDealId,
-          itemId: debugId,
-          itemTitle,
-          itemImageUrl,
-        })
-      } catch (_) {
-        // ignore logging errors
-      }
+      // chat-image debug logging removed
       const fields =
         (fullDeal && Array.isArray(fullDeal.obtainingFields) && fullDeal.obtainingFields) ||
         (fullDeal &&
@@ -1971,7 +2205,12 @@ const server = http.createServer(async (req, res) => {
       if (!AUTH_ENABLED) {
         return sendJson(res, 200, { ok: true, sessionToken: 'disabled' })
       }
-      if (login !== AUTH_LOGIN || password !== AUTH_PASSWORD) {
+      const loginOk = login === AUTH_LOGIN
+      const passOk =
+        AUTH_PASSWORD_HASH
+          ? verifyPassword(password, AUTH_PASSWORD_HASH)
+          : password === AUTH_PASSWORD
+      if (!loginOk || !passOk) {
         return sendJson(res, 401, { error: 'Неверный логин или пароль' })
       }
       const sessionId = createSession()
@@ -2006,11 +2245,12 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && pathname === '/api/token') {
     try {
-      const row = getStoredToken.get()
-      if (!row) {
+      const stored = loadStoredTokenPlain()
+      if (!stored.token && !stored.tokenHash) {
         return sendJson(res, 200, { token: null, updated_at: null })
       }
-      return sendJson(res, 200, { token: row.token, updated_at: row.updated_at })
+      // В БД токен хранится в зашифрованном виде; здесь отдаём расшифрованное значение только в рамках активной сессии.
+      return sendJson(res, 200, { token: stored.token || null, updated_at: stored.updatedAt })
     } catch (err) {
       return sendJson(res, 500, {
         error: 'Failed to load token',
@@ -2037,10 +2277,13 @@ const server = http.createServer(async (req, res) => {
       try {
         if (!token) {
           deleteStoredToken.run()
-          return sendJson(res, 200, { ok: true, token: null, updated_at: null })
+          return sendJson(res, 200, { ok: true, tokenHash: null, updated_at: null })
         }
-        upsertStoredToken.run(token, updatedAt)
-        return sendJson(res, 200, { ok: true, token, updated_at: updatedAt })
+        const tokenHash = hashToken(token)
+        const tokenEnc = encryptToken(token)
+        // token сохраняем только для обратной совместимости (старые части кода), но фронту не отдаём
+        upsertStoredToken.run(token, tokenHash, tokenEnc, updatedAt)
+        return sendJson(res, 200, { ok: true, tokenHash, updated_at: updatedAt })
       } catch (err) {
         return sendJson(res, 500, {
           error: 'Failed to save token',
@@ -2052,7 +2295,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/product-settings') {
-    const token = query.token
+    const { token } = getTokenFromQueryOrStored(query)
     const productKey = query.productKey
     if (!token || productKey == null || productKey === '') {
       return sendJson(res, 400, { error: 'token and productKey are required' })
@@ -2098,10 +2341,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/product-settings/list') {
-    const token = query.token
-    if (!token) {
-      return sendJson(res, 400, { error: 'token is required' })
-    }
+    const { token } = getTokenFromQueryOrStored(query)
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const rows = getAllSettings.all(hashToken(token))
       const list = rows.map((row) => {
@@ -2120,10 +2361,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/category-commands/list') {
-    const token = query.token
-    if (!token) {
-      return sendJson(res, 400, { error: 'token is required' })
-    }
+    const { token } = getTokenFromQueryOrStored(query)
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const rows = getAllSettings.all(hashToken(token))
       const list = []
@@ -2162,7 +2401,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const rawCategory = payload.category
       const rawCommands = payload.commands
       const category = String(rawCategory || '').trim()
@@ -2207,7 +2446,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const productKey = payload.productKey
       const settings = payload.settings
       if (!token || productKey == null || productKey === '') {
@@ -2258,7 +2497,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const productKey = payload.productKey
       if (!token || productKey == null || productKey === '') {
         return sendJson(res, 400, { error: 'token and productKey are required' })
@@ -2293,7 +2532,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
 
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
 
       if (!token) {
@@ -2327,7 +2566,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       const afterCursor = payload.afterCursor || payload.after || null
       const limitRaw = payload.limit
@@ -2489,20 +2728,7 @@ const server = http.createServer(async (req, res) => {
               isHidden: node.id != null && hiddenSet.has(String(node.id)),
             }
           })
-        try {
-          const sample = list.slice(0, 3).map((c) => ({
-            id: c.id,
-            itemTitle: c.itemTitle,
-            itemImageUrl: c.itemImageUrl,
-          }))
-          console.debug('[chat-image] userChats sample', {
-            tokenHash,
-            afterCursor,
-            sample,
-          })
-        } catch (_) {
-          // ignore logging errors
-        }
+        // chat-image debug logging removed
         const pageInfo = (chatsData && chatsData.pageInfo) || {}
         return sendJson(res, 200, {
           list,
@@ -2537,7 +2763,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const chatId = payload.chatId
       if (!token || !chatId) {
         return sendJson(res, 400, { error: 'token and chatId are required' })
@@ -2569,7 +2795,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const chatId = payload.chatId
       if (!token || !chatId) {
         return sendJson(res, 400, { error: 'token and chatId are required' })
@@ -2586,10 +2812,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/sales-history') {
-    const token = query.token
-    if (!token) {
-      return sendJson(res, 400, { error: 'token is required' })
-    }
+    const { token } = getTokenFromQueryOrStored(query)
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const rows = getSalesHistory.all(hashToken(token))
       const list = rows.map((row) => ({
@@ -2618,7 +2842,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
       }
@@ -2644,7 +2868,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
@@ -2716,7 +2940,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
@@ -2798,10 +3022,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/bump-history') {
-    const token = query.token
-    if (!token) {
-      return sendJson(res, 400, { error: 'token is required' })
-    }
+    const { token } = getTokenFromQueryOrStored(query)
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const rows = getBumpHistory.all(hashToken(token))
       const list = rows.map((row) => ({
@@ -2809,6 +3031,7 @@ const server = http.createServer(async (req, res) => {
         productTitle: row.product_title,
         bumpedAt: row.bumped_at,
         price: row.price ?? 0,
+        itemId: row.item_id || null,
       }))
       return sendJson(res, 200, { list })
     } catch (err) {
@@ -2817,7 +3040,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-analytics/meta') {
-    const token = query.token
+    const { token } = getTokenFromQueryOrStored(query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = hashToken(token)
@@ -2834,10 +3057,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-analytics') {
-    const token = query.token
-    if (!token) {
-      return sendJson(res, 400, { error: 'token is required' })
-    }
+    const { token } = getTokenFromQueryOrStored(query)
+    if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = hashToken(token)
       const salesRows = getSalesHistoryAll.all(tokenHash)
@@ -2848,6 +3069,7 @@ const server = http.createServer(async (req, res) => {
 
       const year = parseIntSafe(query.year, null)
       const month = parseIntSafe(query.month, null)
+      const day = parseIntSafe(query.day, null)
       const filtered =
         year == null
           ? allList
@@ -2856,8 +3078,10 @@ const server = http.createServer(async (req, res) => {
             const d = new Date(it.soldAt * 1000)
             const y = d.getFullYear()
             const m = d.getMonth() + 1
+            const dayNum = d.getDate()
             if (y !== year) return false
             if (month != null && m !== month) return false
+            if (day != null && dayNum !== day) return false
             return true
           })
 
@@ -2874,7 +3098,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-stats') {
-    const token = query.token
+    const { token } = getTokenFromQueryOrStored(query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = hashToken(token)
@@ -2887,6 +3111,7 @@ const server = http.createServer(async (req, res) => {
 
       const year = parseIntSafe(query.year, null)
       const month = parseIntSafe(query.month, null)
+      const day = parseIntSafe(query.day, null)
       const list =
         year == null
           ? allList
@@ -2895,8 +3120,10 @@ const server = http.createServer(async (req, res) => {
             const d = new Date(it.soldAt * 1000)
             const y = d.getFullYear()
             const m = d.getMonth() + 1
+            const dayNum = d.getDate()
             if (y !== year) return false
             if (month != null && m !== month) return false
+            if (day != null && dayNum !== day) return false
             return true
           })
 
@@ -2972,7 +3199,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const productKey = payload.productKey
       const productTitle = payload.productTitle || 'Товар'
       const itemId = payload.itemId
@@ -3060,7 +3287,14 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 402, { error: statusDescription || 'Требуется оплата поднятия', paymentURL })
         }
 
-        insertBump.run(tokenHash, String(productKey), String(productTitle), bumpedAt, Number(price) || 0)
+        insertBump.run(
+          tokenHash,
+          String(productKey),
+          String(productTitle),
+          bumpedAt,
+          Number(price) || 0,
+          itemId ? String(itemId) : null
+        )
         console.info('[bump] success', {
           reqId,
           tokenHash,
@@ -3103,7 +3337,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       if (!token) return sendJson(res, 400, { error: 'Token is required' })
 
@@ -3585,7 +3819,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const itemId = payload.itemId
       const priorityStatusId = payload.priorityStatusId || null
       const userAgent = payload.userAgent
@@ -3617,7 +3851,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const itemId = payload.itemId
       const price = payload.price
       const userAgent = payload.userAgent
@@ -3663,7 +3897,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
 
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
 
       if (!token) {
@@ -3710,7 +3944,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'Token is required' })
@@ -3803,7 +4037,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'Token is required' })
@@ -3876,7 +4110,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || null
       const chatId = payload.chatId || null
@@ -3917,7 +4151,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || null
       const chatId = payload.chatId || null
@@ -3961,7 +4195,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || payload.id || null
       if (!token || !dealId) {
@@ -3992,7 +4226,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const token = payload.token
+      const { token } = getTokenFromBodyOrStored(payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || payload.id || null
       if (!token || !dealId) {
@@ -4090,7 +4324,8 @@ server.listen(PORT, () => {
       const row = getStoredToken.get()
       if (!row || !row.token) return
       autolistInFlight = true
-      await postLocal('/api/playerok/autolist-tick', { token: row.token, userAgent: DEFAULT_USER_AGENT })
+      const stored = loadStoredTokenPlain()
+      await postLocal('/api/playerok/autolist-tick', { token: stored.token, userAgent: PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT })
     } catch (_) { /* ignore */ }
     finally {
       autolistInFlight = false
@@ -4149,11 +4384,20 @@ server.listen(PORT, () => {
         if (!activeLotByKey[key]) activeLotByKey[key] = lot
       }
 
-      const now = new Date()
-      const nowMins = now.getHours() * 60 + now.getMinutes()
-      const nowTs = Math.floor(now.getTime() / 1000)
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-      const startOfDayTs = Math.floor(startOfDay.getTime() / 1000)
+      // Вся логика автоподнятия работает в часовом поясе МСК (Europe/Moscow),
+      // независимо от локального часового пояса сервера.
+      const MSK_OFFSET_MINUTES = 3 * 60
+      const MSK_OFFSET_MS = MSK_OFFSET_MINUTES * 60 * 1000
+      const nowUtcMs = Date.now()
+      const nowMsk = new Date(nowUtcMs + MSK_OFFSET_MS)
+      const nowMins = nowMsk.getUTCHours() * 60 + nowMsk.getUTCMinutes()
+      const nowTs = Math.floor(nowUtcMs / 1000)
+      const mskStartOfDayUtcMs = Date.UTC(
+        nowMsk.getUTCFullYear(),
+        nowMsk.getUTCMonth(),
+        nowMsk.getUTCDate()
+      ) - MSK_OFFSET_MS
+      const startOfDayTs = Math.floor(mskStartOfDayUtcMs / 1000)
 
       for (const [key, s] of Object.entries(settingsByKey)) {
         if (String(key).startsWith('__group__::')) continue
@@ -4190,8 +4434,24 @@ server.listen(PORT, () => {
 
         const lastBump = lastBumpByKey[key] || 0
         const lastSale = lastSaleByKey[key] || 0
-        let baseTs = Math.max(lastBump, lastSale)
-        if (baseTs < windowStartTs) baseTs = windowStartTs
+        const enabledAt = Number(s?.autobump?.enabledAt || 0)
+        let baseTs = Math.max(lastBump, lastSale, enabledAt)
+
+        if (!lastBump && !lastSale && !enabledAt) {
+          // Новый товар без истории и без явного enabledAt:
+          // - если сейчас внутри окна, считаем первое поднятие от «сейчас» + интервал
+          // - если сейчас вне окна, просто используем логику «от начала окна»
+          if (nowTs >= windowStartTs && nowTs <= windowEndTs) {
+            const candidateNext = nowTs + intervalSec
+            if (candidateNext > windowEndTs) continue
+            baseTs = nowTs
+          } else {
+            if (baseTs < windowStartTs) baseTs = windowStartTs
+          }
+        } else {
+          if (baseTs < windowStartTs) baseTs = windowStartTs
+        }
+
         const nextBumpTs = baseTs + intervalSec
 
         if (nextBumpTs > windowEndTs) continue

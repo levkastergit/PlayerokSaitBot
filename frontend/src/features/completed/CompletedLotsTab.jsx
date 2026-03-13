@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getProductKey, loadProductSettingsList } from '../../services/playerokApi'
+import { getProductKey, getGroupSettingsKey, loadProductSettingsList } from '../../services/playerokApi'
 
 export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
   const navigate = useNavigate()
@@ -29,6 +29,30 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
     return map
   }, [settingsList])
 
+  const resolveSettingsForLot = (lot) => {
+    const key = getProductKey(lot)
+    let s = settingsByKey[key]
+    const label = s && typeof s.settingsLabel === 'string' ? s.settingsLabel.trim() : ''
+    if (label) {
+      const gk = getGroupSettingsKey(label)
+      if (settingsByKey[gk]) s = settingsByKey[gk]
+    }
+    return s
+  }
+
+  const getAutolistBadge = (lot) => {
+    const s = resolveSettingsForLot(lot)
+    const autolistEnabled = Boolean(s?.autolist?.enabled)
+    const rt = lot && lot.autolistRuntime ? lot.autolistRuntime : null
+    const status = rt && typeof rt.status === 'string' ? rt.status : null
+    const error = rt && typeof rt.error === 'string' ? rt.error : null
+
+    if (status === 'error' && error) return { type: 'error', title: error }
+    if (status === 'processing') return { type: 'processing', title: 'В процессе автовыставления' }
+    if (!autolistEnabled) return { type: 'disabled', title: 'Нет настройки автовыставления' }
+    return { type: 'processing', title: 'Ожидает автовыставления' }
+  }
+
   const filteredLots = useMemo(() => {
     let list = lots
     if (soloCategory !== null) {
@@ -44,8 +68,7 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
     }
     if (featureFilter === 'all') return list
     list = list.filter((lot) => {
-      const key = getProductKey(lot)
-      const s = settingsByKey[key]
+      const s = resolveSettingsForLot(lot)
       if (!s) return false
       if (featureFilter === 'autodelivery') return Boolean(s.autodelivery?.enabled)
       if (featureFilter === 'autolist') return Boolean(s.autolist?.enabled)
@@ -193,6 +216,31 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
                     }}
                   >
                     <div className="lot-card__image-wrap">
+                      {(() => {
+                        const b = getAutolistBadge(lot)
+                        const isError = b.type === 'error'
+                        const isProcessing = b.type === 'processing'
+                        const isDisabled = b.type === 'disabled'
+                        const label = isError ? '?' : isProcessing ? '⏱' : '✕'
+                        const cls =
+                          'lot-card__autolist-badge ' +
+                          (isError
+                            ? 'lot-card__autolist-badge--error'
+                            : isProcessing
+                              ? 'lot-card__autolist-badge--processing'
+                              : 'lot-card__autolist-badge--disabled')
+                        return (
+                          <span
+                            className={cls}
+                            title={b.title}
+                            onClick={(e) => e.stopPropagation()}
+                            role="img"
+                            aria-label={b.title}
+                          >
+                            {label}
+                          </span>
+                        )
+                      })()}
                       {lot.imageUrl ? (
                         <img
                           src={lot.imageUrl}

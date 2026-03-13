@@ -510,15 +510,19 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
 
   const addAutobumpScheduleItem = () => {
     setProductSettings((prev) => {
-      const schedule = prev?.autobump?.schedule || []
+      const prevAutobump = prev?.autobump || {}
+      const schedule = prevAutobump.schedule || []
       const maxPriority = schedule.length > 0
         ? Math.max(...schedule.map((w) => Number(w.priority) || 1), 0)
         : 0
+      const nowSec = Math.floor(Date.now() / 1000)
+      const enabled = Boolean(prevAutobump.enabled)
       return {
         ...prev,
         autobump: {
-          ...(prev?.autobump || {}),
+          ...prevAutobump,
           schedule: [...schedule, { start: '12:00', end: '13:00', intervalMinutes: 3, priority: maxPriority + 1 }],
+          enabledAt: enabled ? nowSec : prevAutobump.enabledAt || null,
         },
       }
     })
@@ -526,23 +530,37 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
 
   const removeAutobumpScheduleItem = (index) => {
     setProductSettings((prev) => {
-      const schedule = [...(prev?.autobump?.schedule || [])]
+      const prevAutobump = prev?.autobump || {}
+      const schedule = [...(prevAutobump.schedule || [])]
       schedule.splice(index, 1)
+      const nowSec = Math.floor(Date.now() / 1000)
+      const enabled = Boolean(prevAutobump.enabled)
       return {
         ...prev,
-        autobump: { ...(prev?.autobump || {}), schedule },
+        autobump: {
+          ...prevAutobump,
+          schedule,
+          enabledAt: enabled ? nowSec : prevAutobump.enabledAt || null,
+        },
       }
     })
   }
 
   const updateAutobumpScheduleItem = (index, field, value) => {
     setProductSettings((prev) => {
-      const schedule = [...(prev?.autobump?.schedule || [])]
+      const prevAutobump = prev?.autobump || {}
+      const schedule = [...(prevAutobump.schedule || [])]
       if (!schedule[index]) return prev
       schedule[index] = { ...schedule[index], [field]: value }
+      const nowSec = Math.floor(Date.now() / 1000)
+      const enabled = Boolean(prevAutobump.enabled)
       return {
         ...prev,
-        autobump: { ...(prev?.autobump || {}), schedule },
+        autobump: {
+          ...prevAutobump,
+          schedule,
+          enabledAt: enabled ? nowSec : prevAutobump.enabledAt || null,
+        },
       }
     })
   }
@@ -550,14 +568,21 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const moveAutobumpScheduleItem = (fromIndex, toIndex) => {
     if (fromIndex === toIndex) return
     setProductSettings((prev) => {
-      const schedule = [...(prev?.autobump?.schedule || [])]
+      const prevAutobump = prev?.autobump || {}
+      const schedule = [...(prevAutobump.schedule || [])]
       if (fromIndex < 0 || fromIndex >= schedule.length || toIndex < 0 || toIndex >= schedule.length) return prev
       const [moved] = schedule.splice(fromIndex, 1)
       schedule.splice(toIndex, 0, moved)
       const withPriority = schedule.map((item, i) => ({ ...item, priority: i + 1 }))
+      const nowSec = Math.floor(Date.now() / 1000)
+      const enabled = Boolean(prevAutobump.enabled)
       return {
         ...prev,
-        autobump: { ...(prev?.autobump || {}), schedule: withPriority },
+        autobump: {
+          ...prevAutobump,
+          schedule: withPriority,
+          enabledAt: enabled ? nowSec : prevAutobump.enabledAt || null,
+        },
       }
     })
   }
@@ -887,7 +912,20 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                       type="checkbox"
                       className="lot-settings-toggle__input"
                       checked={Boolean(productSettings?.autobump?.enabled)}
-                      onChange={(e) => setFeature('autobump', 'enabled', e.target.checked)}
+                      onChange={(e) => {
+                        const checked = e.target.checked
+                        setProductSettings((prev) => {
+                          const prevAutobump = prev?.autobump || {}
+                          return {
+                            ...prev,
+                            autobump: {
+                              ...prevAutobump,
+                              enabled: checked,
+                              enabledAt: checked ? Math.floor(Date.now() / 1000) : null,
+                            },
+                          }
+                        })
+                      }}
                     />
                     <span className="lot-settings-toggle__switch">
                       <span className="lot-settings-toggle__knob" />

@@ -4,6 +4,7 @@ import {
   getProductKey,
   loadProductSettingsList,
   fetchBumpHistory,
+  recordBump,
 } from '../../services/playerokApi'
 
 export function LotBoostTab({
@@ -16,6 +17,8 @@ export function LotBoostTab({
   const navigate = useNavigate()
   const [settingsList, setSettingsList] = useState([])
   const [bumpHistory, setBumpHistory] = useState([])
+  const [bumpInFlightKey, setBumpInFlightKey] = useState(null)
+  const [bumpCooldownUntilByKey, setBumpCooldownUntilByKey] = useState({})
 
   const hasToken = Boolean(token)
 
@@ -35,7 +38,7 @@ export function LotBoostTab({
       .then((data) => {
         if (!cancelled) setSettingsList(data.list || [])
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => {
       cancelled = true
     }
@@ -49,7 +52,7 @@ export function LotBoostTab({
         .then((data) => {
           if (!cancelled) setBumpHistory(data.list || [])
         })
-        .catch(() => {})
+        .catch(() => { })
     }
     load()
     const interval = setInterval(load, 30 * 1000)
@@ -86,6 +89,25 @@ export function LotBoostTab({
     return map
   }, [bumpHistory])
 
+  const bumpCountByKey = useMemo(() => {
+    const map = {}
+    bumpHistory.forEach((item) => {
+      const key = item.productKey || item.productTitle
+      map[key] = (map[key] || 0) + 1
+    })
+    return map
+  }, [bumpHistory])
+
+  const bumpCountByItemId = useMemo(() => {
+    const map = {}
+    bumpHistory.forEach((item) => {
+      if (!item.itemId) return
+      const id = String(item.itemId)
+      map[id] = (map[id] || 0) + 1
+    })
+    return map
+  }, [bumpHistory])
+
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
 
   useEffect(() => {
@@ -109,56 +131,173 @@ export function LotBoostTab({
     })
   }
 
-  const getNextBumpLabel = (lot) => {
+  const getNextBumpInfo = (lot) => {
     const key = getProductKey(lot)
     const s = settingsByKey[key]
-    const lastBump = lastBumpByKey[key]
+    const lastBump = lastBumpByKey[key] || 0
+    const enabledAt = Number(s?.autobump?.enabledAt || 0)
     if (!s?.autobump?.enabled || !Array.isArray(s.autobump.schedule) || s.autobump.schedule.length === 0) {
       return null
     }
-    const nowDate = new Date()
+    const nowSec = now
+    const nowDate = new Date(nowSec * 1000)
     const nowMins = nowDate.getHours() * 60 + nowDate.getMinutes()
     const startOfDay = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate())
     const startOfDayTs = Math.floor(startOfDay.getTime() / 1000)
-    const windowsContainingNow = s.autobump.schedule
-      .map((win) => {
-        const startParts = (win.start || '00:00').toString().split(':')
-        const endParts = (win.end || '23:59').toString().split(':')
-        const startMins = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10) || 0
-        const endMins = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10) || 0
-        const inWindow = startMins <= endMins
-          ? (nowMins >= startMins && nowMins < endMins)
-          : (nowMins >= startMins || nowMins < endMins)
-        return inWindow ? { win, startMins, endMins } : null
-      })
-      .filter(Boolean)
+    const windowsWithMeta = s.autobump.schedule.map((win) => {
+      const startParts = (win.start || '00:00').toString().split(':')
+      const endParts = (win.end || '23:59').toString().split(':')
+      const startMins = (parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10)) || 0
+      const endMins = (parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10)) || 0
+      const inWindow = startMins <= endMins
+        ? (nowMins >= startMins && nowMins < endMins)
+        : (nowMins >= startMins || nowMins < endMins)
+      return { win, startMins, endMins, inWindow }
+    })
+
+    const windowsContainingNow = windowsWithMeta.filter((x) => x.inWindow)
     const byPriority = [...windowsContainingNow].sort(
       (a, b) => (Number(a.win.priority) ?? 1) - (Number(b.win.priority) ?? 1)
     )
     const active = byPriority[0]
     if (!active) {
-      const nextWin = s.autobump.schedule[0]
-      return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
+      // Сейчас не попадаем ни в одно окно — считаем ближайшее будущее окно и его старт.
+      const candidates = []
+      windowsWithMeta.forEach(({ win, startMins }) => {
+        const isToday = startMins > nowMins
+        const dayOffset = isToday ? 0 : 1
+        const candidateStartTs = startOfDayTs + dayOffset * 24 * 3600 + startMins * 60
+        candidates.push({ win, ts: candidateStartTs })
+      })
+      if (candidates.length === 0) return null
+      candidates.sort((a, b) => a.ts - b.ts)
+      const next = candidates[0]
+      return {
+        type: 'window',
+        ts: next.ts,
+        label: `Следующее окно: ${next.win.start || '00:00'}–${next.win.end || '23:59'}`,
+      }
     }
     const { win, startMins, endMins } = active
     const intervalSec = (win.intervalMinutes || 3) * 60
     let windowStartTs = startOfDayTs + startMins * 60
     let windowEndTs = startOfDayTs + endMins * 60
     if (endMins <= startMins) windowEndTs += 24 * 3600
-    const baseTs = (lastBump && lastBump >= windowStartTs) ? lastBump : windowStartTs
+
+    let baseTs = Math.max(lastBump, enabledAt)
+    if (!lastBump && !enabledAt) {
+      // Нет истории и нет enabledAt — считаем от текущего момента в окне.
+      if (nowSec >= windowStartTs && nowSec <= windowEndTs) {
+        const candidateNext = nowSec + intervalSec
+        if (candidateNext > windowEndTs) {
+          const nextWin = s.autobump.schedule[0]
+          return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
+        }
+        baseTs = nowSec
+      } else {
+        baseTs = windowStartTs
+      }
+    } else if (baseTs < windowStartTs) {
+      baseTs = windowStartTs
+    }
+
     const nextBumpTs = baseTs + intervalSec
     if (nextBumpTs > windowEndTs) {
-      const nextWin = s.autobump.schedule[0]
-      return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
+      // Следующее поднятие уже выпадет на следующее окно.
+      const candidates = []
+      windowsWithMeta.forEach(({ win: w, startMins: sM }) => {
+        const isToday = sM > nowMins
+        const dayOffset = isToday ? 0 : 1
+        const candidateStartTs = startOfDayTs + dayOffset * 24 * 3600 + sM * 60
+        candidates.push({ win: w, ts: candidateStartTs })
+      })
+      if (candidates.length === 0) return null
+      candidates.sort((a, b) => a.ts - b.ts)
+      const next = candidates[0]
+      return {
+        type: 'window',
+        ts: next.ts,
+        label: `Следующее окно: ${next.win.start || '00:00'}–${next.win.end || '23:59'}`,
+      }
     }
-    if (now < nextBumpTs) {
-      const secLeft = nextBumpTs - now
-      const mins = Math.floor(secLeft / 60)
-      const secs = secLeft % 60
-      if (mins >= 1) return `Следующее поднятие через ${mins} мин`
-      return `Следующее поднятие через ${secs} сек`
+    if (nowSec < nextBumpTs) {
+      return {
+        type: 'exact',
+        ts: nextBumpTs,
+      }
     }
-    return 'Должно подняться сейчас (если не поднимается — см. консоль/логи сервера)'
+    return {
+      type: 'now',
+      ts: nowSec,
+    }
+  }
+
+  const formatDateTime = (ts) => {
+    if (!ts) return ''
+    const d = new Date(ts * 1000)
+    return d.toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  const handleBumpOnce = async (event, lot) => {
+    if (event) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    if (!token) return
+    if (!lot?.id) return
+    const productKey = getProductKey(lot)
+    if (!productKey) return
+
+    const cooldownUntil = bumpCooldownUntilByKey[productKey] || 0
+    if (cooldownUntil && Date.now() < cooldownUntil) return
+
+    setBumpInFlightKey(productKey)
+    setBumpCooldownUntilByKey((prev) => ({
+      ...prev,
+      [productKey]: Date.now() + 10_000,
+    }))
+
+    try {
+      const settings = settingsByKey[productKey]
+      const priorityStatusId = settings?.autobump?.priorityStatusId || null
+      await recordBump(token, {
+        productKey,
+        productTitle: lot.title || 'Товар',
+        itemId: lot.id,
+        price: lot.price,
+        priorityStatusId,
+      })
+
+      const bumpedAt = Math.floor(Date.now() / 1000)
+      setBumpHistory((prev) => [
+        {
+          productKey,
+          productTitle: lot.title || 'Товар',
+          bumpedAt,
+          price: Number(lot.price) || 0,
+          itemId: lot.id,
+        },
+        ...prev,
+      ])
+    } catch (e) {
+      const message =
+        e && e.message
+          ? String(e.message)
+          : 'Не удалось поднять товар'
+      if (typeof window !== 'undefined' && window.alert) {
+        window.alert(message)
+      } else {
+        console.error(message)
+      }
+    } finally {
+      setBumpInFlightKey((prev) => (prev === productKey ? null : prev))
+    }
   }
 
   return (
@@ -204,7 +343,36 @@ export function LotBoostTab({
               <div className="lots-grid">
                 {filteredLots.map((lot) => {
                   const lastBump = getLastBumpForLot(lot)
-                  const nextBumpLabel = getNextBumpLabel(lot)
+                  const productKey = getProductKey(lot)
+                  const nextBumpInfo = getNextBumpInfo(lot)
+                  const bumpCountTotal = bumpCountByKey[productKey] || 0
+                  const bumpCountForLot = bumpCountByItemId[String(lot.id)] || 0
+                  const cooldownUntil = bumpCooldownUntilByKey[productKey] || 0
+                  const remainingSec =
+                    cooldownUntil && Date.now() < cooldownUntil
+                      ? Math.max(
+                          1,
+                          Math.ceil((cooldownUntil - Date.now()) / 1000)
+                        )
+                      : 0
+                  const bumpDisabled =
+                    bumpInFlightKey === productKey || remainingSec > 0
+
+                  let nextTitle = null
+                  let nextValue = null
+                  if (nextBumpInfo) {
+                    if (nextBumpInfo.type === 'exact') {
+                      nextTitle = 'Следующее поднятие'
+                      nextValue = formatDateTime(nextBumpInfo.ts)
+                    } else if (nextBumpInfo.type === 'window') {
+                      nextTitle = nextBumpInfo.label
+                      nextValue = `Начало: ${formatDateTime(nextBumpInfo.ts)}`
+                    } else if (nextBumpInfo.type === 'now') {
+                      nextTitle = 'Следующее поднятие'
+                      nextValue =
+                        'Должно подняться сейчас (если не поднимается — см. консоль/логи сервера)'
+                    }
+                  }
                   return (
                     <article
                       key={lot.id}
@@ -258,11 +426,36 @@ export function LotBoostTab({
                             <span className="lot-card__last-bump--none">Ещё не поднимался</span>
                           )}
                         </p>
-                        {nextBumpLabel && (
+                        {nextTitle && nextValue && (
                           <p className="lot-card__next-bump">
-                            {nextBumpLabel}
+                            <span>{nextTitle}</span>
+                            <br />
+                            <span className="lot-card__next-bump-date">{nextValue}</span>
                           </p>
                         )}
+                        <p className="lot-card__next-bump">
+                          Всего поднятий по товару: <strong>{bumpCountTotal}</strong>
+                        </p>
+                        <p className="lot-card__next-bump">
+                          Поднятий этого лота: <strong>{bumpCountForLot}</strong>
+                        </p>
+                        <button
+                          type="button"
+                          className="lot-settings-btn lot-settings-btn--secondary"
+                          onClick={(e) => handleBumpOnce(e, lot)}
+                          disabled={bumpDisabled}
+                          title={
+                            bumpDisabled
+                              ? 'Подождите перед повторным поднятием'
+                              : 'Поднять товар 1 раз'
+                          }
+                        >
+                          {bumpInFlightKey === productKey
+                            ? 'Поднимаем…'
+                            : remainingSec
+                              ? `Поднять товар (${remainingSec}с)`
+                              : 'Поднять товар'}
+                        </button>
                       </div>
                     </article>
                   )

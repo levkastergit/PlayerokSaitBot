@@ -64,17 +64,18 @@ body {
 }
 
 .app-root {
+  height: 100vh;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg-root);
   color: var(--text-main);
   transition: background 0.25s ease, color 0.2s ease;
 }
 
 .app-header {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 10;
   display: flex;
   align-items: center;
@@ -179,10 +180,12 @@ body {
 
 .app-main {
   flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 0;
   padding: 1.75rem 2rem 2rem;
+  overflow: hidden;
 }
 
 .app-sidebar {
@@ -192,7 +195,8 @@ body {
 
 .app-content {
   padding-left: 1.75rem;
-  min-height: 50vh;
+  min-height: 0;
+  overflow: auto;
 }
 
 .tabs-nav {
@@ -1646,6 +1650,11 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
   line-height: 1.3;
+}
+
+.lot-card__next-bump-date {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {
