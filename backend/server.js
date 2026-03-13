@@ -20,6 +20,49 @@ const AUTH_ENABLED = AUTH_LOGIN !== ''
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 часа
 const sessions = new Map() // sessionId -> { expiresAt }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isPlayerokRateLimitError(err) {
+  const msg = err && err.message ? String(err.message) : String(err || '')
+  return (
+    msg.includes('Слишком много попыток') ||
+    msg.toLowerCase().includes('too many attempts') ||
+    msg.toLowerCase().includes('rate limit') ||
+    msg.toLowerCase().includes('status 429') ||
+    msg.toLowerCase().includes('status 403')
+  )
+}
+
+async function withRetry(fn, opts = {}) {
+  const {
+    retries = 3,
+    baseDelayMs = 700,
+    maxDelayMs = 8000,
+    shouldRetry = () => false,
+    label = 'op',
+  } = opts
+
+  let lastErr = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      const retryable = attempt < retries && shouldRetry(err)
+      if (!retryable) break
+
+      const exp = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt))
+      const jitter = Math.floor(Math.random() * 250)
+      const delay = exp + jitter
+      console.warn(`[retry] ${label} failed, retrying`, { attempt: attempt + 1, delayMs: delay, error: err?.message })
+      await sleep(delay)
+    }
+  }
+  throw lastErr
+}
+
 function getSessionIdFromRequest(req) {
   const cookie = req.headers.cookie || ''
   const match = cookie.match(/\bsession=([a-f0-9]+)/i)
@@ -186,6 +229,28 @@ const getListingFees = db.prepare(`
   WHERE token_hash = ? ORDER BY relisted_at DESC
 `)
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS hidden_chats (
+    token_hash TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    hidden_at INTEGER NOT NULL,
+    PRIMARY KEY (token_hash, chat_id)
+  )
+`)
+
+const upsertHiddenChat = db.prepare(`
+  INSERT INTO hidden_chats (token_hash, chat_id, hidden_at)
+  VALUES (?, ?, ?)
+  ON CONFLICT(token_hash, chat_id) DO UPDATE SET
+    hidden_at = excluded.hidden_at
+`)
+const deleteHiddenChat = db.prepare(`
+  DELETE FROM hidden_chats WHERE token_hash = ? AND chat_id = ?
+`)
+const getHiddenChats = db.prepare(`
+  SELECT chat_id FROM hidden_chats WHERE token_hash = ?
+`)
+
 const getStoredToken = db.prepare(`
   SELECT token, updated_at FROM tokens WHERE id = 1
 `)
@@ -282,7 +347,117 @@ const DEAL_PERSISTED_HASH =
 const CHAT_PERSISTED_HASH =
   '38efcc58bdc432cc05bc743345e9ef9653a3ca1c0f45db822f4166d0f0cc17c4'
 
-const AUTOLIST_LAST_CHAT_FRESH_SEC = 90
+const AUTOLIST_LAST_CHAT_FRESH_SEC = 600
+const AUTOLIST_MAX_CHATS_TO_SCAN = 10
+const AUTOLIST_PROCESSED_TTL_SEC = 60 * 60
+const AUTOLIST_SEEN_CHAT_TTL_SEC = 24 * 60 * 60
+const AUTOLIST_ITEM_STATE_TTL_SEC = 24 * 60 * 60
+// Даже если новых чатов нет, периодически сканируем последние завершённые товары.
+// Иначе "ожидает автовыставления" может висеть бесконечно. Интервал — 2 минуты.
+const AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC = 120
+
+function autolistGetProcessedMap(tokenHash) {
+  global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistProcessedByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistProcessedByTokenHash[key] = {}
+  return global.__autolistProcessedByTokenHash[key]
+}
+
+function autolistPruneProcessedMap(tokenHash, nowTs) {
+  const map = autolistGetProcessedMap(tokenHash)
+  for (const [k, ts] of Object.entries(map)) {
+    if (!ts || (nowTs - Number(ts)) > AUTOLIST_PROCESSED_TTL_SEC) delete map[k]
+  }
+}
+
+function autolistWasProcessed(tokenHash, eventKey) {
+  if (!eventKey) return false
+  const map = autolistGetProcessedMap(tokenHash)
+  return map[eventKey] != null
+}
+
+function autolistMarkProcessed(tokenHash, eventKey, nowTs) {
+  if (!eventKey) return
+  const map = autolistGetProcessedMap(tokenHash)
+  map[eventKey] = nowTs
+}
+
+function autolistGetSeenChatsMap(tokenHash) {
+  global.__autolistSeenChatsByTokenHash = global.__autolistSeenChatsByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistSeenChatsByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistSeenChatsByTokenHash[key] = {}
+  return global.__autolistSeenChatsByTokenHash[key]
+}
+
+function autolistPruneSeenChatsMap(tokenHash, nowTs) {
+  const map = autolistGetSeenChatsMap(tokenHash)
+  for (const [chatId, ts] of Object.entries(map)) {
+    if (!ts || (nowTs - Number(ts)) > AUTOLIST_SEEN_CHAT_TTL_SEC) delete map[chatId]
+  }
+}
+
+function autolistWasChatSeen(tokenHash, chatId) {
+  if (!chatId) return false
+  const map = autolistGetSeenChatsMap(tokenHash)
+  return map[String(chatId)] != null
+}
+
+function autolistMarkChatSeen(tokenHash, chatId, nowTs) {
+  if (!chatId) return
+  const map = autolistGetSeenChatsMap(tokenHash)
+  map[String(chatId)] = nowTs
+}
+
+function autolistGetItemStateMap(tokenHash) {
+  global.__autolistItemStateByTokenHash = global.__autolistItemStateByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistItemStateByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistItemStateByTokenHash[key] = {}
+  return global.__autolistItemStateByTokenHash[key]
+}
+
+function autolistPruneItemStateMap(tokenHash, nowTs) {
+  const map = autolistGetItemStateMap(tokenHash)
+  for (const [itemId, st] of Object.entries(map)) {
+    const ts = st && typeof st === 'object' ? Number(st.updatedAt || 0) : 0
+    if (!ts || (nowTs - ts) > AUTOLIST_ITEM_STATE_TTL_SEC) delete map[itemId]
+  }
+}
+
+function autolistSetItemState(tokenHash, itemId, state) {
+  if (!itemId) return
+  const map = autolistGetItemStateMap(tokenHash)
+  map[String(itemId)] = state
+}
+
+function autolistGetItemState(tokenHash, itemId) {
+  if (!itemId) return null
+  const map = autolistGetItemStateMap(tokenHash)
+  return map[String(itemId)] || null
+}
+
+function autolistGetCompletedScanMap(tokenHash) {
+  global.__autolistCompletedScanByTokenHash = global.__autolistCompletedScanByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistCompletedScanByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistCompletedScanByTokenHash[key] = { lastScanTs: 0 }
+  return global.__autolistCompletedScanByTokenHash[key]
+}
+
+function autolistGetLastChatMeta(tokenHash) {
+  global.__autolistLastChatByTokenHash = global.__autolistLastChatByTokenHash || {}
+  const key = String(tokenHash)
+  const meta = global.__autolistLastChatByTokenHash[key]
+  if (meta && typeof meta === 'object') return meta
+  global.__autolistLastChatByTokenHash[key] = { lastChatId: null, lastPaidTs: 0 }
+  return global.__autolistLastChatByTokenHash[key]
+}
 
 function parseIntSafe(v, fallback = null) {
   if (v == null || v === '') return fallback
@@ -332,7 +507,9 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
 
   const listingFeesByProduct = {}
   for (const row of listingFeesRows || []) {
-    const k = row.product_key
+    const raw = row.product_key
+    const k = (raw && normalizeProductKey(raw)) || raw
+    if (!k) continue
     if (!listingFeesByProduct[k]) listingFeesByProduct[k] = []
     listingFeesByProduct[k].push({ relistedAt: row.relisted_at, fee: Number(row.fee) || 0 })
   }
@@ -342,7 +519,9 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
 
   const bumpsByProduct = {}
   for (const b of bumpsRows || []) {
-    const k = b.product_key
+    const raw = b.product_key
+    const k = (raw && normalizeProductKey(raw)) || raw
+    if (!k) continue
     if (!bumpsByProduct[k]) bumpsByProduct[k] = []
     bumpsByProduct[k].push({ bumpedAt: b.bumped_at, price: Number(b.price) || 0 })
   }
@@ -357,28 +536,29 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
 
   for (const row of salesAsc) {
     const productKey = row.product_key
+    const lookupKey = (productKey && normalizeProductKey(productKey)) || productKey
     const soldAt = row.sold_at
     const salePrice = Number(row.price) || 0
     const isRefund = (row.is_refund || 0) === 1
 
     const s =
       settingsByKey[productKey] ||
-      settingsByKey[normalizeProductKey(productKey)] ||
+      settingsByKey[lookupKey] ||
       {}
     const cost = typeof s.cost === 'number' ? s.cost : (parseFloat(s.cost) || 0)
 
-    const productListingFees = listingFeesByProduct[productKey] || []
+    const productListingFees = listingFeesByProduct[lookupKey] || []
     const listingCost = productListingFees.find((lf) => lf.relistedAt < soldAt)?.fee ?? 0
 
-    const prevSold = prevSoldByKey[productKey] || 0
-    const productBumps = bumpsByProduct[productKey] || []
+    const prevSold = prevSoldByKey[lookupKey] || 0
+    const productBumps = bumpsByProduct[lookupKey] || []
     let bumpCost = 0
     for (const b of productBumps) {
       if (b.bumpedAt > prevSold && b.bumpedAt <= soldAt) {
         bumpCost += b.price
       }
     }
-    prevSoldByKey[productKey] = soldAt
+    prevSoldByKey[lookupKey] = soldAt
 
     const expenses = cost + listingCost + bumpCost
     const profit = isRefund ? -(listingCost + bumpCost) : salePrice - expenses
@@ -570,8 +750,8 @@ function publishItem(token, userAgent, itemId, opts = {}) {
         input: {
           itemId: String(itemId),
           priorityStatuses: [String(priorityStatusId)],
+          // В соответствии с неофициальным PlayerokAPI: только provider и статус приоритета
           transactionProviderId: 'LOCAL',
-          transactionProviderData: { paymentMethodId: null },
         },
       },
       query: `mutation publishItem($input: PublishItemInput!) {
@@ -1095,10 +1275,16 @@ function requestDealsPage(token, userAgent, userId, afterCursor, statusList, dir
   })
 }
 
-function requestUserChatsPage(token, userAgent, userId) {
+function requestUserChatsPage(token, userAgent, userId, opts) {
+  const options = opts && typeof opts === 'object' ? opts : {}
+  const firstRaw = options.first
+  let first = Number.isFinite(firstRaw) ? Number(firstRaw) : null
+  if (!first || first <= 0) first = AUTOLIST_MAX_CHATS_TO_SCAN
+  if (first > 50) first = 50
+  const after = options.after != null ? String(options.after) : null
   return new Promise((resolve, reject) => {
     const variables = {
-      pagination: { first: 1, after: null },
+      pagination: { first, after },
       filter: { userId, type: null, status: null },
       hasSupportAccess: false,
     }
@@ -1452,6 +1638,57 @@ function requestDealById(token, userAgent, dealId) {
   })
 }
 
+function extractItemImageUrl(item) {
+  if (!item || typeof item !== 'object') return null
+  const directFields = [
+    'imageUrl',
+    'image',
+    'previewImage',
+    'picture',
+    'thumbnail',
+    'mainImage',
+  ]
+  for (const key of directFields) {
+    const v = item[key]
+    if (!v) continue
+    if (typeof v === 'string') return v
+    if (typeof v === 'object') {
+      if (typeof v.url === 'string') return v.url
+      if (typeof v.src === 'string') return v.src
+      if (typeof v.link === 'string') return v.link
+      if (typeof v.href === 'string') return v.href
+    }
+  }
+  const arrayFields = ['images', 'gallery', 'pictures', 'media', 'attachments']
+  for (const key of arrayFields) {
+    const arr = item[key]
+    if (!Array.isArray(arr) || arr.length === 0) continue
+    for (const el of arr) {
+      if (!el) continue
+      if (typeof el === 'string') return el
+      if (typeof el === 'object') {
+        if (typeof el.url === 'string') return el.url
+        if (typeof el.src === 'string') return el.src
+        if (typeof el.link === 'string') return el.link
+        if (typeof el.href === 'string') return el.href
+      }
+    }
+  }
+  try {
+    const debugId = item.id || item.itemId || null
+    const debugTitle = item.title || item.name || null
+    const keys = Object.keys(item || {})
+    console.debug('[chat-image] no image found in item', {
+      id: debugId,
+      title: debugTitle,
+      keys,
+    })
+  } catch (_) {
+    // ignore logging errors
+  }
+  return null
+}
+
 function toUnixTs(v) {
   if (v == null) return 0
   if (typeof v === 'number') {
@@ -1506,6 +1743,27 @@ async function fetchInProgressDealsFromPlayerok(token, userAgent) {
   return { deals: allDeals }
 }
 
+/** Завершённые сделки (SENT, CONFIRMED) — для блока «Непрочитанные чаты» */
+async function fetchCompletedDealsFromPlayerok(token, userAgent) {
+  const viewer = await getViewer(token, userAgent)
+  const statusList = ['SENT', 'CONFIRMED']
+  const allDeals = []
+  let afterCursor = null
+  do {
+    const page = await requestDealsPage(
+      token,
+      userAgent,
+      viewer.id,
+      afterCursor,
+      statusList,
+      'OUT'
+    )
+    allDeals.push(...page.deals)
+    afterCursor = page.hasNextPage ? page.endCursor : null
+  } while (afterCursor)
+  return { deals: allDeals }
+}
+
 /** Все сообщения чата по chatId или по dealId (если chatId не передан). Подгружаем все страницы. */
 async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatIdFromDeal) {
   let chatId = chatIdFromDeal || null
@@ -1514,7 +1772,7 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
     chatId = fullDeal?.chat?.id || fullDeal?.chatId || null
   }
   if (!chatId) {
-    return { messages: [], buyerSupercellEmail: null }
+    return { messages: [], buyerSupercellEmail: null, itemTitle: null, itemImageUrl: null }
   }
   const referer = dealId ? `https://playerok.com/deal/${dealId}` : undefined
   const allMessages = []
@@ -1528,7 +1786,7 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
     pageCount++
   } while (afterCursor && pageCount < maxPages)
 
-  // Пытаемся определить сделку и вытащить почту Supercell ID из полей сделки
+  // Пытаемся определить сделку и вытащить почту Supercell ID и данные товара
   let effectiveDealId = dealId || null
   if (!effectiveDealId) {
     for (const m of allMessages) {
@@ -1540,9 +1798,28 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
   }
 
   let buyerSupercellEmail = null
+  let itemTitle = null
+  let itemImageUrl = null
   if (effectiveDealId) {
     try {
       const fullDeal = await requestDealById(token, userAgent, effectiveDealId)
+      const item = fullDeal && fullDeal.item ? fullDeal.item : null
+      itemTitle =
+        (item && (item.title || item.name)) ||
+        fullDeal?.productTitle ||
+        null
+      itemImageUrl = extractItemImageUrl(item) || itemImageUrl
+      try {
+        const debugId = item && (item.id || item.itemId) || null
+        console.debug('[chat-image] deal item image', {
+          dealId: effectiveDealId,
+          itemId: debugId,
+          itemTitle,
+          itemImageUrl,
+        })
+      } catch (_) {
+        // ignore logging errors
+      }
       const fields =
         (fullDeal && Array.isArray(fullDeal.obtainingFields) && fullDeal.obtainingFields) ||
         (fullDeal &&
@@ -1572,7 +1849,7 @@ async function fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatI
     }
   }
 
-  return { messages: allMessages, buyerSupercellEmail }
+  return { messages: allMessages, buyerSupercellEmail, itemTitle, itemImageUrl }
 }
 
 // Отправить текстовое сообщение в чат по chatId или dealId.
@@ -1704,11 +1981,15 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // Требуем сессию для всех остальных /api/* при включённой аутентификации
+  // Требуем сессию для всех остальных /api/* при включённой аутентификации (кроме запросов с localhost — для фоновых задач)
   if (AUTH_ENABLED && pathname.startsWith('/api/')) {
-    const sessionId = getSessionIdFromRequest(req)
-    if (!sessionId || !isSessionValid(sessionId)) {
-      return sendJson(res, 401, { error: 'Unauthorized' })
+    const remote = req.socket.remoteAddress || ''
+    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+    if (!isLocal) {
+      const sessionId = getSessionIdFromRequest(req)
+      if (!sessionId || !isSessionValid(sessionId)) {
+        return sendJson(res, 401, { error: 'Unauthorized' })
+      }
     }
   }
 
@@ -2028,6 +2309,279 @@ const server = http.createServer(async (req, res) => {
       }
     })
 
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/chats') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      const afterCursor = payload.afterCursor || payload.after || null
+      const limitRaw = payload.limit
+      let limit = Number.isFinite(limitRaw) ? Number(limitRaw) : null
+      if (!limit || limit <= 0) limit = 24
+      if (limit > 50) limit = 50
+      if (!token) {
+        return sendJson(res, 400, { error: 'Token is required' })
+      }
+      try {
+        const tokenHash = hashToken(token)
+        const hiddenRows = getHiddenChats.all(tokenHash)
+        const hiddenSet = new Set(
+          (hiddenRows || []).map((r) => (r && r.chat_id != null ? String(r.chat_id) : null)).filter(Boolean)
+        )
+        const viewer = await withRetry(
+          () => getViewer(token, userAgent),
+          { label: 'getViewer(chats)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+        )
+        const chatsData = await withRetry(
+          () => requestUserChatsPage(token, userAgent, viewer.id, { first: limit, after: afterCursor }),
+          { label: 'userChats(ui)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+        )
+        const edges = Array.isArray(chatsData?.edges) ? chatsData.edges : []
+
+        // Собираем dealId и itemId для маппинга игры/категории (как в /completed-deals)
+        const itemIdSet = new Set()
+        const dealIdSet = new Set()
+        for (const edge of edges) {
+          const node = edge && edge.node
+          if (!node) continue
+          const lastMessage = node.lastMessage || null
+          const deal = lastMessage?.deal || node.deal || null
+          const item = deal?.item || null
+          const itemId = item && item.id != null ? String(item.id) : null
+          const dealId = deal && deal.id != null ? String(deal.id) : null
+          if (itemId) itemIdSet.add(itemId)
+          if (dealId) dealIdSet.add(dealId)
+        }
+
+        const itemIdToGame = new Map()
+        if (itemIdSet.size > 0) {
+          try {
+            const [{ items: activeItems }, { items: completedItems }] = await Promise.all([
+              fetchActiveItemsFromPlayerok(token, userAgent),
+              fetchCompletedItemsFromPlayerok(token, userAgent),
+            ])
+            for (const it of [...(activeItems || []), ...(completedItems || [])]) {
+              const id = it && it.id != null ? String(it.id) : null
+              const gameName = (it && it.game) ? String(it.game).trim() : ''
+              if (id && gameName && !itemIdToGame.has(id)) {
+                itemIdToGame.set(id, gameName)
+              }
+            }
+          } catch (e) {
+            console.warn('[userChats] failed to map itemIdToGame', { error: e && e.message })
+          }
+        }
+
+        const dealIdToCategory = new Map()
+        if (dealIdSet.size > 0) {
+          const dealIds = Array.from(dealIdSet)
+          try {
+            await Promise.all(
+              dealIds.map(async (id) => {
+                try {
+                  const fullDeal = await withRetry(
+                    () => requestDealById(token, userAgent, id),
+                    { label: 'dealById(userChats)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+                  )
+                  if (!fullDeal) return
+                  let category =
+                    (fullDeal.category && String(fullDeal.category).trim()) ||
+                    null
+                  const item = fullDeal.item || null
+                  if (!category && item) {
+                    const gameName =
+                      (item.game && (item.game.name || item.game.title)) ||
+                      null
+                    if (gameName) category = String(gameName).trim()
+                  }
+                  if (!category && typeof fullDeal.productKey === 'string') {
+                    const pk = fullDeal.productKey
+                    const sepIndex = pk.indexOf('::')
+                    if (sepIndex > 0) {
+                      const gameFromPk = pk.slice(0, sepIndex).trim()
+                      if (gameFromPk) category = gameFromPk
+                    }
+                  }
+                  if (category) {
+                    dealIdToCategory.set(String(id), category)
+                  }
+                } catch (e) {
+                  console.warn('[userChats] failed to load deal for category', { dealId: id, error: e && e.message })
+                }
+              })
+            )
+          } catch (_) {
+            // ignore batch errors
+          }
+        }
+
+        const list = edges
+          .map((edge) => edge && edge.node)
+          .filter(Boolean)
+          .map((node) => {
+            const lastMessage = node.lastMessage || null
+            const deal = lastMessage?.deal || node.deal || null
+            const item = deal?.item || null
+            const buyer = deal?.buyer || node.buyer || null
+            const itemTitle =
+              (item && (item.title || item.name)) ||
+              (deal && deal.productTitle) ||
+              null
+            const itemImageUrl = item ? extractItemImageUrl(item) : null
+            let category =
+              (item && item.game && (item.game.name || item.game.title)) ||
+              (item && item.category && (item.category.name || item.category.title)) ||
+              (node && node.game && (node.game.name || node.game.title)) ||
+              (node && node.category && (node.category.name || node.category.title)) ||
+              (deal && typeof deal.category === 'string' && deal.category) ||
+              null
+            if (!category && deal && typeof deal.productKey === 'string') {
+              const pk = deal.productKey
+              const sepIndex = pk.indexOf('::')
+              if (sepIndex > 0) {
+                category = pk.slice(0, sepIndex).trim() || null
+              }
+            }
+            if (!category) {
+              const itemId = item && item.id != null ? String(item.id) : null
+              if (itemId && itemIdToGame.has(itemId)) {
+                category = itemIdToGame.get(itemId)
+              }
+            }
+            if (!category && deal && deal.id != null) {
+              const did = String(deal.id)
+              if (dealIdToCategory.has(did)) {
+                category = dealIdToCategory.get(did)
+              }
+            }
+            const status = deal && typeof deal.status === 'string' ? deal.status : null
+            return {
+              id: node.id,
+              unreadCount:
+                typeof node.unreadMessagesCount === 'number'
+                  ? node.unreadMessagesCount
+                  : null,
+              lastMessageId: lastMessage?.id || null,
+              lastMessageText: lastMessage?.text || null,
+              lastMessageCreatedAt: lastMessage?.createdAt || null,
+              dealId: deal?.id || null,
+              itemId: item?.id || null,
+              itemTitle,
+              itemImageUrl,
+              category,
+              status,
+              buyerName: buyer?.username || buyer?.name || null,
+              isHidden: node.id != null && hiddenSet.has(String(node.id)),
+            }
+          })
+        try {
+          const sample = list.slice(0, 3).map((c) => ({
+            id: c.id,
+            itemTitle: c.itemTitle,
+            itemImageUrl: c.itemImageUrl,
+          }))
+          console.debug('[chat-image] userChats sample', {
+            tokenHash,
+            afterCursor,
+            sample,
+          })
+        } catch (_) {
+          // ignore logging errors
+        }
+        const pageInfo = (chatsData && chatsData.pageInfo) || {}
+        return sendJson(res, 200, {
+          list,
+          pageInfo: {
+            hasNextPage: Boolean(pageInfo.hasNextPage),
+            endCursor: pageInfo.endCursor || null,
+          },
+        })
+      } catch (err) {
+        const message =
+          err && err.message
+            ? String(err.message)
+            : 'Не удалось загрузить чаты с Playerok'
+        return sendJson(res, 500, { error: message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/hide-chat') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const chatId = payload.chatId
+      if (!token || !chatId) {
+        return sendJson(res, 400, { error: 'token and chatId are required' })
+      }
+      const tokenHash = hashToken(token)
+      const nowTs = Math.floor(Date.now() / 1000)
+      try {
+        upsertHiddenChat.run(tokenHash, String(chatId), nowTs)
+        return sendJson(res, 200, { ok: true, chatId: String(chatId) })
+      } catch (err) {
+        return sendJson(res, 500, { error: 'Failed to hide chat', details: err.message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/unhide-chat') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const chatId = payload.chatId
+      if (!token || !chatId) {
+        return sendJson(res, 400, { error: 'token and chatId are required' })
+      }
+      const tokenHash = hashToken(token)
+      try {
+        deleteHiddenChat.run(tokenHash, String(chatId))
+        return sendJson(res, 200, { ok: true, chatId: String(chatId) })
+      } catch (err) {
+        return sendJson(res, 500, { error: 'Failed to unhide chat', details: err.message })
+      }
+    })
     return
   }
 
@@ -2554,204 +3108,467 @@ const server = http.createServer(async (req, res) => {
       if (!token) return sendJson(res, 400, { error: 'Token is required' })
 
       const tokenHash = hashToken(token)
+      const scanMeta = autolistGetCompletedScanMap(tokenHash)
+      const lastChatMeta = autolistGetLastChatMeta(tokenHash)
       try {
-        const viewer = await getViewer(token, userAgent)
+        console.log('[autolist-tick] start', { tokenHash, nowTs })
+        const viewer = await withRetry(
+          () => getViewer(token, userAgent),
+          { label: 'getViewer', retries: 2, shouldRetry: isPlayerokRateLimitError }
+        )
 
-        const chatsData = await requestUserChatsPage(token, userAgent, viewer.id)
-        const lastChat = chatsData?.edges?.[0]?.node || null
-        if (!lastChat) {
-          return sendJson(res, 200, { ok: true, skipped: 'no_last_chat' })
-        }
+        const chatsData = await withRetry(
+          () => requestUserChatsPage(token, userAgent, viewer.id),
+          { label: 'userChats', retries: 3, shouldRetry: isPlayerokRateLimitError }
+        )
+        const chatNodes = Array.isArray(chatsData?.edges)
+          ? chatsData.edges
+            .map((e) => e && e.node)
+            .filter(Boolean)
+            .slice(0, AUTOLIST_MAX_CHATS_TO_SCAN)
+          : []
+        autolistPruneProcessedMap(tokenHash, nowTs)
+        autolistPruneSeenChatsMap(tokenHash, nowTs)
+        autolistPruneItemStateMap(tokenHash, nowTs)
 
-        const lastMessage = lastChat.lastMessage || null
-        const lastMessageId = lastMessage?.id || null
-        const lastMessageCreatedAt = lastMessage?.createdAt || null
-        const deal = lastMessage?.deal || null
-        const dealId = deal?.id || null
-        const dealDirection = deal?.direction || null
-        const dealStatus = deal?.status || null
-        const dealItemId = deal?.item?.id || null
-
-        if (!dealItemId || (dealDirection && String(dealDirection) !== 'OUT')) {
-          return sendJson(res, 200, { ok: true, skipped: 'no_recent_sale_in_last_chat' })
-        }
-
-        // Время продажи берём из сделки (deal.createdAt), а не из lastMessage — иначе при новом сообщении в чате (13:27) записали бы 13:27 вместо реального времени покупки (13:09)
-        const fullDeal = await requestDealById(token, userAgent, dealId)
-        const dealTs =
-          fullDeal
-            ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
-            : toUnixTs(lastMessageCreatedAt)
-        const ageSec = dealTs ? nowTs - dealTs : null
-
-        if (!dealTs || (ageSec != null && ageSec > AUTOLIST_LAST_CHAT_FRESH_SEC)) {
-          return sendJson(res, 200, { ok: true, skipped: 'old' })
-        }
-
-        // защита от повторной обработки одного и того же события
-        global.__autolistLastProcessedByTokenHash = global.__autolistLastProcessedByTokenHash || {}
-        const lastProcessedKey = String(tokenHash)
-        const lastProcessed = global.__autolistLastProcessedByTokenHash[lastProcessedKey] || {}
-        const eventKey = dealId || lastMessageId || dealItemId
-        if (lastProcessed.eventKey === eventKey) {
-          return sendJson(res, 200, { ok: true, skipped: 'already_processed' })
-        }
-
-        const item = await requestItemById(token, userAgent, dealItemId)
-        if (!item) {
-          return sendJson(res, 200, { ok: true, skipped: 'item_not_found' })
-        }
-
-        const itemStatus = item.status || null
-        const title = normalizeKeyPart(item.name || '')
-        const game = normalizeKeyPart(item.game?.name || '')
-        const productKey = buildProductKey(game, title)
-
-        // Записываем продажу в локальную историю, чтобы /history сразу показывал дату продажи из чата
-        try {
-          const salePrice =
-            typeof item.price === 'number'
-              ? item.price
-              : typeof item.rawPrice === 'number'
-                ? item.rawPrice
-                : 0
-          let buyerName = null
+        // === 1. Автопроверка каждые 2 минуты: сканируем завершённые товары и перевыставляем все с автовыставлением ===
+        async function scanCompletedAndRelist(trigger) {
+          scanMeta.lastScanTs = nowTs
           try {
-            const fullDeal = await requestDealById(token, userAgent, dealId)
-            buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
-          } catch (_) {
-            buyerName = null
-          }
-          insertSale.run(
-            tokenHash,
-            productKey,
-            title || 'Товар',
-            dealTs || nowTs,
-            Number(salePrice) || 0,
-            dealStatus || null,
-            dealId || null,
-            dealItemId || null,
-            buyerName,
-            String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
-          )
-        } catch (e) {
-          // ignore sale record failure
-        }
+            const completed = await withRetry(
+              () => fetchCompletedItemsFromPlayerok(token, userAgent),
+              { label: 'completedItems', retries: 3, shouldRetry: isPlayerokRateLimitError }
+            )
+            const items = Array.isArray(completed?.items) ? completed.items : []
+            const lastTen = items.slice(0, 10)
+            console.log('[autolist-tick] scanCompletedAndRelist start', {
+              trigger,
+              totalItems: items.length,
+              scanned: lastTen.length,
+            })
+            const relistedItems = []
+            const relistErrors = []
+            for (const it of lastTen) {
+              const itemId = it?.id != null ? String(it.id) : null
+              if (!itemId) continue
 
-        // Настройки: по productKey; если есть settingsLabel — берём из группы __group__::метка
-        let autolistEnabled = false
-        let effectiveSettings = null
-        let effectiveKey = String(productKey)
-        try {
-          const row = getSettings.get(hashToken(token), effectiveKey)
-          if (row?.settings) {
-            effectiveSettings = JSON.parse(row.settings)
-            const label = (effectiveSettings && typeof effectiveSettings.settingsLabel === 'string')
-              ? effectiveSettings.settingsLabel.trim()
-              : ''
-            if (label) {
-              const gk = getGroupSettingsKey(label)
-              const groupRow = getSettings.get(hashToken(token), gk)
-              if (groupRow?.settings) {
-                effectiveSettings = JSON.parse(groupRow.settings)
-                effectiveKey = gk
-              }
-            }
-          }
-        } catch (_) {
-          // ignore
-        }
+              const itemStatus = it?.status || null
+              if (String(itemStatus) !== 'SOLD') continue
 
-        const s = effectiveSettings
-        if (s) {
-          autolistEnabled = Boolean(s.autolist?.enabled)
+              const rawTitle = it?.title || it?.name || ''
+              const rawGame = it?.game || (it?.game && it.game.name) || it?.game_name || ''
+              const title = normalizeKeyPart(rawTitle)
+              const game = normalizeKeyPart(rawGame)
+              const productKey = buildProductKey(game, title)
 
-          // Автосообщение: при покупке отправить сообщения покупателю в чат
-          const am = s.automessage
-          if (am?.enabled && lastChat?.id) {
-            const raw = am.messages
-            const messages = Array.isArray(raw)
-              ? raw.map((m) => String(m).trim()).filter(Boolean)
-              : typeof raw === 'string' && raw.trim()
-                ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
-                : []
-            for (let i = 0; i < messages.length; i++) {
+              const eventKey = `completed:${itemId}`
+              if (autolistWasProcessed(tokenHash, eventKey)) continue
+
+              // Настройки: по productKey; если есть settingsLabel — берём из группы __group__::метка
+              let effectiveSettings = null
+              let effectiveKey = String(productKey)
               try {
-                await createChatMessage(token, userAgent, lastChat.id, messages[i])
-                if (i < messages.length - 1) {
-                  await new Promise((r) => setTimeout(r, 800))
+                const row = getSettings.get(hashToken(token), effectiveKey)
+                if (row?.settings) {
+                  effectiveSettings = JSON.parse(row.settings)
+                  const label = (effectiveSettings && typeof effectiveSettings.settingsLabel === 'string')
+                    ? effectiveSettings.settingsLabel.trim()
+                    : ''
+                  if (label) {
+                    const gk = getGroupSettingsKey(label)
+                    const groupRow = getSettings.get(hashToken(token), gk)
+                    if (groupRow?.settings) {
+                      effectiveSettings = JSON.parse(groupRow.settings)
+                      effectiveKey = gk
+                    }
+                  }
                 }
               } catch (_) {
-                // ignore single message failure
+                effectiveSettings = null
               }
-            }
-          }
 
-          // Автовыдача: сообщение при покупке (если задано), затем первый код в чат и убрать его из списка
-          if (s.autodelivery?.enabled && lastChat?.id) {
-            const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
-            if (messageOnPurchase) {
-              try {
-                await createChatMessage(token, userAgent, lastChat.id, messageOnPurchase)
-              } catch (err) {
-                console.warn('[autolist-tick] autodelivery messageOnPurchase failed', { error: err?.message })
+              const s = effectiveSettings
+              const autolistEnabled = Boolean(s?.autolist?.enabled)
+              if (!autolistEnabled) {
+                autolistMarkProcessed(tokenHash, eventKey, nowTs)
+                autolistSetItemState(tokenHash, itemId, {
+                  status: 'disabled',
+                  error: null,
+                  updatedAt: nowTs,
+                })
+                continue
               }
-            }
-            if (Array.isArray(s.autodelivery.codes) && s.autodelivery.codes.length > 0) {
-            const codeToSend = String(s.autodelivery.codes[0]).trim()
-            if (codeToSend) {
+
               try {
-                await createChatMessage(token, userAgent, lastChat.id, codeToSend)
-                const newCodes = s.autodelivery.codes.slice(1)
-                const updated = {
-                  ...s,
-                  autodelivery: { ...s.autodelivery, codes: newCodes },
+                autolistSetItemState(tokenHash, itemId, {
+                  status: 'processing',
+                  error: null,
+                  updatedAt: nowTs,
+                })
+                // Выбираем корректный статус приоритета для этого товара (аналогично PlayerokAPI: get_item_priority_statuses)
+                let priorityStatusId = null
+                try {
+                  const statuses = await withRetry(
+                    () => fetchItemPriorityStatuses(token, userAgent, itemId, it?.price ?? 0),
+                    { label: 'itemPriorityStatuses(autolist)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+                  )
+                  const list = Array.isArray(statuses) ? statuses : []
+                  // Берём бесплатный/нулевой или первый доступный
+                  const free = list.find((s) => !s?.price || Number(s.price) === 0)
+                  priorityStatusId = (free && free.id) || (list[0] && list[0].id) || null
+                } catch (_) {
+                  priorityStatusId = null
                 }
-                const updatedAt = Math.floor(Date.now() / 1000)
-                upsertSettings.run(hashToken(token), effectiveKey, JSON.stringify(updated), updatedAt)
+                const relisted = await withRetry(
+                  () => publishItem(token, userAgent, itemId, priorityStatusId ? { priorityStatusId } : {}),
+                  { label: 'publishItem(completedScan)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+                )
+                try {
+                  insertListingFee.run(tokenHash, String(productKey), Number(relisted.listingFee) || 0, nowTs)
+                } catch (_) { }
+                autolistMarkProcessed(tokenHash, eventKey, nowTs)
+                autolistSetItemState(tokenHash, itemId, {
+                  status: 'success',
+                  error: null,
+                  updatedAt: nowTs,
+                })
+                relistedItems.push({
+                  oldItemId: itemId,
+                  newItemId: relisted.id,
+                  productKey,
+                })
               } catch (err) {
-                console.warn('[autolist-tick] autodelivery send code failed', { productKey: effectiveKey, error: err?.message })
+                const msg = err && err.message ? String(err.message) : String(err)
+                const cannotUpdateStatus = msg.includes('нельзя обновить статус')
+                console.warn('[autolist-tick] relist failed', {
+                  trigger,
+                  itemId,
+                  productKey,
+                  error: msg,
+                })
+                if (cannotUpdateStatus) {
+                  // Товар уже в нужном статусе: помечаем событие обработанным и больше не трогаем его.
+                  autolistMarkProcessed(tokenHash, eventKey, nowTs)
+                }
+                autolistSetItemState(tokenHash, itemId, {
+                  status: cannotUpdateStatus ? 'disabled' : 'error',
+                  error: msg,
+                  updatedAt: nowTs,
+                })
+                relistErrors.push({
+                  itemId,
+                  productKey,
+                  error: msg,
+                })
               }
             }
+
+            if (relistedItems.length > 0) {
+              console.log('[autolist-tick] scanCompletedAndRelist relisted', {
+                trigger,
+                relistedCount: relistedItems.length,
+                errorsCount: relistErrors.length,
+              })
+              return { ok: true, action: 'relisted', trigger, relisted: relistedItems, errors: relistErrors }
+            }
+            console.log('[autolist-tick] scanCompletedAndRelist no_relist', { trigger })
+            return { ok: true, action: 'none', trigger }
+          } catch (err) {
+            console.warn('[autolist-tick] completed scan failed', { trigger, error: err?.message })
+            if (isPlayerokRateLimitError(err)) {
+              scanMeta.lastScanTs = nowTs + AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC
+            }
+            return { ok: false, error: err && err.message ? String(err.message) : 'scan_failed', trigger }
+          }
+        }
+
+        // 1.1 Периодический запуск: каждые 2 минуты
+        let periodicResult = null
+        const lastScanTs = Number(scanMeta?.lastScanTs || 0)
+        const shouldPeriodicScan = !lastScanTs || (nowTs - lastScanTs) >= AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC
+        if (shouldPeriodicScan) {
+          periodicResult = await scanCompletedAndRelist('periodic')
+        }
+
+        // === 2. Триггер по смене последнего чата и свежему событию оплаты (paid) ===
+        let lastChat = null
+        let lastMessage = null
+        let lastMessageId = null
+        let lastMessageCreatedAt = null
+        let deal = null
+        let dealId = null
+        let dealStatus = null
+        let dealItemId = null
+        let dealTs = null
+
+        const currentLastChat = chatNodes.length > 0 ? chatNodes[0] : null
+        const currentLastChatId = currentLastChat?.id || null
+
+        if (currentLastChatId && lastChatMeta.lastChatId && lastChatMeta.lastChatId !== currentLastChatId) {
+          const lm = currentLastChat?.lastMessage || null
+          const d = lm?.deal || null
+          const dItemId = d?.item?.id || null
+          if (dItemId) {
+            const candidateDealId = d?.id || null
+            const candidateLastMessageId = lm?.id || null
+
+            let candidateDealTs = 0
+            try {
+              const fullDeal = await withRetry(
+                () => requestDealById(token, userAgent, candidateDealId),
+                { label: 'dealById(lastChat)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+              )
+              candidateDealTs =
+                fullDeal
+                  ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0
+                  : toUnixTs(lm?.createdAt)
+              dealStatus = fullDeal?.status || d?.status || null
+            } catch (_) {
+              candidateDealTs = toUnixTs(lm?.createdAt) || 0
+              dealStatus = d?.status || null
+            }
+
+            const candidateAgeSec = candidateDealTs ? nowTs - candidateDealTs : null
+            const isFreshPaid = candidateDealTs &&
+              (candidateAgeSec == null || candidateAgeSec <= AUTOLIST_LAST_CHAT_FRESH_SEC) &&
+              (lastChatMeta.lastPaidTs == null || candidateDealTs > Number(lastChatMeta.lastPaidTs || 0))
+
+            if (isFreshPaid) {
+              lastChat = currentLastChat
+              lastMessage = lm
+              lastMessageId = candidateLastMessageId
+              lastMessageCreatedAt = lm?.createdAt || null
+              deal = d
+              dealId = candidateDealId
+              dealItemId = dItemId
+              dealTs = candidateDealTs
+
+              // 2.1 Сканируем завершённые товары и перевыставляем все с автовыставлением
+              const paidScanResult = await scanCompletedAndRelist('paid_chat')
+
+              // 2.2 Фиксируем продажу и выполняем автосообщения/автовыдачу для этого товара
+              const item = await withRetry(
+                () => requestItemById(token, userAgent, dealItemId),
+                { label: 'itemById', retries: 3, shouldRetry: isPlayerokRateLimitError }
+              )
+              if (item) {
+                const itemStatus = item.status || null
+                const rawTitle = item.title || item.name || ''
+                const rawGame = item.game || (item.game && item.game.name) || ''
+                const title = normalizeKeyPart(rawTitle)
+                const game = normalizeKeyPart(rawGame)
+                const productKey = buildProductKey(game, title)
+
+                // 2.3 Пытаемся перевыставить конкретный товар из сделки, подбирая корректный статус приоритета
+                try {
+                  let priorityStatusId = null
+                  try {
+                    const statuses = await withRetry(
+                      () => fetchItemPriorityStatuses(token, userAgent, dealItemId, item?.price ?? 0),
+                      { label: 'itemPriorityStatuses(paid_chat)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+                    )
+                    const list = Array.isArray(statuses) ? statuses : []
+                    const free = list.find((s) => !s?.price || Number(s.price) === 0)
+                    priorityStatusId = (free && free.id) || (list[0] && list[0].id) || null
+                  } catch (_) {
+                    priorityStatusId = null
+                  }
+                  if (String(itemStatus) === 'SOLD') {
+                    const relisted = await withRetry(
+                      () => publishItem(token, userAgent, dealItemId, priorityStatusId ? { priorityStatusId } : {}),
+                      { label: 'publishItem(paid_chat)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+                    )
+                    try {
+                      insertListingFee.run(tokenHash, String(productKey), Number(relisted.listingFee) || 0, nowTs)
+                    } catch (_) { }
+                    autolistMarkProcessed(tokenHash, `deal:${dealId || dealItemId}`, nowTs)
+                    autolistSetItemState(tokenHash, dealItemId, {
+                      status: 'success',
+                      error: null,
+                      updatedAt: nowTs,
+                    })
+                  }
+                } catch (err) {
+                  const msg = err && err.message ? String(err.message) : String(err)
+                  const cannotUpdateStatus = msg.includes('нельзя обновить статус')
+                  console.warn('[autolist-tick] relist failed', {
+                    trigger: 'paid_chat',
+                    itemId: dealItemId,
+                    productKey,
+                    error: msg,
+                  })
+                  if (cannotUpdateStatus) {
+                    autolistMarkProcessed(tokenHash, `deal:${dealId || dealItemId}`, nowTs)
+                  }
+                  autolistSetItemState(tokenHash, dealItemId, {
+                    status: cannotUpdateStatus ? 'disabled' : 'error',
+                    error: msg,
+                    updatedAt: nowTs,
+                  })
+                }
+
+                try {
+                  const salePrice =
+                    typeof item.price === 'number'
+                      ? item.price
+                      : typeof item.rawPrice === 'number'
+                        ? item.rawPrice
+                        : 0
+                  let buyerName = null
+                  try {
+                    const fullDeal = await withRetry(
+                      () => requestDealById(token, userAgent, dealId),
+                      { label: 'dealById(buyerName)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+                    )
+                    buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
+                  } catch (_) {
+                    buyerName = null
+                  }
+                  insertSale.run(
+                    tokenHash,
+                    productKey,
+                    title || 'Товар',
+                    dealTs || nowTs,
+                    Number(salePrice) || 0,
+                    dealStatus || null,
+                    dealId || null,
+                    dealItemId || null,
+                    buyerName,
+                    String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
+                  )
+                } catch (e) {
+                  // ignore sale record failure
+                }
+
+                // Настройки: по productKey; если есть settingsLabel — берём из группы __group__::метка
+                let effectiveSettings = null
+                let effectiveKey = String(productKey)
+                try {
+                  const row = getSettings.get(hashToken(token), effectiveKey)
+                  if (row?.settings) {
+                    effectiveSettings = JSON.parse(row.settings)
+                    const label = (effectiveSettings && typeof effectiveSettings.settingsLabel === 'string')
+                      ? effectiveSettings.settingsLabel.trim()
+                      : ''
+                    if (label) {
+                      const gk = getGroupSettingsKey(label)
+                      const groupRow = getSettings.get(hashToken(token), gk)
+                      if (groupRow?.settings) {
+                        effectiveSettings = JSON.parse(groupRow.settings)
+                        effectiveKey = gk
+                      }
+                    }
+                  }
+                } catch (_) {
+                  // ignore
+                }
+
+                const s = effectiveSettings
+                if (s) {
+                  // Автосообщение
+                  const am = s.automessage
+                  if (am?.enabled && lastChat?.id) {
+                    const raw = am.messages
+                    const messages = Array.isArray(raw)
+                      ? raw.map((m) => String(m).trim()).filter(Boolean)
+                      : typeof raw === 'string' && raw.trim()
+                        ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
+                        : []
+                    for (let i = 0; i < messages.length; i++) {
+                      try {
+                        await withRetry(
+                          () => createChatMessage(token, userAgent, lastChat.id, messages[i]),
+                          { label: 'createChatMessage(automessage)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+                        )
+                        if (i < messages.length - 1) {
+                          await sleep(900)
+                        }
+                      } catch (_) {
+                        // ignore single message failure
+                      }
+                    }
+                  }
+
+                  // Автовыдача
+                  if (s.autodelivery?.enabled && lastChat?.id) {
+                    const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
+                    if (messageOnPurchase) {
+                      try {
+                        await withRetry(
+                          () => createChatMessage(token, userAgent, lastChat.id, messageOnPurchase),
+                          { label: 'createChatMessage(messageOnPurchase)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+                        )
+                      } catch (err) {
+                        console.warn('[autolist-tick] autodelivery messageOnPurchase failed', { error: err?.message })
+                      }
+                    }
+                    if (Array.isArray(s.autodelivery.codes) && s.autodelivery.codes.length > 0) {
+                      const codeToSend = String(s.autodelivery.codes[0]).trim()
+                      if (codeToSend) {
+                        try {
+                          await withRetry(
+                            () => createChatMessage(token, userAgent, lastChat.id, codeToSend),
+                            { label: 'createChatMessage(code)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+                          )
+                          const newCodes = s.autodelivery.codes.slice(1)
+                          const updated = {
+                            ...s,
+                            autodelivery: { ...s.autodelivery, codes: newCodes },
+                          }
+                          const updatedAt = Math.floor(Date.now() / 1000)
+                          upsertSettings.run(hashToken(token), effectiveKey, JSON.stringify(updated), updatedAt)
+                        } catch (err) {
+                          console.warn('[autolist-tick] autodelivery send code failed', { productKey: effectiveKey, error: err?.message })
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              lastChatMeta.lastPaidTs = dealTs || nowTs
+
+              return sendJson(res, 200, {
+                ok: true,
+                from: 'paid_chat',
+                periodic: periodicResult,
+                chatId: currentLastChatId,
+              })
             }
           }
         }
 
-        if (!autolistEnabled) {
-          global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
-            eventKey,
-            processedAt: nowTs,
-            oldItemId: dealItemId,
-            newItemId: null,
-          }
-          return sendJson(res, 200, { ok: true, skipped: 'disabled', productKey })
+        // обновляем сохранённый последний чат, даже если не было fresh paid
+        lastChatMeta.lastChatId = currentLastChatId || lastChatMeta.lastChatId
+
+        if (periodicResult && periodicResult.action === 'relisted') {
+          return sendJson(res, 200, {
+            ok: true,
+            from: 'periodic',
+            ...periodicResult,
+          })
         }
 
-        if (String(itemStatus) !== 'SOLD') {
-          return sendJson(res, 200, { ok: true, skipped: 'not_completed_yet', itemStatus })
-        }
-
-        const relisted = await publishItem(token, userAgent, dealItemId, {})
-
-        try {
-          insertListingFee.run(tokenHash, String(productKey), Number(relisted.listingFee) || 0, nowTs)
-        } catch (_) { }
-
-        global.__autolistLastProcessedByTokenHash[lastProcessedKey] = {
-          eventKey,
-          processedAt: nowTs,
-          oldItemId: dealItemId,
-          newItemId: relisted.id,
+        if (!currentLastChatId) {
+          return sendJson(res, 200, { ok: true, skipped: 'no_chats' })
         }
 
         return sendJson(res, 200, {
           ok: true,
-          action: 'relisted',
-          oldItemId: dealItemId,
-          newItemId: relisted.id,
-          productKey,
+          skipped: 'no_fresh_paid_or_relist',
+          periodic: periodicResult,
+          chatId: currentLastChatId,
         })
       } catch (err) {
+        try {
+          if (dealItemId) {
+            autolistSetItemState(tokenHash, dealItemId, {
+              status: 'error',
+              error: err && err.message ? String(err.message) : String(err),
+              updatedAt: nowTs,
+            })
+          }
+        } catch (_) { }
         return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'autolist failed' })
       }
     })
@@ -2855,6 +3672,19 @@ const server = http.createServer(async (req, res) => {
 
       try {
         const result = await fetchCompletedItemsFromPlayerok(token, userAgent)
+        try {
+          const tokenHash = hashToken(token)
+          autolistPruneItemStateMap(tokenHash, nowTs)
+          if (Array.isArray(result?.items)) {
+            result.items = result.items.map((it) => {
+              const id = it && it.id != null ? String(it.id) : null
+              if (!id) return it
+              const st = autolistGetItemState(tokenHash, id)
+              if (!st) return it
+              return { ...it, autolistRuntime: st }
+            })
+          }
+        } catch (_) { }
         return sendJson(res, 200, result)
       } catch (err) {
         const message = err && err.message ? String(err.message) : 'Не удалось загрузить завершённые лоты с Playerok'
@@ -2930,36 +3760,6 @@ const server = http.createServer(async (req, res) => {
             if (byTitle) category = byTitle
           }
 
-          let supercellEmail = null
-          try {
-            const fullDeal = await requestDealById(token, userAgent, d.id)
-            const fields =
-              (fullDeal && Array.isArray(fullDeal.obtainingFields) && fullDeal.obtainingFields) ||
-              (fullDeal &&
-                fullDeal.item &&
-                Array.isArray(fullDeal.item.dataFields) &&
-                fullDeal.item.dataFields) ||
-              []
-            for (const f of fields) {
-              const label = (f && typeof f.label === 'string' && f.label) || ''
-              const value = (f && Object.prototype.hasOwnProperty.call(f, 'value') && f.value) || null
-              if (!value) continue
-              const normalized = label.toLowerCase()
-              if (
-                normalized.includes('supercell') ||
-                normalized.includes('super cell') ||
-                normalized.includes('super sell') ||
-                normalized === 'почта supercell id' ||
-                normalized === 'supercell id'
-              ) {
-                supercellEmail = String(value)
-                break
-              }
-            }
-          } catch (_) {
-            // ignore details fetch errors
-          }
-
           return {
             id: d.id,
             itemId: d.itemId || null,
@@ -2970,7 +3770,9 @@ const server = http.createServer(async (req, res) => {
             soldAt: d.soldAt || 0,
             price: Number(d.price) || 0,
             buyerName: d.buyerName || null,
-            buyerSupercellEmail: supercellEmail,
+            // Почту Supercell ID подтягиваем при запросе чата (/deal-chat-messages),
+            // чтобы не делать по /in-progress-deals N дополнительных запросов deal-by-id и не ловить rate limit.
+            buyerSupercellEmail: null,
             chatId: d.chatId || null,
           }
         }))
@@ -2980,6 +3782,79 @@ const server = http.createServer(async (req, res) => {
           err && err.message
             ? String(err.message)
             : 'Не удалось загрузить сделки в выполнении с Playerok'
+        return sendJson(res, 500, { error: message })
+      }
+    })
+    return
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/completed-deals') {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1e6) {
+        req.connection.destroy()
+      }
+    })
+    req.on('end', async () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const token = payload.token
+      const userAgent = payload.userAgent
+      if (!token) {
+        return sendJson(res, 400, { error: 'Token is required' })
+      }
+      try {
+        const [{ deals }, { items: activeItems }, { items: completedItems }] = await Promise.all([
+          fetchCompletedDealsFromPlayerok(token, userAgent),
+          fetchActiveItemsFromPlayerok(token, userAgent),
+          fetchCompletedItemsFromPlayerok(token, userAgent),
+        ])
+        const itemIdToGame = new Map()
+        const titleToGame = new Map()
+        for (const it of [...activeItems, ...completedItems]) {
+          const id = it.id != null ? String(it.id) : null
+          const game = (it.game || '').trim()
+          const title = (it.title || '').trim()
+          if (id && game) itemIdToGame.set(id, game)
+          if (title && game && !titleToGame.has(title)) titleToGame.set(title, game)
+        }
+        const list = deals.map((d) => {
+          let category =
+            (d.category && String(d.category).trim()) ||
+            (d.itemId ? itemIdToGame.get(String(d.itemId)) : null) ||
+            null
+          if (!category && d.productKey && typeof d.productKey === 'string') {
+            const sepIndex = d.productKey.indexOf('::')
+            if (sepIndex > 0) category = d.productKey.slice(0, sepIndex).trim()
+          }
+          if (!category && d.productTitle) {
+            category = titleToGame.get(String(d.productTitle).trim()) || null
+          }
+          return {
+            id: d.id,
+            itemId: d.itemId || null,
+            status: d.status || null,
+            productKey: d.productKey,
+            productTitle: d.productTitle,
+            category: category || '',
+            soldAt: d.soldAt || 0,
+            price: Number(d.price) || 0,
+            buyerName: d.buyerName || null,
+            buyerSupercellEmail: null,
+            chatId: d.chatId || null,
+          }
+        })
+        return sendJson(res, 200, { list })
+      } catch (err) {
+        const message =
+          err && err.message
+            ? String(err.message)
+            : 'Не удалось загрузить завершённые сделки с Playerok'
         return sendJson(res, 500, { error: message })
       }
     })
@@ -3009,13 +3884,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'token and (dealId or chatId) are required' })
       }
       try {
-        const { messages, buyerSupercellEmail } = await fetchDealChatMessagesFromPlayerok(
+        const { messages, buyerSupercellEmail, itemTitle, itemImageUrl } = await fetchDealChatMessagesFromPlayerok(
           token,
           userAgent,
           dealId,
           chatId
         )
-        return sendJson(res, 200, { list: messages, buyerSupercellEmail })
+        return sendJson(res, 200, { list: messages, buyerSupercellEmail, itemTitle, itemImageUrl })
       } catch (err) {
         const message =
           err && err.message
@@ -3174,5 +4049,170 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}/`)
+
+  const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+
+  function postLocal(pathname, body) {
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify(body)
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: PORT,
+        path: pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      }, (res) => {
+        let chunks = ''
+        res.on('data', (c) => { chunks += c })
+        res.on('end', () => {
+          try {
+            const json = chunks ? JSON.parse(chunks) : {}
+            if (res.statusCode >= 400) resolve({ ok: false, error: json.error || res.statusCode })
+            else resolve(json)
+          } catch {
+            resolve({ ok: false, error: 'parse error' })
+          }
+        })
+      })
+      req.on('error', reject)
+      req.write(data)
+      req.end()
+    })
+  }
+
+  // Автовыставление: периодически вызываем autolist-tick (по сохранённому токену).
+  // Важно: не допускаем наложения вызовов, иначе легко ловим rate limit Playerok.
+  let autolistInFlight = false
+  console.log('[autolist] background task scheduled (interval: 15s)')
+  setInterval(async () => {
+    if (autolistInFlight) return
+    try {
+      const row = getStoredToken.get()
+      if (!row || !row.token) return
+      autolistInFlight = true
+      await postLocal('/api/playerok/autolist-tick', { token: row.token, userAgent: DEFAULT_USER_AGENT })
+    } catch (_) { /* ignore */ }
+    finally {
+      autolistInFlight = false
+    }
+  }, 15000)
+
+  // Автоподнятие: раз в 15 сек проверяем для каждого товара «пора ли поднять» по его расписанию.
+  // Отдельный таймер на каждый товар не делаем — один общий цикл проще и надёжнее при перезапуске процесса.
+  const autobumpLastAttemptByKey = {}
+  console.log('[autobump] background task scheduled (interval: 15s)')
+  setInterval(async () => {
+    try {
+      const row = getStoredToken.get()
+      if (!row || !row.token) return
+      const token = row.token
+      const userAgent = DEFAULT_USER_AGENT
+      const tokenHash = hashToken(token)
+
+      const [settingsRows, bumpRows, salesRows, activeResult] = await Promise.all([
+        Promise.resolve(getAllSettings.all(tokenHash)),
+        Promise.resolve(getBumpHistory.all(tokenHash)),
+        Promise.resolve(getSalesHistory.all(tokenHash)),
+        fetchActiveItemsFromPlayerok(token, userAgent),
+      ])
+
+      const settingsByKey = {}
+      for (const r of settingsRows || []) {
+        if (r.product_key && r.settings) {
+          try {
+            settingsByKey[r.product_key] = JSON.parse(r.settings)
+          } catch (_) { }
+        }
+      }
+      const lastBumpByKey = {}
+      for (const r of bumpRows || []) {
+        const k = r.product_key || r.product_title
+        if (!k) continue
+        const t = r.bumped_at || 0
+        if (!lastBumpByKey[k] || t > lastBumpByKey[k]) lastBumpByKey[k] = t
+      }
+      // Последняя продажа по товару (без возвратов): сбрасывает «интервал» — следующее поднятие = sold_at + interval.
+      const lastSaleByKey = {}
+      for (const r of salesRows || []) {
+        if (r.is_refund) continue
+        const k = r.product_key || r.product_title
+        if (!k) continue
+        const t = r.sold_at || 0
+        if (!lastSaleByKey[k] || t > lastSaleByKey[k]) lastSaleByKey[k] = t
+      }
+      const items = activeResult.items || []
+      const activeLotByKey = {}
+      for (const lot of items) {
+        const st = String(lot?.status || '').toUpperCase()
+        if (st && st !== 'APPROVED' && st !== 'ACTIVE' && st !== 'PUBLISHED') continue
+        const key = buildProductKey(lot.game || '', lot.title || '')
+        if (!activeLotByKey[key]) activeLotByKey[key] = lot
+      }
+
+      const now = new Date()
+      const nowMins = now.getHours() * 60 + now.getMinutes()
+      const nowTs = Math.floor(now.getTime() / 1000)
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const startOfDayTs = Math.floor(startOfDay.getTime() / 1000)
+
+      for (const [key, s] of Object.entries(settingsByKey)) {
+        if (String(key).startsWith('__group__::')) continue
+        if (!s?.autobump?.enabled || !Array.isArray(s.autobump.schedule) || s.autobump.schedule.length === 0) continue
+        const lot = activeLotByKey[key]
+        if (!lot) continue
+
+        const schedule = s.autobump.schedule || []
+        const windowsContainingNow = schedule
+          .map((win) => {
+            const startParts = (win.start || '00:00').toString().split(':')
+            const endParts = (win.end || '23:59').toString().split(':')
+            const startMins = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10) || 0
+            const endMins = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10) || 0
+            const inWindow = startMins <= endMins
+              ? (nowMins >= startMins && nowMins < endMins)
+              : (nowMins >= startMins || nowMins < endMins)
+            return inWindow ? { win, startMins, endMins } : null
+          })
+          .filter(Boolean)
+        const byPriority = windowsContainingNow.sort(
+          (a, b) => (Number(a.win.priority) ?? 1) - (Number(b.win.priority) ?? 1)
+        )
+        const active = byPriority[0]
+        if (!active) continue
+
+        const { win } = active
+        const startMins = active.startMins
+        const endMins = active.endMins
+        const intervalSec = (win.intervalMinutes || 3) * 60
+        let windowStartTs = startOfDayTs + startMins * 60
+        let windowEndTs = startOfDayTs + endMins * 60
+        if (endMins <= startMins) windowEndTs += 24 * 3600
+
+        const lastBump = lastBumpByKey[key] || 0
+        const lastSale = lastSaleByKey[key] || 0
+        let baseTs = Math.max(lastBump, lastSale)
+        if (baseTs < windowStartTs) baseTs = windowStartTs
+        const nextBumpTs = baseTs + intervalSec
+
+        if (nextBumpTs > windowEndTs) continue
+        if (nowTs < nextBumpTs) continue
+
+        const lastAttempt = autobumpLastAttemptByKey[key] || 0
+        if (nowTs - lastAttempt < 60) continue
+        autobumpLastAttemptByKey[key] = nowTs
+
+        const res = await postLocal('/api/playerok/bump', {
+          token,
+          userAgent,
+          productKey: key,
+          productTitle: lot.title || 'Товар',
+          itemId: lot.id,
+          price: Number(lot.price) || 0,
+          priorityStatusId: s?.autobump?.priorityStatusId || null,
+        })
+        if (res.ok && res.bumpedAt) lastBumpByKey[key] = res.bumpedAt
+      }
+    } catch (_) { /* ignore */ }
+  }, 15000)
 })
 

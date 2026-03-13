@@ -116,30 +116,49 @@ export function LotBoostTab({
     if (!s?.autobump?.enabled || !Array.isArray(s.autobump.schedule) || s.autobump.schedule.length === 0) {
       return null
     }
-    const nowMins = new Date().getHours() * 60 + new Date().getMinutes()
-    for (const win of s.autobump.schedule) {
-      const startParts = (win.start || '00:00').toString().split(':')
-      const endParts = (win.end || '23:59').toString().split(':')
-      const startMins = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10) || 0
-      const endMins = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10) || 0
-      const inWindow = startMins <= endMins
-        ? (nowMins >= startMins && nowMins < endMins)
-        : (nowMins >= startMins || nowMins < endMins)
-      if (!inWindow) continue
-      const intervalSec = (win.intervalMinutes || 3) * 60
-      const last = lastBump || 0
-      const nextBumpTs = last + intervalSec
-      if (now < nextBumpTs) {
-        const secLeft = nextBumpTs - now
-        const mins = Math.floor(secLeft / 60)
-        const secs = secLeft % 60
-        if (mins >= 1) return `Следующее поднятие через ${mins} мин`
-        return `Следующее поднятие через ${secs} сек`
-      }
-      return 'Должно подняться сейчас (если не поднимается — см. консоль/логи сервера)'
+    const nowDate = new Date()
+    const nowMins = nowDate.getHours() * 60 + nowDate.getMinutes()
+    const startOfDay = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate())
+    const startOfDayTs = Math.floor(startOfDay.getTime() / 1000)
+    const windowsContainingNow = s.autobump.schedule
+      .map((win) => {
+        const startParts = (win.start || '00:00').toString().split(':')
+        const endParts = (win.end || '23:59').toString().split(':')
+        const startMins = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10) || 0
+        const endMins = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10) || 0
+        const inWindow = startMins <= endMins
+          ? (nowMins >= startMins && nowMins < endMins)
+          : (nowMins >= startMins || nowMins < endMins)
+        return inWindow ? { win, startMins, endMins } : null
+      })
+      .filter(Boolean)
+    const byPriority = [...windowsContainingNow].sort(
+      (a, b) => (Number(a.win.priority) ?? 1) - (Number(b.win.priority) ?? 1)
+    )
+    const active = byPriority[0]
+    if (!active) {
+      const nextWin = s.autobump.schedule[0]
+      return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
     }
-    const nextWin = s.autobump.schedule[0]
-    return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
+    const { win, startMins, endMins } = active
+    const intervalSec = (win.intervalMinutes || 3) * 60
+    let windowStartTs = startOfDayTs + startMins * 60
+    let windowEndTs = startOfDayTs + endMins * 60
+    if (endMins <= startMins) windowEndTs += 24 * 3600
+    const baseTs = (lastBump && lastBump >= windowStartTs) ? lastBump : windowStartTs
+    const nextBumpTs = baseTs + intervalSec
+    if (nextBumpTs > windowEndTs) {
+      const nextWin = s.autobump.schedule[0]
+      return `Следующее окно: ${nextWin.start || '00:00'}–${nextWin.end || '23:59'}`
+    }
+    if (now < nextBumpTs) {
+      const secLeft = nextBumpTs - now
+      const mins = Math.floor(secLeft / 60)
+      const secs = secLeft % 60
+      if (mins >= 1) return `Следующее поднятие через ${mins} мин`
+      return `Следующее поднятие через ${secs} сек`
+    }
+    return 'Должно подняться сейчас (если не поднимается — см. консоль/логи сервера)'
   }
 
   return (

@@ -268,6 +268,137 @@ body {
   gap: 1.25rem;
 }
 
+.optimization-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.optimization-summary__item {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 0.75rem;
+}
+
+.optimization-summary__label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.optimization-summary__value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-top: 0.25rem;
+  color: var(--text-main);
+}
+
+.optimization-callouts {
+  margin-top: 0.75rem;
+}
+
+.optimization-callout {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  padding: 0.75rem;
+}
+
+.optimization-callout--warn {
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.optimization-callout__title {
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  color: var(--text-main);
+}
+
+.optimization-callout__list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text-main);
+}
+
+.optimization-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.optimization-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+
+.optimization-table th,
+.optimization-table td {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.92rem;
+  color: var(--text-main);
+}
+
+.optimization-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elevated);
+  z-index: 1;
+}
+
+.optimization-table--compact {
+  min-width: 100%;
+}
+
+.optimization-row--error td {
+  background: rgba(244, 67, 54, 0.08);
+}
+
+.optimization-endpoint {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.optimization-endpoint__method {
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.optimization-endpoint__url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.optimization-endpoint__tag {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.optimization-td--endpoint {
+  white-space: nowrap;
+}
+
+.optimization-td--url,
+.optimization-td--explain,
+.optimization-td--stack,
+.optimization-td--statuses {
+  white-space: normal;
+  word-break: break-all;
+}
+
+@media (max-width: 980px) {
+  .optimization-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .app-main {
     grid-template-columns: minmax(0, 1fr);
@@ -436,6 +567,14 @@ body {
   border-radius: 8px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Непрочитанное сообщение от покупателя — подсветка до наведения */
+.chat-message--new {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .chat-message__meta {
@@ -494,6 +633,227 @@ body {
   vertical-align: middle;
 }
 
+.chat-list {
+  margin-top: 0.5rem;
+  max-height: 26rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chat-list__item {
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-list__item:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.chat-list__item--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-soft);
+}
+
+.chat-list__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.chat-list__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.chat-list__buyer {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-list__badge {
+  min-width: 1.5rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.chat-list__preview {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-list__time {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  align-self: flex-end;
+}
+
+.chat-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-root);
+  margin-top: 0.25rem;
+}
+
+.chat-filter-toggle__btn {
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.chat-filter-toggle__btn:hover {
+  color: var(--text-main);
+}
+
+.chat-filter-toggle__btn--active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chat-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.chat-header-row__info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.chat-header-row__thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--bg-root);
+}
+
+.chat-header-row__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-header-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.chat-header-row__buyer {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.chat-header-row__hide-btn {
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat-header-row__hide-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.chat-item-card {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.chat-item-card__image-wrap {
+  width: 80px;
+  height: 80px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-root);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-item-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.chat-item-card__placeholder {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 0.25rem;
+}
+
+.chat-item-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.chat-item-card__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-main);
+}
+
+.chat-item-card__buyer {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .chat-lightbox {
   position: fixed;
   inset: 0;
@@ -544,6 +904,44 @@ body {
   margin-top: 0.75rem;
 }
 
+.deal-category-filter {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.deal-category-filter__chip {
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.deal-category-filter__chip:hover {
+  border-color: var(--accent-soft);
+}
+
+.deal-category-filter__chip--active {
+  background: var(--accent);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.deal-category-filter__badge {
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .deal-chat-row {
   display: flex;
   flex-direction: row;
@@ -552,6 +950,11 @@ body {
   border-radius: 12px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
+  margin-bottom: 0.75rem;
+}
+
+.deal-chat-list__category>.deal-chat-row:last-child {
+  margin-bottom: 0;
 }
 
 .deal-chat-row__info {
@@ -567,25 +970,60 @@ body {
 }
 
 .deal-chat-row__category {
-  font-size: 0.85rem;
-  color: var(--text-muted);
+  align-self: center;
+  margin-top: 0.1rem;
+  margin-bottom: 0.2rem;
+  padding: 0.15rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .deal-chat-list__category {
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.9rem;
 }
 
 .deal-chat-list__category:last-child {
   margin-bottom: 0;
 }
 
-.deal-chat-list__category-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin: 0 0 0.6rem 0;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--border-subtle);
+.deal-chat-row__category--blue {
+  background: rgba(80, 140, 255, 0.12);
+  color: #2f6bff;
+  border-color: rgba(80, 140, 255, 0.4);
+}
+
+.deal-chat-row__category--green {
+  background: rgba(46, 184, 92, 0.12);
+  color: #22a055;
+  border-color: rgba(46, 184, 92, 0.4);
+}
+
+.deal-chat-row__category--orange {
+  background: rgba(255, 159, 67, 0.14);
+  color: #d97a16;
+  border-color: rgba(255, 159, 67, 0.4);
+}
+
+.deal-chat-row__category--purple {
+  background: rgba(155, 89, 182, 0.14);
+  color: #9b59b6;
+  border-color: rgba(155, 89, 182, 0.4);
+}
+
+.deal-chat-row__category--pink {
+  background: rgba(255, 99, 164, 0.14);
+  color: #ff4b9a;
+  border-color: rgba(255, 99, 164, 0.4);
+}
+
+.deal-chat-row__category--default {
+  background: rgba(120, 120, 140, 0.12);
+  color: var(--text-main);
+  border-color: rgba(120, 120, 140, 0.4);
 }
 
 .deal-chat-row__meta {
@@ -596,6 +1034,46 @@ body {
   color: var(--text-muted);
 }
 
+.deal-chat-row__email-box {
+  margin-top: 0.15rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.deal-chat-row__email-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.deal-chat-row__email-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  word-break: break-all;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}
+
+.deal-chat-row__email-box--valid {
+  border-color: rgba(34, 197, 94, 0.7);
+  background: rgba(34, 197, 94, 0.08);
+  color: #15803d;
+}
+
+.deal-chat-row__email-box--invalid {
+  border-color: rgba(239, 68, 68, 0.8);
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}
+
 .deal-chat-row__price {
   font-weight: 600;
   color: var(--text-main);
@@ -604,7 +1082,19 @@ body {
 .deal-chat-row__chat {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 420px;
 }
+
+.deal-chat-row__chat-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
 
 .deal-chat-row__toggle {
   display: flex;
@@ -670,6 +1160,61 @@ body {
 .deal-chat-row__input-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.deal-chat-row__commands {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.deal-chat-row__global-commands {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.deal-chat-row__command-btn {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.deal-chat-row__command-btn:hover {
+  border-color: #2563eb;
+  background: rgba(59, 130, 246, 0.2);
+  color: #1d4ed8;
+}
+
+.deal-chat-row__command-btn--success {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.deal-chat-row__command-btn--success:hover {
+  border-color: #16a34a;
+  background: rgba(34, 197, 94, 0.2);
+  color: #15803d;
+}
+
+.deal-chat-row__command-btn--danger {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.deal-chat-row__command-btn--danger:hover {
+  border-color: #b91c1c;
+  background: rgba(239, 68, 68, 0.2);
+  color: #991b1b;
 }
 
 @media (max-width: 768px) {
@@ -934,6 +1479,71 @@ body {
   overflow: hidden;
   background: var(--bg-root);
   flex-shrink: 0;
+  position: relative;
+}
+
+.lot-card__autolist-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 2;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 1rem;
+  line-height: 1;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background: rgba(255, 255, 255, 0.98);
+  color: #0f172a;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+
+[data-theme="dark"] .lot-card__autolist-badge {
+  background: rgba(15, 23, 42, 0.98);
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.lot-card__autolist-badge--disabled {
+  background: #fee2e2;
+  border-color: rgba(185, 28, 28, 0.55);
+  color: #7f1d1d;
+}
+
+.lot-card__autolist-badge--processing {
+  background: #dbeafe;
+  border-color: rgba(37, 99, 235, 0.55);
+  color: #1d4ed8;
+}
+
+.lot-card__autolist-badge--error {
+  background: #ffedd5;
+  border-color: rgba(180, 83, 9, 0.55);
+  color: #7c2d12;
+}
+
+[data-theme="dark"] .lot-card__autolist-badge--disabled {
+  background: rgba(185, 28, 28, 0.38);
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fee2e2;
+}
+
+[data-theme="dark"] .lot-card__autolist-badge--processing {
+  background: rgba(37, 99, 235, 0.35);
+  border-color: rgba(147, 197, 253, 0.55);
+  color: #eff6ff;
+}
+
+[data-theme="dark"] .lot-card__autolist-badge--error {
+  background: rgba(180, 83, 9, 0.4);
+  border-color: rgba(253, 186, 116, 0.55);
+  color: #fff7ed;
 }
 
 /* Блок текста — визуально отделён от изображения */
@@ -1254,33 +1864,51 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 0.15rem 0;
 }
 
 .lot-settings-schedule-row {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
+  gap: 0.35rem;
   flex: 1;
-  min-width: 0;
+  min-width: min-content;
+  flex-wrap: nowrap;
 }
 
 .lot-settings-schedule__label {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .lot-settings-input--time {
-  min-width: 6rem;
+  width: 5.25rem;
+  min-width: 5.25rem;
   flex: 0 0 auto;
 }
 
 .lot-settings-input--num {
-  width: 4rem;
-  min-width: 4rem;
+  width: 3.5rem;
+  min-width: 3.5rem;
   flex: 0 0 auto;
+}
+
+.lot-settings-schedule-priority-badge {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 2rem;
+}
+
+.lot-settings-input--interval {
+  width: 3.5rem;
+  min-width: 3.5rem;
 }
 
 .lot-settings-input--price {
@@ -1291,6 +1919,37 @@ body {
 
 .lot-settings-schedule__remove {
   flex-shrink: 0;
+}
+
+.lot-settings-schedule-drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  color: var(--text-muted);
+  padding: 0.25rem 0.15rem;
+  user-select: none;
+  font-size: 1rem;
+  line-height: 1;
+  border-radius: 2px;
+}
+.lot-settings-schedule-drag-handle:hover {
+  color: var(--text);
+  background: var(--bg-muted);
+}
+.lot-settings-schedule-drag-handle:active {
+  cursor: grabbing;
+}
+
+.lot-settings-schedule-item--dragging .lot-settings-schedule-drag-handle {
+  cursor: grabbing;
+}
+.lot-settings-schedule-item--dragging {
+  opacity: 0.7;
+}
+
+.lot-settings-schedule-item--drag-over {
+  outline: 2px solid var(--primary, #3b82f6);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .lot-settings-automessage-list {
@@ -1381,6 +2040,16 @@ body {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.lot-settings-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.lot-settings-btn:disabled:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-root);
 }
 
 .lot-settings-btn--secondary:hover {
@@ -1570,4 +2239,50 @@ body {
 .lot-settings-block .card-text {
   margin: 0;
   font-size: 0.95rem;
+}
+
+.commands-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.commands-list__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.commands-list__input {
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  font-size: 0.9rem;
+}
+
+.commands-list__input--label {
+  min-width: 9rem;
+  flex: 0 0 9rem;
+}
+
+.commands-list__input--text {
+  min-width: 10rem;
+  flex: 1;
+}
+
+.commands-list__delete {
+  border: none;
+  background: none;
+  color: var(--color-error);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+}
+
+.commands-list__delete:hover {
+  background: rgba(185, 28, 28, 0.1);
 }

@@ -6,10 +6,6 @@ import {
   fetchActiveLots,
   fetchCompletedLots,
   getProductKey,
-  loadProductSettingsList,
-  fetchBumpHistory,
-  recordBump,
-  autolistTick,
   loadStoredToken,
   saveStoredToken,
 } from './services/playerokApi'
@@ -22,8 +18,10 @@ import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { InProgressLotsTab } from './features/completed/InProgressLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { CommandsTab } from './features/commands/CommandsTab.jsx'
+import { ChatTab } from './features/chat/ChatTab.jsx'
 import { TokenTab } from './features/token/TokenTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
+import { OptimizationTab } from './features/optimization/OptimizationTab.jsx'
 
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
@@ -34,9 +32,11 @@ const TABS = [
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
+  { id: 'chat', label: 'Чаты' },
   { id: 'commands', label: 'Команды' },
   { id: 'token', label: 'Токен' },
   { id: 'profit', label: 'Статистика' },
+  { id: 'optimization', label: 'Оптимизация' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -88,7 +88,6 @@ function App() {
   const [loadingLots, setLoadingLots] = useState(false)
   const [errorLots, setErrorLots] = useState(null)
   const lastFetchedTokenRef = useRef(null)
-  const autobumpLastAttemptByKeyRef = useRef({})
 
   const [completedLots, setCompletedLots] = useState([])
   const [loadingCompletedLots, setLoadingCompletedLots] = useState(false)
@@ -174,139 +173,18 @@ function App() {
     document.documentElement.setAttribute('data-theme', darkTheme ? 'dark' : 'light')
   }, [darkTheme])
 
+  // Загружаем токен с сервера только после входа — иначе с другого устройства/браузера запрос идёт без сессии и токен не подставляется
   useEffect(() => {
+    if (!authChecked || !isAuthenticated) return
     let cancelled = false
       ; (async () => {
         const stored = await loadStoredToken()
-        if (cancelled) return
-        if (stored) setToken(stored)
+        if (!cancelled && stored) setToken(stored)
       })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    return () => { cancelled = true }
+  }, [authChecked, isAuthenticated])
 
-  useEffect(() => {
-    if (!token) return
-    const activeLots = [...lots]
-    if (activeLots.length === 0) return
-
-    const run = async () => {
-      try {
-        const [settingsRes, historyRes] = await Promise.all([
-          loadProductSettingsList(token),
-          fetchBumpHistory(token),
-        ])
-        const settingsByKey = {}
-          ; (settingsRes.list || []).forEach(({ productKey, settings }) => {
-            if (productKey && settings) settingsByKey[productKey] = settings
-          })
-        const lastBumpByKey = {}
-          ; (historyRes.list || []).forEach((item) => {
-            const k = item.productKey || item.productTitle
-            if (!lastBumpByKey[k] || item.bumpedAt > lastBumpByKey[k]) {
-              lastBumpByKey[k] = item.bumpedAt
-            }
-          })
-
-        const now = new Date()
-        const nowMins = now.getHours() * 60 + now.getMinutes()
-        const nowTs = Math.floor(now.getTime() / 1000)
-
-        const activeLotByKey = {}
-        for (const lot of activeLots) {
-          const key = getProductKey(lot)
-          if (!activeLotByKey[key]) activeLotByKey[key] = lot
-        }
-
-        for (const [key, s] of Object.entries(settingsByKey)) {
-          if (!s?.autobump?.enabled || !Array.isArray(s.autobump.schedule) || s.autobump.schedule.length === 0) continue
-          const lot = activeLotByKey[key]
-          if (!lot) continue
-
-          for (const win of s.autobump.schedule) {
-            const startParts = (win.start || '00:00').toString().split(':')
-            const endParts = (win.end || '23:59').toString().split(':')
-            const startMins = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10) || 0
-            const endMins = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10) || 0
-            const inWindow = startMins <= endMins
-              ? (nowMins >= startMins && nowMins < endMins)
-              : (nowMins >= startMins || nowMins < endMins)
-            if (!inWindow) continue
-
-            const intervalSec = (win.intervalMinutes || 3) * 60
-            const last = lastBumpByKey[key] || 0
-            if (nowTs - last < intervalSec) continue
-
-            try {
-              const lastAttempt = autobumpLastAttemptByKeyRef.current[key] || 0
-              if (nowTs - lastAttempt < 60) break
-              autobumpLastAttemptByKeyRef.current[key] = nowTs
-              console.info('[autobump] attempt', {
-                productKey: key,
-                itemId: lot.id,
-                title: lot.title,
-                window: {
-                  start: win.start,
-                  end: win.end,
-                  intervalMinutes: win.intervalMinutes || 3,
-                },
-                nowTs,
-                lastBumpTs: last,
-              })
-              await recordBump(token, {
-                productKey: key,
-                productTitle: lot.title,
-                itemId: lot.id,
-                price: Number(lot.price) || 0,
-                priorityStatusId: s?.autobump?.priorityStatusId,
-              })
-              lastBumpByKey[key] = nowTs
-              console.info('[autobump] success', { productKey: key, itemId: lot.id, bumpedAt: nowTs })
-            } catch (err) {
-              console.warn('[autobump] failed', {
-                productKey: key,
-                itemId: lot.id,
-                error: err instanceof Error ? err.message : String(err),
-              })
-            }
-            break
-          }
-        }
-
-      } catch (_) {
-        // ignore
-      }
-    }
-
-    run()
-    const interval = setInterval(run, 30 * 1000)
-    return () => clearInterval(interval)
-  }, [token, lots, completedLots])
-
-  // Автовыставление по чату: каждые 5 сек проверяем только последний чат.
-  useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    const run = async () => {
-      try {
-        const res = await autolistTick(token)
-        if (cancelled) return
-        if (res?.action === 'relisted') {
-          fetchActiveLots(token).then(setLots).catch(() => { })
-          fetchCompletedLots(token).then(setCompletedLots).catch(() => { })
-        }
-      } catch (_err) {
-        // ignore
-      }
-    }
-    run()
-    const interval = setInterval(run, 5000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [token])
+  // Автоподнятие лотов выполняется только на бэкенде (фоновой задачей).
 
   if (!authChecked || (!isAuthenticated && !isLoginPage)) {
     if (isLoginPage) {
@@ -422,6 +300,7 @@ function App() {
             />
           )}
           {activeTab === 'in-progress' && <InProgressLotsTab token={token} />}
+          {activeTab === 'chat' && <ChatTab token={token} />}
           {activeTab === 'commands' && (
             <CommandsTab
               token={token}
@@ -434,6 +313,7 @@ function App() {
             <TokenTab token={token} onTokenChange={handleTokenChange} />
           )}
           {activeTab === 'profit' && <ProfitTab token={token} />}
+          {activeTab === 'optimization' && <OptimizationTab />}
         </section>
       </main>
     </div>
