@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './index.css'
-import { checkAuth } from './services/authApi'
+import { checkAuth, logout } from './services/authApi'
 import {
   fetchActiveLots,
   fetchCompletedLots,
@@ -10,6 +10,7 @@ import {
   saveStoredToken,
 } from './services/playerokApi'
 import { LoginPage } from './features/auth/LoginPage.jsx'
+import { RegisterPage } from './features/auth/RegisterPage.jsx'
 import { AutoListingTab } from './features/auto-listing/AutoListingTab.jsx'
 import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
@@ -41,6 +42,7 @@ function App() {
   const navigate = useNavigate()
   const pathParts = location.pathname.split('/').filter(Boolean)
   const isLoginPage = pathParts[0] === 'login'
+  const isRegisterPage = pathParts[0] === 'register'
   const isLotPage = pathParts[0] === 'lot' && pathParts[1]
   const lotIdFromUrl = isLotPage ? pathParts[1] : null
   const activeTab =
@@ -62,14 +64,14 @@ function App() {
 
   useEffect(() => {
     if (!authChecked) return
-    if (isLoginPage && isAuthenticated) {
+    if ((isLoginPage || isRegisterPage) && isAuthenticated) {
       navigate('/active', { replace: true })
       return
     }
-    if (!isLoginPage && !isAuthenticated) {
+    if (!isLoginPage && !isRegisterPage && !isAuthenticated) {
       navigate('/login', { replace: true })
     }
-  }, [authChecked, isLoginPage, isAuthenticated, navigate])
+  }, [authChecked, isLoginPage, isRegisterPage, isAuthenticated, navigate])
 
   useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
@@ -88,6 +90,17 @@ function App() {
   const [loadingCompletedLots, setLoadingCompletedLots] = useState(false)
   const [errorCompletedLots, setErrorCompletedLots] = useState(null)
   const lastFetchedCompletedTokenRef = useRef(null)
+
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } catch {
+      // ignore
+    }
+    setToken('')
+    setIsAuthenticated(false)
+    navigate('/login', { replace: true })
+  }
 
   const handleTokenChange = (nextToken) => {
     setToken(nextToken)
@@ -174,16 +187,19 @@ function App() {
     let cancelled = false
       ; (async () => {
         const stored = await loadStoredToken()
-        if (!cancelled && stored) setToken(stored)
+        if (!cancelled) setToken(stored || '')
       })()
     return () => { cancelled = true }
   }, [authChecked, isAuthenticated])
 
   // Автоподнятие лотов выполняется только на бэкенде (фоновой задачей).
 
-  if (!authChecked || (!isAuthenticated && !isLoginPage)) {
+  if (!authChecked || (!isAuthenticated && !isLoginPage && !isRegisterPage)) {
     if (isLoginPage) {
       return <LoginPage onLoginSuccess={() => setIsAuthenticated(true)} />
+    }
+    if (isRegisterPage) {
+      return <RegisterPage />
     }
     return (
       <div className="app-root" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
@@ -195,6 +211,9 @@ function App() {
   if (isLoginPage) {
     return <LoginPage onLoginSuccess={() => setIsAuthenticated(true)} />
   }
+  if (isRegisterPage) {
+    return <RegisterPage />
+  }
 
   return (
     <div className="app-root">
@@ -203,19 +222,29 @@ function App() {
           <div className="app-logo">Playeroksait</div>
           <div className="app-subtitle">Панель управления лотами</div>
         </div>
-        <label className="theme-toggle">
-          <input
-            type="checkbox"
-            checked={darkTheme}
-            onChange={(e) => setDarkTheme(e.target.checked)}
-            aria-label="Тёмная тема"
-            className="theme-toggle__input"
-          />
-          <span className="theme-toggle__switch" aria-hidden="true">
-            <span className="theme-toggle__knob" />
-          </span>
-          <span className="theme-toggle__label">Тёмная тема</span>
-        </label>
+        <div className="app-header-right">
+          <label className="theme-toggle">
+            <input
+              type="checkbox"
+              checked={darkTheme}
+              onChange={(e) => setDarkTheme(e.target.checked)}
+              aria-label="Тёмная тема"
+              className="theme-toggle__input"
+            />
+            <span className="theme-toggle__switch" aria-hidden="true">
+              <span className="theme-toggle__knob" />
+            </span>
+            <span className="theme-toggle__label">Тёмная тема</span>
+          </label>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ marginLeft: '1rem' }}
+            onClick={handleLogout}
+          >
+            Выйти
+          </button>
+        </div>
       </header>
 
       <main className="app-main">

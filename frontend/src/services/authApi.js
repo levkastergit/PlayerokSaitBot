@@ -4,6 +4,7 @@ const BACKEND_ORIGIN =
   import.meta.env.VITE_BACKEND_ORIGIN ||
   (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
 const AUTH_LOGIN_URL = `${BACKEND_ORIGIN}/api/auth/login`
+const AUTH_REGISTER_URL = `${BACKEND_ORIGIN}/api/auth/register`
 const AUTH_ME_URL = `${BACKEND_ORIGIN}/api/auth/me`
 const AUTH_LOGOUT_URL = `${BACKEND_ORIGIN}/api/auth/logout`
 
@@ -37,6 +38,28 @@ export async function login(loginValue, password) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       return { ok: false, error: data.error || 'Ошибка входа' }
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Ошибка сети' }
+  }
+}
+
+/**
+ * Регистрация нового пользователя.
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function register(loginValue, password) {
+  try {
+    const res = await trackedFetch(AUTH_REGISTER_URL, {
+      ...opts,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login: loginValue, password: password || '' }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: data.error || 'Ошибка регистрации' }
     }
     return { ok: true }
   } catch (err) {

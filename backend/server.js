@@ -24,7 +24,8 @@ const AUTH_PASSWORD_HASH =
 const AUTH_ENABLED = AUTH_LOGIN !== ''
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 часа
-const sessions = new Map() // sessionId -> { expiresAt }
+// sessionId -> { userId, expiresAt }
+const sessions = new Map()
 
 // Кэш для лотов: уменьшает количество запросов к Playerok API и предотвращает rate limit
 const LOTS_CACHE_TTL_MS = 2 * 60 * 1000 // 2 минуты
@@ -181,9 +182,18 @@ function parseScryptHash(encoded) {
   }
 }
 
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16)
+  const key = crypto.scryptSync(String(password || ''), salt, 32)
+  return `scrypt$${salt.toString('base64')}$${key.toString('base64')}`
+}
+
 function verifyPassword(password, encodedHash) {
   const parsed = parseScryptHash(encodedHash)
-  if (!parsed) return false
+  if (!parsed) {
+    // Обратная совместимость: если хэш не в формате scrypt$, считаем, что это просто plaintext.
+    return String(password || '') === String(encodedHash || '')
+  }
   const derived = crypto.scryptSync(String(password || ''), parsed.salt, parsed.key.length)
   return crypto.timingSafeEqual(derived, parsed.key)
 }
@@ -283,9 +293,16 @@ function isSessionValid(sessionId) {
   return true
 }
 
-function createSession() {
+function getSessionUserId(sessionId) {
+  if (!sessionId) return null
+  const s = sessions.get(sessionId)
+  if (!s || Date.now() > s.expiresAt) return null
+  return s.userId || null
+}
+
+function createSession(userId) {
   const sessionId = crypto.randomBytes(32).toString('hex')
-  sessions.set(sessionId, { expiresAt: Date.now() + SESSION_TTL_MS })
+  sessions.set(sessionId, { userId, expiresAt: Date.now() + SESSION_TTL_MS })
   return sessionId
 }
 
@@ -562,19 +579,38 @@ const DATA_DIR = path.join(__dirname, 'data')
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
 const DB_PATH = path.join(DATA_DIR, 'product-settings.db')
 const db = new Database(DB_PATH)
+
+// Пользователи приложения
 db.exec(`
-  CREATE TABLE IF NOT EXISTS product_settings (
-    product_key TEXT NOT NULL PRIMARY KEY,
-    settings TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    login TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
   )
 `)
+
+// Настройки товаров, привязанные к пользователю
+db.exec(`
+  CREATE TABLE IF NOT EXISTS product_settings (
+    user_id INTEGER NOT NULL,
+    product_key TEXT NOT NULL,
+    settings TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, product_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`)
+
+// Токен Playerok, привязанный к пользователю
 db.exec(`
   CREATE TABLE IF NOT EXISTS tokens (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     token TEXT NOT NULL,
     token_enc TEXT,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `)
 // Миграция bump_history: добавляем item_id для подсчёта поднятий конкретного лота.
@@ -588,18 +624,21 @@ try {
 db.exec(`
   CREATE TABLE IF NOT EXISTS bump_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     product_key TEXT NOT NULL,
     product_title TEXT NOT NULL,
     bumped_at INTEGER NOT NULL,
     price REAL NOT NULL DEFAULT 0,
-    item_id TEXT
+    item_id TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_bump_history_bumped_at ON bump_history(bumped_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_bump_history_bumped_at ON bump_history(user_id, bumped_at DESC)`)
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sales_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     product_key TEXT NOT NULL,
     product_title TEXT NOT NULL,
     sold_at INTEGER NOT NULL,
@@ -609,10 +648,11 @@ db.exec(`
     item_id TEXT,
     buyer_name TEXT,
     is_refund INTEGER DEFAULT 0,
-    UNIQUE(deal_id)
+    UNIQUE(deal_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_sales_history_sold_at ON sales_history(sold_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sales_history_sold_at ON sales_history(user_id, sold_at DESC)`)
 try {
   const cols = db.prepare('PRAGMA table_info(sales_history)').all()
   if (!cols.some((c) => c.name === 'is_refund')) {
@@ -626,12 +666,14 @@ try {
 db.exec(`
   CREATE TABLE IF NOT EXISTS listing_fees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     product_key TEXT NOT NULL,
     fee REAL NOT NULL DEFAULT 0,
-    relisted_at INTEGER NOT NULL
+    relisted_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_listing_fees_product ON listing_fees(product_key, relisted_at)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_listing_fees_product ON listing_fees(user_id, product_key, relisted_at)`)
 
 // Миграция: удаляем token_hash из всех таблиц — токен хранится только в tokens. Должна выполниться ДО определения prepared statements.
 function migrateRemoveTokenHash() {
@@ -686,25 +728,93 @@ function migrateRemoveTokenHash() {
   }
 }
 
+// Миграции для перехода на user_id
 migrateRemoveTokenHash()
+;(function migrateUserScopedData() {
+  try {
+    // Создаём базового пользователя id=1, если таблица пуста и включена AUTH_LOGIN
+    const usersCount = db.prepare('SELECT COUNT(1) AS c FROM users').get().c || 0
+    if (usersCount === 0 && AUTH_LOGIN) {
+      const now = Math.floor(Date.now() / 1000)
+      const passwordHash = AUTH_PASSWORD_HASH || AUTH_PASSWORD || 'changeme'
+      db.prepare(
+        'INSERT INTO users (id, login, password_hash, created_at) VALUES (1, ?, ?, ?)'
+      ).run(AUTH_LOGIN, passwordHash, now)
+    }
+
+    // product_settings: если нет user_id, создаём новую таблицу и привязываем всё к user_id=1
+    const psCols = db.prepare('PRAGMA table_info(product_settings)').all()
+    if (!psCols.some((c) => c.name === 'user_id')) {
+      db.exec(`
+        CREATE TABLE product_settings_new (
+          user_id INTEGER NOT NULL,
+          product_key TEXT NOT NULL,
+          settings TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, product_key)
+        )
+      `)
+      db.exec(`
+        INSERT INTO product_settings_new (user_id, product_key, settings, updated_at)
+        SELECT 1 AS user_id, product_key, settings, updated_at FROM product_settings
+      `)
+      db.exec('DROP TABLE product_settings')
+      db.exec('ALTER TABLE product_settings_new RENAME TO product_settings')
+    }
+
+    // tokens: если нет user_id, привязываем существующую запись к user_id=1
+    const tCols = db.prepare('PRAGMA table_info(tokens)').all()
+    if (!tCols.some((c) => c.name === 'user_id')) {
+      db.exec('ALTER TABLE tokens ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+    }
+    // Гарантируем уникальность user_id для корректной работы ON CONFLICT(user_id)
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id)')
+
+    // bump_history: добавляем user_id и проставляем 1 для существующих записей
+    const bhCols = db.prepare('PRAGMA table_info(bump_history)').all()
+    if (!bhCols.some((c) => c.name === 'user_id')) {
+      db.exec('ALTER TABLE bump_history ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+    }
+
+    // sales_history: добавляем user_id и проставляем 1 для существующих записей
+    const shCols2 = db.prepare('PRAGMA table_info(sales_history)').all()
+    if (!shCols2.some((c) => c.name === 'user_id')) {
+      db.exec('ALTER TABLE sales_history ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+    }
+
+    // listing_fees: добавляем user_id и проставляем 1 для существующих записей
+    const lfCols = db.prepare('PRAGMA table_info(listing_fees)').all()
+    if (!lfCols.some((c) => c.name === 'user_id')) {
+      db.exec('ALTER TABLE listing_fees ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+    }
+
+    // hidden_chats: добавляем user_id и проставляем 1 для существующих записей
+    const hcCols = db.prepare('PRAGMA table_info(hidden_chats)').all()
+    if (!hcCols.some((c) => c.name === 'user_id')) {
+      db.exec('ALTER TABLE hidden_chats ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+    }
+  } catch (e) {
+    console.error('[migrateUserScopedData] failed', e)
+  }
+})()
 
 const getStoredToken = db.prepare(`
-  SELECT token, token_enc, updated_at FROM tokens WHERE id = 1
+  SELECT token, token_enc, updated_at FROM tokens WHERE user_id = ?
 `)
 const upsertStoredToken = db.prepare(`
-  INSERT INTO tokens (id, token, token_enc, updated_at)
-  VALUES (1, ?, ?, ?)
-  ON CONFLICT(id) DO UPDATE SET
+  INSERT INTO tokens (user_id, token, token_enc, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(user_id) DO UPDATE SET
     token = excluded.token,
     token_enc = excluded.token_enc,
     updated_at = excluded.updated_at
 `)
 const deleteStoredToken = db.prepare(`
-  DELETE FROM tokens WHERE id = 1
+  DELETE FROM tokens WHERE user_id = ?
 `)
 
-function loadStoredTokenPlain() {
-  const row = getStoredToken.get()
+function loadStoredTokenPlain(userId) {
+  const row = getStoredToken.get(userId)
   if (!row) return { token: '', updatedAt: null }
   const updatedAt = row.updated_at != null ? row.updated_at : null
   if (row.token_enc) {
@@ -719,118 +829,110 @@ function loadStoredTokenPlain() {
   if (!legacy) return { token: '', updatedAt }
   try {
     const enc = encryptToken(legacy)
-    upsertStoredToken.run(legacy, enc, updatedAt || Math.floor(Date.now() / 1000))
+    upsertStoredToken.run(userId, legacy, enc, updatedAt || Math.floor(Date.now() / 1000))
     return { token: legacy, updatedAt }
   } catch {
     return { token: legacy, updatedAt }
   }
 }
 
-function getTokenFromBodyOrStored(payload) {
+function getTokenFromBodyOrStored(userId, payload) {
   const raw = payload && Object.prototype.hasOwnProperty.call(payload, 'token') ? payload.token : null
   const provided = raw == null ? '' : String(raw || '').trim()
   if (provided) return { token: provided }
-  const stored = loadStoredTokenPlain()
+  const stored = loadStoredTokenPlain(userId)
   return { token: stored.token || '' }
 }
 
-function getTokenFromQueryOrStored(query) {
+function getTokenFromQueryOrStored(userId, query) {
   const provided = query && query.token != null ? String(query.token || '').trim() : ''
   if (provided) return { token: provided }
-  const stored = loadStoredTokenPlain()
+  const stored = loadStoredTokenPlain(userId)
   return { token: stored.token || '' }
 }
 
 migrateRemoveTokenHash()
 
 const getSettings = db.prepare(`
-  SELECT settings, updated_at FROM product_settings WHERE product_key = ?
+  SELECT settings, updated_at FROM product_settings
+  WHERE user_id = ? AND product_key = ?
 `)
 const getAllSettings = db.prepare(`
   SELECT product_key, settings FROM product_settings
+  WHERE user_id = ?
 `)
 const upsertSettings = db.prepare(`
-  INSERT INTO product_settings (product_key, settings, updated_at)
-  VALUES (?, ?, ?)
-  ON CONFLICT (product_key) DO UPDATE SET
+  INSERT INTO product_settings (user_id, product_key, settings, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT (user_id, product_key) DO UPDATE SET
     settings = excluded.settings,
     updated_at = excluded.updated_at
 `)
 const deleteSettings = db.prepare(`
-  DELETE FROM product_settings WHERE product_key = ?
+  DELETE FROM product_settings WHERE user_id = ? AND product_key = ?
 `)
 
 const insertBump = db.prepare(`
-  INSERT INTO bump_history (product_key, product_title, bumped_at, price, item_id)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO bump_history (user_id, product_key, product_title, bumped_at, price, item_id)
+  VALUES (?, ?, ?, ?, ?, ?)
 `)
 const getBumpHistory = db.prepare(`
   SELECT product_key, product_title, bumped_at, price, item_id FROM bump_history
+  WHERE user_id = ?
   ORDER BY bumped_at DESC LIMIT 500
 `)
 
 const insertSale = db.prepare(`
   INSERT OR REPLACE INTO sales_history
-    (product_key, product_title, sold_at, price, status, deal_id, item_id, buyer_name, is_refund)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (user_id, product_key, product_title, sold_at, price, status, deal_id, item_id, buyer_name, is_refund)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 const getSalesHistory = db.prepare(`
   SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name
   FROM sales_history
+  WHERE user_id = ?
   ORDER BY sold_at DESC
   LIMIT 500
 `)
 const getSalesHistoryAll = db.prepare(`
   SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name
   FROM sales_history
+  WHERE user_id = ?
   ORDER BY sold_at DESC
 `)
-const deleteSalesHistoryByToken = db.prepare(`
-  DELETE FROM sales_history
+const deleteSalesHistoryByUser = db.prepare(`
+  DELETE FROM sales_history WHERE user_id = ?
 `)
 
 const insertListingFee = db.prepare(`
-  INSERT INTO listing_fees (product_key, fee, relisted_at)
-  VALUES (?, ?, ?)
+  INSERT INTO listing_fees (user_id, product_key, fee, relisted_at)
+  VALUES (?, ?, ?, ?)
 `)
 const getListingFees = db.prepare(`
   SELECT product_key, fee, relisted_at FROM listing_fees
+  WHERE user_id = ?
   ORDER BY relisted_at DESC
 `)
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS hidden_chats (
-    chat_id TEXT NOT NULL PRIMARY KEY,
-    hidden_at INTEGER NOT NULL
+    chat_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    hidden_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `)
 
-function getTokenFromBodyOrStored(payload) {
-  const raw = payload && Object.prototype.hasOwnProperty.call(payload, 'token') ? payload.token : null
-  const provided = raw == null ? '' : String(raw || '').trim()
-  if (provided) return { token: provided }
-  const stored = loadStoredTokenPlain()
-  return { token: stored.token || '' }
-}
-
-function getTokenFromQueryOrStored(query) {
-  const provided = query && query.token != null ? String(query.token || '').trim() : ''
-  if (provided) return { token: provided }
-  const stored = loadStoredTokenPlain()
-  return { token: stored.token || '' }
-}
-
 const upsertHiddenChat = db.prepare(`
-  INSERT INTO hidden_chats (chat_id, hidden_at)
-  VALUES (?, ?)
-  ON CONFLICT(chat_id) DO UPDATE SET
-    hidden_at = excluded.hidden_at
+  INSERT OR REPLACE INTO hidden_chats (chat_id, user_id, hidden_at)
+  VALUES (?, ?, ?)
 `)
 const deleteHiddenChat = db.prepare(`
-  DELETE FROM hidden_chats WHERE chat_id = ?
+  DELETE FROM hidden_chats WHERE chat_id = ? AND user_id = ?
 `)
 const getHiddenChats = db.prepare(`
-  SELECT chat_id FROM hidden_chats
+  SELECT chat_id FROM hidden_chats WHERE user_id = ?
 `)
 
 const getSalesYears = db.prepare(`
@@ -1468,7 +1570,11 @@ function getViewer(token, userAgent) {
         }
         const viewer = json?.data?.viewer
         if (!viewer || !viewer.id) {
-          return reject(new Error('Не удалось получить данные аккаунта (токен неверный или истёк)'))
+          const err = new Error('Не удалось получить данные аккаунта (токен неверный или истёк)')
+          err.userContext = {
+            tokenHash: token ? String(token).slice(0, 8) + '…' : null,
+          }
+          return reject(err)
         }
         resolve({ id: viewer.id, username: viewer.username || 'me' })
       })
@@ -2898,37 +3004,109 @@ const server = http.createServer(async (req, res) => {
       const login = (payload.login != null ? String(payload.login) : '').trim()
       const password = payload.password != null ? String(payload.password) : ''
       if (!AUTH_ENABLED) {
-        return sendJson(res, 200, { ok: true, sessionToken: 'disabled' })
+        // При выключенной аутентификации считаем, что работает одиночный пользователь id=1
+        const sessionId = createSession(1)
+        res.setHeader(
+          'Set-Cookie',
+          `session=${sessionId}; Path=/; HttpOnly; Max-Age=86400; SameSite=Lax`
+        )
+        return sendJson(res, 200, { ok: true, sessionToken: sessionId })
       }
-      const loginOk = login === AUTH_LOGIN
-      const passOk =
-        AUTH_PASSWORD_HASH
-          ? verifyPassword(password, AUTH_PASSWORD_HASH)
-          : password === AUTH_PASSWORD
-      if (!loginOk || !passOk) {
+
+      if (!login || !password) {
+        return sendJson(res, 400, { error: 'Login and password are required' })
+      }
+
+      // Ищем пользователя в таблице users
+      const userRow = db
+        .prepare('SELECT id, login, password_hash FROM users WHERE login = ?')
+        .get(login)
+      if (!userRow) {
         return sendJson(res, 401, { error: 'Неверный логин или пароль' })
       }
-      const sessionId = createSession()
+
+      const passOk = AUTH_PASSWORD_HASH
+        ? verifyPassword(password, userRow.password_hash)
+        : password === userRow.password_hash
+      if (!passOk) {
+        return sendJson(res, 401, { error: 'Неверный логин или пароль' })
+      }
+
+      const sessionId = createSession(userRow.id)
       res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; Max-Age=86400; SameSite=Lax`)
       return sendJson(res, 200, { ok: true, sessionToken: sessionId })
     })
     return
   }
 
-  // Требуем сессию для всех остальных /api/* при включённой аутентификации (кроме запросов с localhost — для фоновых задач)
-  if (AUTH_ENABLED && pathname.startsWith('/api/')) {
+  if (req.method === 'POST' && pathname === '/api/auth/register') {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload
+      try {
+        payload = body ? JSON.parse(body) : {}
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Invalid JSON body' })
+      }
+      const login = (payload.login != null ? String(payload.login) : '').trim()
+      const password = payload.password != null ? String(payload.password) : ''
+      if (!login || !password) {
+        return sendJson(res, 400, { error: 'Login and password are required' })
+      }
+      try {
+        const existing = db
+          .prepare('SELECT id FROM users WHERE login = ?')
+          .get(login)
+        if (existing) {
+          return sendJson(res, 409, { error: 'Пользователь с таким логином уже существует' })
+        }
+        const now = Math.floor(Date.now() / 1000)
+        const passwordHash = hashPassword(password)
+        const result = db
+          .prepare('INSERT INTO users (login, password_hash, created_at) VALUES (?, ?, ?)')
+          .run(login, passwordHash, now)
+        return sendJson(res, 200, { ok: true, userId: result.lastInsertRowid })
+      } catch (err) {
+        return sendJson(res, 500, { error: 'Failed to register user', details: err && err.message ? String(err.message) : String(err) })
+      }
+    })
+    return
+  }
+
+  // Требуем сессию для всех остальных /api/* при включённой аутентификации.
+  // Для локальных фоновых задач не навязываем сессию, но всё равно пытаемся извлечь userId из куки, если она есть.
+  let currentUserId = 1
+  if (pathname.startsWith('/api/')) {
     const remote = req.socket.remoteAddress || ''
     const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
-    if (!isLocal) {
-      const sessionId = getSessionIdFromRequest(req)
-      if (!sessionId || !isSessionValid(sessionId)) {
+    const sessionId = getSessionIdFromRequest(req)
+    if (sessionId && isSessionValid(sessionId)) {
+      const uid = getSessionUserId(sessionId)
+      if (uid) currentUserId = uid
+    }
+    // Для внешних запросов при включённой аутентификации сессия обязательна
+    if (AUTH_ENABLED && !isLocal) {
+      if (!sessionId || !isSessionValid(sessionId) || !getSessionUserId(sessionId)) {
         return sendJson(res, 401, { error: 'Unauthorized' })
       }
     }
   }
 
   if (req.method === 'GET' && pathname === '/api/auth/me') {
-    return sendJson(res, 200, { ok: true })
+    // Явная проверка сессии для проверки авторизации
+    if (!AUTH_ENABLED) {
+      return sendJson(res, 200, { ok: true, userId: currentUserId })
+    }
+    const sessionId = getSessionIdFromRequest(req)
+    if (!sessionId || !isSessionValid(sessionId)) {
+      return sendJson(res, 401, { error: 'Unauthorized' })
+    }
+    const uid = getSessionUserId(sessionId)
+    if (!uid) {
+      return sendJson(res, 401, { error: 'Unauthorized' })
+    }
+    return sendJson(res, 200, { ok: true, userId: uid })
   }
 
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
@@ -2940,7 +3118,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && pathname === '/api/token') {
     try {
-      const stored = loadStoredTokenPlain()
+      const stored = loadStoredTokenPlain(currentUserId)
       if (!stored.token && !stored.tokenKey) {
         return sendJson(res, 200, { token: null, updated_at: null })
       }
@@ -2971,13 +3149,13 @@ const server = http.createServer(async (req, res) => {
       const updatedAt = Math.floor(Date.now() / 1000)
       try {
         if (!token) {
-          deleteStoredToken.run()
+          deleteStoredToken.run(currentUserId)
           return sendJson(res, 200, { ok: true, updated_at: null })
         }
         const tokenHash = token
         const tokenEnc = encryptToken(token)
         // token сохраняем только для обратной совместимости (старые части кода), но фронту не отдаём
-        upsertStoredToken.run(token, tokenEnc, updatedAt)
+        upsertStoredToken.run(currentUserId, token, tokenEnc, updatedAt)
         return sendJson(res, 200, { ok: true, updated_at: updatedAt })
       } catch (err) {
         return sendJson(res, 500, {
@@ -2990,7 +3168,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/product-settings') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     const productKey = query.productKey
     if (!token || productKey == null || productKey === '') {
       return sendJson(res, 400, { error: 'token and productKey are required' })
@@ -2999,7 +3177,7 @@ const server = http.createServer(async (req, res) => {
       const tokenHash = token
       const key = String(productKey)
       console.info('[settings:get]', { tokenHash, productKey: key })
-      const row = getSettings.get(key)
+      const row = getSettings.get(currentUserId, key)
       if (!row) {
         console.info('[settings:get] не найдено', { tokenHash, productKey: key })
         return sendJson(res, 200, { settings: null })
@@ -3036,10 +3214,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/product-settings/list') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
-      const rows = getAllSettings.all()
+      const rows = getAllSettings.all(currentUserId)
       const list = rows.map((row) => {
         let settings = null
         try {
@@ -3056,10 +3234,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/category-commands/list') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
-      const rows = getAllSettings.all()
+      const rows = getAllSettings.all(currentUserId)
       const list = []
       for (const row of rows) {
         const key = row.product_key || ''
@@ -3097,7 +3275,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const rawCategory = payload.category
       const rawCommands = payload.commands
       const category = String(rawCategory || '').trim()
@@ -3124,7 +3302,7 @@ const server = http.createServer(async (req, res) => {
       const updatedAt = Math.floor(Date.now() / 1000)
       try {
         const productKey = getCategorySettingsKey(category)
-        upsertSettings.run(String(productKey), settingsStr, updatedAt)
+        upsertSettings.run(currentUserId, String(productKey), settingsStr, updatedAt)
         return sendJson(res, 200, { ok: true, category, updated_at: updatedAt })
       } catch (err) {
         return sendJson(res, 500, { error: 'Failed to save category commands', details: err.message })
@@ -3143,7 +3321,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const productKey = payload.productKey
       const settings = payload.settings
       if (!token || productKey == null || productKey === '') {
@@ -3156,7 +3334,7 @@ const server = http.createServer(async (req, res) => {
         : '{}'
       const updatedAt = Math.floor(Date.now() / 1000)
       try {
-        upsertSettings.run(key, settingsStr, updatedAt)
+        upsertSettings.run(currentUserId, key, settingsStr, updatedAt)
         try {
           const s = typeof settings === 'object' && settings !== null ? settings : {}
           console.info('[settings:save]', {
@@ -3194,7 +3372,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const productKey = payload.productKey
       if (!token || productKey == null || productKey === '') {
         return sendJson(res, 400, { error: 'token and productKey are required' })
@@ -3229,7 +3407,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
 
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
 
       if (!token) {
@@ -3263,7 +3441,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const afterCursor = payload.afterCursor || payload.after || null
       const limitRaw = payload.limit
@@ -3275,7 +3453,7 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const tokenHash = token
-        const hiddenRows = getHiddenChats.all()
+        const hiddenRows = getHiddenChats.all(currentUserId)
         const hiddenSet = new Set(
           (hiddenRows || []).map((r) => (r && r.chat_id != null ? String(r.chat_id) : null)).filter(Boolean)
         )
@@ -4251,7 +4429,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const chatId = payload.chatId
       if (!token || !chatId) {
         return sendJson(res, 400, { error: 'token and chatId are required' })
@@ -4259,7 +4437,7 @@ const server = http.createServer(async (req, res) => {
       const tokenHash = token
       const nowTs = Math.floor(Date.now() / 1000)
       try {
-        upsertHiddenChat.run(String(chatId), nowTs)
+        upsertHiddenChat.run(String(chatId), currentUserId, nowTs)
         return sendJson(res, 200, { ok: true, chatId: String(chatId) })
       } catch (err) {
         return sendJson(res, 500, { error: 'Failed to hide chat', details: err.message })
@@ -4283,14 +4461,14 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const chatId = payload.chatId
       if (!token || !chatId) {
         return sendJson(res, 400, { error: 'token and chatId are required' })
       }
       const tokenHash = token
       try {
-        deleteHiddenChat.run(String(chatId))
+        deleteHiddenChat.run(String(chatId), currentUserId)
         return sendJson(res, 200, { ok: true, chatId: String(chatId) })
       } catch (err) {
         return sendJson(res, 500, { error: 'Failed to unhide chat', details: err.message })
@@ -4300,10 +4478,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/sales-history') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
-      const rows = getSalesHistory.all(token)
+      const rows = getSalesHistory.all(currentUserId)
       const list = rows.map((row) => ({
         productKey: row.product_key,
         productTitle: row.product_title,
@@ -4330,12 +4508,12 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
       }
       try {
-        const result = deleteSalesHistoryByToken.run(token)
+        const result = deleteSalesHistoryByUser.run(currentUserId)
         return sendJson(res, 200, { ok: true, deleted: result.changes })
       } catch (err) {
         return sendJson(res, 500, {
@@ -4356,7 +4534,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
@@ -4427,7 +4605,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'token is required' })
@@ -4508,10 +4686,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/bump-history') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
-      const rows = getBumpHistory.all()
+      const rows = getBumpHistory.all(currentUserId)
       const list = rows.map((row) => ({
         productKey: row.product_key,
         productTitle: row.product_title,
@@ -4526,7 +4704,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/logs') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       // Возвращаем последние логи из буфера
@@ -4539,15 +4717,15 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-analytics/meta') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = token
-      const years = getSalesYears.all().map((r) => r.year).filter((y) => y != null)
+      const years = getSalesYears.all(currentUserId).map((r) => r.year).filter((y) => y != null)
       const yearQ = parseIntSafe(query.year, null)
       const months =
         yearQ != null
-          ? getSalesMonthsForYear.all(String(yearQ)).map((r) => r.month).filter((m) => m != null)
+          ? getSalesMonthsForYear.all(currentUserId, String(yearQ)).map((r) => r.month).filter((m) => m != null)
           : []
       return sendJson(res, 200, { years, months })
     } catch (err) {
@@ -4556,14 +4734,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-analytics') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = token
-      const salesRows = getSalesHistoryAll.all()
-      const bumpsRows = getBumpHistory.all()
-      const settingsRows = getAllSettings.all()
-      const listingFeesRows = getListingFees.all()
+      const salesRows = getSalesHistoryAll.all(currentUserId)
+      const bumpsRows = getBumpHistory.all(currentUserId)
+      const settingsRows = getAllSettings.all(currentUserId)
+      const listingFeesRows = getListingFees.all(currentUserId)
       const allList = computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows })
 
       const year = parseIntSafe(query.year, null)
@@ -4597,7 +4775,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/profit-stats') {
-    const { token } = getTokenFromQueryOrStored(query)
+    const { token } = getTokenFromQueryOrStored(currentUserId, query)
     if (!token) return sendJson(res, 400, { error: 'token is required' })
     try {
       const tokenHash = token
@@ -4698,7 +4876,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const productKey = payload.productKey
       const productTitle = payload.productTitle || 'Товар'
       const itemId = payload.itemId
@@ -4994,7 +5172,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       if (!token) return sendJson(res, 400, { error: 'Token is required' })
 
@@ -5756,7 +5934,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const itemId = payload.itemId
       const priorityStatusId = payload.priorityStatusId || null
       const userAgent = payload.userAgent
@@ -5788,7 +5966,7 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const itemId = payload.itemId
       const price = payload.price
       const userAgent = payload.userAgent
@@ -5867,7 +6045,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
 
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
 
       if (!token) {
@@ -5914,7 +6092,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'Token is required' })
@@ -6125,7 +6303,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       if (!token) {
         return sendJson(res, 400, { error: 'Token is required' })
@@ -6198,7 +6376,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || null
       const chatId = payload.chatId || null
@@ -6268,7 +6446,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || null
       const chatId = payload.chatId || null
@@ -6315,7 +6493,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
 
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || null
       const chatId = payload.chatId || null
@@ -6417,7 +6595,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || payload.id || null
       if (!token || !dealId) {
@@ -6448,7 +6626,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { error: 'Invalid JSON body' })
       }
-      const { token } = getTokenFromBodyOrStored(payload)
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload.userAgent
       const dealId = payload.dealId || payload.id || null
       if (!token || !dealId) {
@@ -6560,16 +6738,18 @@ server.listen(PORT, () => {
   console.log('[autobump] фоновое задание запланировано (интервал: 15 с)')
   setInterval(async () => {
     try {
-      const row = getStoredToken.get()
+      // Пока фоновое автоподнятие работает только для базового пользователя id=1
+      const userId = 1
+      const row = getStoredToken.get(userId)
       if (!row || !row.token) return
       const token = row.token
       const userAgent = DEFAULT_USER_AGENT
       const tokenHash = token
 
       const [settingsRows, bumpRows, salesRows, activeResult] = await Promise.all([
-        Promise.resolve(getAllSettings.all()),
-        Promise.resolve(getBumpHistory.all()),
-        Promise.resolve(getSalesHistoryAll.all()),
+        Promise.resolve(getAllSettings.all(userId)),
+        Promise.resolve(getBumpHistory.all(userId)),
+        Promise.resolve(getSalesHistoryAll.all(userId)),
         fetchActiveItemsFromPlayerok(token, userAgent),
       ])
 

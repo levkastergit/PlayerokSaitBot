@@ -1,26 +1,30 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { login } from '../../services/authApi'
+import { register } from '../../services/authApi'
 import './LoginPage.css'
 
-export function LoginPage({ onLoginSuccess }) {
+export function RegisterPage() {
   const navigate = useNavigate()
   const [loginValue, setLoginValue] = useState('')
   const [password, setPassword] = useState('')
+  const [password2, setPassword2] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    if (password !== password2) {
+      setError('Пароли не совпадают')
+      return
+    }
     setLoading(true)
-    const result = await login(loginValue, password)
+    const result = await register(loginValue, password)
     setLoading(false)
     if (result.ok) {
-      onLoginSuccess?.()
-      navigate('/active', { replace: true })
+      navigate('/login', { replace: true })
     } else {
-      setError(result.error || 'Неверный логин или пароль')
+      setError(result.error || 'Ошибка регистрации')
     }
   }
 
@@ -28,7 +32,7 @@ export function LoginPage({ onLoginSuccess }) {
     <div className="login-page">
       <div className="login-card">
         <h1 className="login-title">Playeroksait</h1>
-        <p className="login-subtitle">Войдите в панель управления</p>
+        <p className="login-subtitle">Создайте новый аккаунт</p>
         <form className="login-form" onSubmit={handleSubmit}>
           <label className="login-label">
             Логин
@@ -49,23 +53,35 @@ export function LoginPage({ onLoginSuccess }) {
               className="login-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
+              autoComplete="new-password"
+              required
+            />
+          </label>
+          <label className="login-label">
+            Повторите пароль
+            <input
+              type="password"
+              className="login-input"
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
+              autoComplete="new-password"
               required
             />
           </label>
           {error && <p className="login-error" role="alert">{error}</p>}
           <button type="submit" className="login-submit" disabled={loading}>
-            {loading ? 'Вход…' : 'Войти'}
+            {loading ? 'Регистрация…' : 'Зарегистрироваться'}
           </button>
           <button
             type="button"
             className="login-submit login-submit--secondary"
-            onClick={() => navigate('/register')}
+            onClick={() => navigate('/login')}
           >
-            Зарегистрировать аккаунт
+            Назад к входу
           </button>
         </form>
       </div>
     </div>
   )
 }
+
