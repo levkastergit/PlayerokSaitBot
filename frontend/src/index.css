@@ -197,6 +197,9 @@ body {
   padding-left: 1.75rem;
   min-height: 0;
   overflow: auto;
+  scroll-behavior: smooth;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
 }
 
 .tabs-nav {
@@ -242,12 +245,28 @@ body {
 }
 
 .tab-page {
-  max-width: 1100px;
+  max-width: 1600px;
   margin: 0 auto;
+  width: 100%;
+  padding-bottom: 2rem;
+  min-height: fit-content;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Для страницы чатов - убираем прокрутку страницы, прокрутка только внутри чатов */
+.tab-page--chat {
+  height: 100%;
+  max-height: 100%;
+  padding-bottom: 0;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .tab-page-header {
   margin-bottom: 1.75rem;
+  flex-shrink: 0;
 }
 
 .tab-page-header h1 {
@@ -268,139 +287,44 @@ body {
 
 .tab-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 1.25rem;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  padding-bottom: 0;
+  align-items: start;
 }
 
-.optimization-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.75rem;
-  margin-top: 0.75rem;
+/* Для страницы чатов - grid занимает всю оставшуюся высоту */
+.tab-page--chat .tab-grid {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
 }
 
-.optimization-summary__item {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: 0.75rem;
-}
-
-.optimization-summary__label {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.optimization-summary__value {
-  font-size: 1.4rem;
-  font-weight: 700;
-  margin-top: 0.25rem;
-  color: var(--text-main);
-}
-
-.optimization-callouts {
-  margin-top: 0.75rem;
-}
-
-.optimization-callout {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-subtle);
-  padding: 0.75rem;
-}
-
-.optimization-callout--warn {
-  background: rgba(255, 193, 7, 0.08);
-}
-
-.optimization-callout__title {
-  font-weight: 700;
-  margin-bottom: 0.5rem;
-  color: var(--text-main);
-}
-
-.optimization-callout__list {
-  margin: 0;
-  padding-left: 1.1rem;
-  color: var(--text-main);
-}
-
-.optimization-table-wrap {
-  overflow: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-}
-
-.optimization-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 900px;
-}
-
-.optimization-table th,
-.optimization-table td {
-  padding: 0.6rem 0.7rem;
-  border-bottom: 1px solid var(--border-subtle);
-  text-align: left;
-  vertical-align: top;
-  font-size: 0.92rem;
-  color: var(--text-main);
-}
-
-.optimization-table th {
-  position: sticky;
-  top: 0;
-  background: var(--bg-elevated);
-  z-index: 1;
-}
-
-.optimization-table--compact {
-  min-width: 100%;
-}
-
-.optimization-row--error td {
-  background: rgba(244, 67, 54, 0.08);
-}
-
-.optimization-endpoint {
+.tab-grid .card {
   display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
-  flex-wrap: wrap;
+  flex-direction: column;
+  height: fit-content;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
-.optimization-endpoint__method {
-  font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+/* Для страницы чатов - карточки занимают всю высоту */
+.tab-page--chat .tab-grid .card {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
 
-.optimization-endpoint__url {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+.tab-grid .card > *:last-child:not(.chat-messages):not(.chat-list) {
+  margin-top: auto;
 }
 
-.optimization-endpoint__tag {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  padding: 0.1rem 0.45rem;
-}
-
-.optimization-td--endpoint {
-  white-space: nowrap;
-}
-
-.optimization-td--url,
-.optimization-td--explain,
-.optimization-td--stack,
-.optimization-td--statuses {
-  white-space: normal;
-  word-break: break-all;
-}
-
-@media (max-width: 980px) {
-  .optimization-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+/* Для карточки с сообщениями - заголовок и другие элементы не должны мешать прокрутке */
+.tab-page--chat .tab-grid .card > .card-title,
+.tab-page--chat .tab-grid .card > .chat-header-row,
+.tab-page--chat .tab-grid .card > .chat-item-card,
+.tab-page--chat .tab-grid .card > form.deal-chat-row__input {
+  flex-shrink: 0;
 }
 
 @media (max-width: 900px) {
@@ -430,6 +354,8 @@ body {
   border: 1px solid var(--border-subtle);
   padding: 1.25rem 1.4rem;
   box-shadow: var(--shadow-soft);
+  min-height: fit-content;
+  position: relative;
 }
 
 .card-title {
@@ -561,48 +487,210 @@ body {
   margin-top: 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  max-height: 24rem;
+  gap: 0.75rem;
+  max-height: calc(100vh - 400px);
+  min-height: 250px;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.5rem;
+  scroll-behavior: smooth;
+  flex: 1 1 auto;
+}
+
+/* Для страницы чатов - сообщения занимают всю доступную высоту */
+.tab-page--chat .chat-messages {
+  flex: 1;
+  min-height: 200px;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.chat-messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 4px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 .chat-message {
-  padding: 0.5rem 0.75rem;
-  border-radius: 8px;
+  display: flex;
+  margin-bottom: 0.5rem;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Сообщение от покупателя (заказчика) - слева */
+.chat-message--buyer {
+  justify-content: flex-start;
+}
+
+.chat-message--buyer .chat-message__bubble {
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 18px 18px 18px 4px;
+  max-width: 70%;
 }
 
-/* Непрочитанное сообщение от покупателя — подсветка до наведения */
-.chat-message--new {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+.chat-message--buyer .chat-message__text {
+  color: var(--text-main);
 }
 
-.chat-message__meta {
+.chat-message--buyer .chat-message__time {
+  color: var(--text-muted);
+}
+
+.chat-message--buyer .chat-message__text-wrapper .chat-message__time {
+  text-align: left;
+}
+
+/* Сообщение от нас (продавца) - справа с подсветкой */
+.chat-message--seller {
+  justify-content: flex-end;
+}
+
+.chat-message--seller .chat-message__bubble {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 18px 18px 4px 18px;
+  max-width: 70%;
+}
+
+.chat-message--seller .chat-message__text {
+  color: #fff;
+}
+
+.chat-message--seller .chat-message__time {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.chat-message--seller .chat-message__text-wrapper .chat-message__time {
+  text-align: right;
+}
+
+/* Системное сообщение - на всю ширину */
+.chat-message--system {
+  justify-content: flex-start;
+}
+
+.chat-message--system .chat-message__bubble {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  max-width: 100%;
+  width: 100%;
+  text-align: center;
+  padding: 0.35rem 1rem;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 0.2rem;
+  align-items: center;
+  justify-content: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
-.chat-message__author {
-  font-weight: 600;
-  font-size: 0.9rem;
+.chat-message--system .chat-message__time {
+  display: inline;
+  text-align: center;
+  color: var(--text-muted);
+  margin: 0;
+  margin-left: 0.5rem;
+}
+
+.chat-message__bubble {
+  padding: 0.75rem 1rem;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.2s ease;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+}
+
+.chat-message__bubble:hover {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.chat-message__system-header {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin-bottom: 0;
+  margin-right: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.chat-message__system-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.chat-message__system-label {
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .chat-message__time {
-  font-size: 0.8rem;
-  color: var(--text-muted);
+  font-size: 0.75rem;
+  opacity: 0.8;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 
+/* Время в отдельной строке только если нет text-wrapper */
+.chat-message__bubble > .chat-message__time {
+  margin-top: 0.35rem;
+}
+
 .chat-message__text {
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
   white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.chat-message__text-wrapper {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.chat-message__text-wrapper .chat-message__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-message__text-wrapper .chat-message__time {
+  flex-shrink: 0;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.chat-message--system .chat-message__text {
+  display: inline;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .chat-message__placeholder {
@@ -610,8 +698,14 @@ body {
   font-style: italic;
 }
 
+.chat-message--buyer .chat-message__placeholder {
+  color: rgba(255, 255, 255, 0.8);
+}
+
 .chat-message__image-wrap {
   margin-top: 0.35rem;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .chat-message__image-btn {
@@ -639,18 +733,45 @@ body {
 
 .chat-list {
   margin-top: 0.5rem;
-  max-height: 26rem;
+  max-height: calc(100vh - 220px);
+  min-height: 250px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.4rem;
+  scroll-behavior: smooth;
+  flex: 1 1 auto;
+}
+
+/* Для страницы чатов - список чатов занимает всю доступную высоту */
+.tab-page--chat .chat-list {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-list::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+.chat-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 .chat-list__item {
   width: 100%;
   text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-radius: 8px;
+  padding: 0.5rem 0.55rem;
+  border-radius: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   cursor: pointer;
@@ -673,7 +794,11 @@ body {
 
 .chat-list__title {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-list__meta {
@@ -702,7 +827,7 @@ body {
 }
 
 .chat-list__preview {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -710,9 +835,10 @@ body {
 }
 
 .chat-list__time {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   align-self: flex-end;
+  margin-top: 0.1rem;
 }
 
 .chat-filter-toggle {
@@ -727,18 +853,26 @@ body {
 }
 
 .chat-filter-toggle__btn {
-  padding: 0.25rem 0.75rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
   border-radius: 999px;
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
   font-weight: 600;
+  line-height: 1;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 
 .chat-filter-toggle__btn:hover {
   color: var(--text-main);
+  transform: translateY(-1px);
 }
 
 .chat-filter-toggle__btn--active {
@@ -856,6 +990,27 @@ body {
 .chat-item-card__buyer {
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+.chat-item-card__email-box {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-start;
+}
+
+.chat-request-code__email-status {
+  margin-top: 0.2rem;
+  margin-bottom: 0;
+}
+
+.chat-request-code__email-status--valid {
+  color: #15803d;
 }
 
 .chat-lightbox {
@@ -1066,6 +1221,45 @@ body {
   max-width: 100%;
 }
 
+.deal-chat-row__email-input {
+  width: 100%;
+  min-width: 220px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  background: var(--bg-panel);
+  color: inherit;
+  font: inherit;
+}
+
+.deal-chat-row__email-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.deal-chat-row__email-input--valid {
+  border-color: rgba(34, 197, 94, 0.7);
+}
+
+.deal-chat-row__email-input--invalid {
+  border-color: rgba(239, 68, 68, 0.8);
+}
+
+.deal-chat-row__email-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.deal-chat-row__email-hint {
+  display: block;
+  width: 100%;
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
 .deal-chat-row__email-box--valid {
   border-color: rgba(34, 197, 94, 0.7);
   background: rgba(34, 197, 94, 0.08);
@@ -1128,37 +1322,45 @@ body {
 }
 
 .deal-chat-row__input {
-  margin-top: 0.75rem;
+  margin-top: 1rem;
   display: flex;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 
 .deal-chat-row__input-field {
   flex: 1;
   min-width: 0;
-  padding: 0.45rem 0.6rem;
-  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  border-radius: 12px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-panel);
   color: var(--text-main);
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .deal-chat-row__input-field:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .deal-chat-row__input-btn {
-  padding: 0.4rem 0.75rem;
-  border-radius: 8px;
+  padding: 0.65rem 1.25rem;
+  border-radius: 12px;
   border: none;
   background: var(--accent);
   color: #fff;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+.deal-chat-row__input-btn:hover:not(:disabled) {
+  background: var(--accent-strong);
+  transform: translateY(-1px);
 }
 
 .deal-chat-row__input-btn:disabled {
@@ -1455,17 +1657,17 @@ body {
 .lots-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 
 .lot-card {
   background: var(--bg-elevated);
-  border-radius: 14px;
+  border-radius: 12px;
   border: 1px solid var(--border-subtle);
-  padding: 1rem;
+  padding: 0.85rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -1477,9 +1679,9 @@ body {
 
 /* Блок изображения — отдельный визуальный блок со скруглением со всех сторон */
 .lot-card__image-wrap {
-  width: calc(100% + 2rem);
-  margin: -1rem -1rem 1rem -1rem;
-  border-radius: 14px;
+  width: calc(100% + 1.7rem);
+  margin: -0.85rem -0.85rem 0.85rem -0.85rem;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--bg-root);
   flex-shrink: 0;
@@ -1556,6 +1758,7 @@ body {
   flex-direction: column;
   gap: 0.5rem;
   padding-top: 0.25rem;
+  flex: 1;
 }
 
 .lot-card__image {
@@ -1585,7 +1788,7 @@ body {
 }
 
 .lot-card__price {
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: var(--text-main);
   margin: 0;
@@ -1613,9 +1816,9 @@ body {
 
 .lot-card__title {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.3;
   color: var(--text-main);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1624,10 +1827,10 @@ body {
 }
 
 .lot-card__tags {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin: 0;
-  line-height: 1.4;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -1657,10 +1860,194 @@ body {
   font-weight: 600;
 }
 
+/* Структурированная информация о поднятиях */
+.lot-card__bump-info {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.bump-info__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.725rem;
+  line-height: 1.35;
+  min-height: 1.4rem;
+}
+
+.bump-info__row:not(.bump-info__row--schedule):not(.bump-info__row--info):not(.bump-info__row--warning) .bump-info__label {
+  overflow: visible;
+  white-space: nowrap;
+  padding-right: 0.4rem;
+  font-size: 0.725rem;
+}
+
+.bump-info__row--schedule {
+  align-items: flex-start;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.bump-info__row--schedule .bump-info__schedule-content {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.bump-info__row--warning {
+  color: #d32f2f;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.bump-info__row--warning .bump-info__value {
+  grid-column: 2;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.bump-info__row--info {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: flex-start;
+}
+
+.bump-info__row--info .bump-info__info-content {
+  grid-column: 2;
+  min-width: 0;
+}
+
+
+.bump-info__icon {
+  flex-shrink: 0;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  width: 1.1rem;
+  text-align: center;
+  align-self: flex-start;
+  margin-top: 0.05rem;
+}
+
+.bump-info__label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bump-info__value {
+  color: var(--text-main);
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.bump-info__value--none {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.bump-info__value--next {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.bump-info__value--count {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+
+.bump-info__schedule-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.bump-info__schedule-item {
+  font-size: 0.7rem;
+  padding-left: 0.2rem;
+  line-height: 1.3;
+  margin-top: 0.15rem;
+}
+
+.bump-info__schedule-time {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.bump-info__info-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+}
+
+.bump-info__checklist {
+  margin: 0.25rem 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.bump-info__checklist li {
+  position: relative;
+  padding-left: 1rem;
+}
+
+.bump-info__checklist li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: bold;
+}
+
 @media (max-width: 900px) {
   .lots-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1rem;
+  }
+
+  .bump-info__row {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.4rem;
+    align-items: flex-start;
+  }
+
+  .bump-info__row:not(.bump-info__row--schedule):not(.bump-info__row--info):not(.bump-info__row--warning) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .bump-info__row:not(.bump-info__row--schedule):not(.bump-info__row--info):not(.bump-info__row--warning) .bump-info__icon {
+    align-self: flex-start;
+  }
+
+  .bump-info__row:not(.bump-info__row--schedule):not(.bump-info__row--info):not(.bump-info__row--warning) .bump-info__label {
+    margin-left: 1.7rem;
+  }
+
+  .bump-info__value {
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .bump-info__row:not(.bump-info__row--schedule):not(.bump-info__row--info):not(.bump-info__row--warning) .bump-info__value {
+    margin-left: 1.7rem;
+    margin-top: 0;
   }
 }
 
@@ -1668,11 +2055,18 @@ body {
   .lots-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .bump-info__label {
+    min-width: auto;
+  }
 }
 
 /* Экран настроек товара (новая «вкладка» — зашли в карточку) */
 .lot-settings-page {
   padding-top: 0.25rem;
+  padding-bottom: 0;
+  min-height: fit-content;
+  position: relative;
 }
 
 .lot-settings-page__back {
@@ -1846,6 +2240,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  animation: fade-in 0.2s ease;
+  overflow: hidden;
+  transition: opacity 0.2s ease, max-height 0.3s ease;
+  max-height: 2000px;
 }
 
 .lot-settings-autobump-extra {
@@ -1855,6 +2253,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  animation: fade-in 0.2s ease;
+  overflow: hidden;
+  transition: opacity 0.2s ease, max-height 0.3s ease;
+  max-height: 2000px;
 }
 
 .lot-settings-autobump__hint {
@@ -1965,6 +2367,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  animation: fade-in 0.2s ease;
+  overflow: hidden;
+  transition: opacity 0.2s ease, max-height 0.3s ease;
+  max-height: 2000px;
 }
 
 .lot-settings-automessage-list .lot-settings-field__label {
@@ -2031,6 +2437,7 @@ body {
 
 .lot-settings-field {
   display: block;
+  animation: fade-in 0.2s ease;
 }
 
 .lot-settings-field__label {
@@ -2040,12 +2447,12 @@ body {
 }
 
 .lot-settings-btn {
-  padding: 0.45rem 0.9rem;
-  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-root);
   color: var(--text-main);
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
@@ -2064,6 +2471,10 @@ body {
 .lot-settings-btn--secondary:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.lot-card__body > .lot-settings-btn {
+  margin-top: auto;
 }
 
 /* Модальное окно */
@@ -2201,6 +2612,7 @@ body {
 .lot-settings-page__actions {
   margin-top: 1.5rem;
   padding-top: 1rem;
+  padding-bottom: 0.5rem;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -2232,6 +2644,7 @@ body {
   background: var(--bg-elevated);
   border-radius: 12px;
   border: 1px solid var(--border-subtle);
+  transition: margin-bottom 0.2s ease;
 }
 
 .lot-settings-block:last-child {

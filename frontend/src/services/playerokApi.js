@@ -12,6 +12,8 @@ const BACKEND_COMPLETED_LOTS_URL =
 const BACKEND_IN_PROGRESS_DEALS_URL = `${BACKEND_ORIGIN}/api/playerok/in-progress-deals`
 const BACKEND_COMPLETED_DEALS_URL = `${BACKEND_ORIGIN}/api/playerok/completed-deals`
 const BACKEND_DEAL_CHAT_MESSAGES_URL = `${BACKEND_ORIGIN}/api/playerok/deal-chat-messages`
+const BACKEND_REQUEST_SUPERCELL_CODE_URL = `${BACKEND_ORIGIN}/api/playerok/request-supercell-code`
+const BACKEND_REQUEST_SUPERCELL_CODE_TEST_URL = `${BACKEND_ORIGIN}/api/playerok/request-supercell-code-test`
 const BACKEND_CANCEL_DEAL_URL = `${BACKEND_ORIGIN}/api/playerok/cancel-deal`
 const BACKEND_CONFIRM_DEAL_URL = `${BACKEND_ORIGIN}/api/playerok/confirm-deal`
 const BACKEND_USER_CHATS_URL = `${BACKEND_ORIGIN}/api/playerok/chats`
@@ -24,6 +26,19 @@ const BACKEND_CATEGORY_COMMANDS_LIST_URL = `${BACKEND_ORIGIN}/api/category-comma
 const BACKEND_CATEGORY_COMMANDS_URL = `${BACKEND_ORIGIN}/api/category-commands`
 
 const FETCH_CREDENTIALS = { credentials: 'include' }
+
+/** Собирает URL с безопасной передачей token в query.
+ *  Важно: + в token должен быть закодирован как %2B, иначе при парсинге URL
+ *  сервером + трактуется как пробел и настройки не находятся. */
+function buildUrlWithToken(baseUrl, token, extraParams = {}) {
+  const parts = []
+  if (token) parts.push(`token=${encodeURIComponent(token)}`)
+  for (const [k, v] of Object.entries(extraParams)) {
+    if (v != null && v !== '') parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+  }
+  const queryStr = parts.join('&')
+  return queryStr ? `${baseUrl}?${queryStr}` : baseUrl
+}
 
 function mapLotItem(item) {
   return {
@@ -42,6 +57,7 @@ function mapLotItem(item) {
     oldPrice: item.oldPrice,
     tags: item.tags,
     autolistRuntime: item.autolistRuntime || null,
+    createdAt: item.createdAt || null,
   }
 }
 
@@ -166,9 +182,7 @@ export function getGroupSettingsKey(label) {
 
 export async function loadProductSettings(token, productKey) {
   if (!productKey) return { settings: null }
-  const params = new URLSearchParams({ productKey })
-  if (token) params.set('token', token)
-  const url = `${BACKEND_PRODUCT_SETTINGS_URL}?${params.toString()}`
+  const url = buildUrlWithToken(BACKEND_PRODUCT_SETTINGS_URL, token, { productKey })
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -210,9 +224,7 @@ export async function deleteProductSettings(token, productKey) {
 
 /** Список всех настроек по токену (для фильтра «Автовыдача» и т.д.) */
 export async function loadProductSettingsList(token) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  const url = `${BACKEND_PRODUCT_SETTINGS_URL}/list?${params.toString()}`
+  const url = buildUrlWithToken(`${BACKEND_PRODUCT_SETTINGS_URL}/list`, token)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -229,12 +241,11 @@ const BACKEND_AUTOLIST_TICK_URL = `${BACKEND_ORIGIN}/api/playerok/autolist-tick`
 const BACKEND_BUMP_URL = `${BACKEND_ORIGIN}/api/playerok/bump`
 const BACKEND_PRIORITY_STATUSES_URL = `${BACKEND_ORIGIN}/api/playerok/item-priority-statuses`
 const BACKEND_SEND_CHAT_MESSAGE_URL = `${BACKEND_ORIGIN}/api/playerok/send-chat-message`
+const BACKEND_LOGS_URL = `${BACKEND_ORIGIN}/api/logs`
 
 /** История поднятий лотов */
 export async function fetchBumpHistory(token) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  const url = `${BACKEND_BUMP_HISTORY_URL}?${params.toString()}`
+  const url = buildUrlWithToken(BACKEND_BUMP_HISTORY_URL, token)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -246,9 +257,7 @@ export async function fetchBumpHistory(token) {
 
 /** История продаж (завершённые лоты со статусом SOLD) */
 export async function fetchSalesHistory(token) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  const url = `${BACKEND_SALES_HISTORY_URL}?${params.toString()}`
+  const url = buildUrlWithToken(BACKEND_SALES_HISTORY_URL, token)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -420,6 +429,58 @@ export async function sendDealChatMessage(token, { dealId, chatId, text }) {
   return data
 }
 
+/** Запросить код Supercell и отправить сервисное сообщение в чат сделки. */
+export async function requestSupercellCode(token, { dealId, chatId, email, category }) {
+  const trimmedEmail = String(email || '').trim()
+  const trimmedCategory = String(category || '').trim()
+  if (!trimmedEmail) throw new Error('Почта обязательна')
+  if (!trimmedCategory) throw new Error('Категория обязательна')
+  if (!dealId && !chatId) throw new Error('dealId или chatId обязателен')
+
+  const response = await trackedFetch(BACKEND_REQUEST_SUPERCELL_CODE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      dealId: dealId || undefined,
+      chatId: chatId || undefined,
+      email: trimmedEmail,
+      category: trimmedCategory,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка запроса кода Supercell: ${response.status}`)
+  }
+  return data
+}
+
+/** Тестовый ручной запрос кода Supercell без привязки к сделке. */
+export async function requestSupercellCodeTest({ email, category }) {
+  const trimmedEmail = String(email || '').trim()
+  const trimmedCategory = String(category || '').trim()
+  if (!trimmedEmail) throw new Error('Почта обязательна')
+  if (!trimmedCategory) throw new Error('Категория обязательна')
+
+  const response = await trackedFetch(BACKEND_REQUEST_SUPERCELL_CODE_TEST_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: trimmedEmail,
+      category: trimmedCategory,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка тестового запроса кода Supercell: ${response.status}`)
+  }
+  return data
+}
+
 /** Отменить сделку (оформить возврат) */
 export async function cancelDeal(token, dealId) {
   if (!dealId) throw new Error('dealId обязателен')
@@ -477,14 +538,13 @@ export async function clearSalesHistory(token) {
 
 /** Аналитика прибыли: продажи с себестоимостью, расходами и прибылью */
 export async function fetchProfitAnalytics(token, opts = {}) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
-  if (opts.month != null && opts.month !== '') params.set('month', String(opts.month))
-  if (opts.day != null && opts.day !== '') params.set('day', String(opts.day))
-  if (opts.limit != null) params.set('limit', String(opts.limit))
-  if (opts.offset != null) params.set('offset', String(opts.offset))
-  const url = `${BACKEND_ORIGIN}/api/profit-analytics?${params.toString()}`
+  const extra = {}
+  if (opts.year != null && opts.year !== '') extra.year = opts.year
+  if (opts.month != null && opts.month !== '') extra.month = opts.month
+  if (opts.day != null && opts.day !== '') extra.day = opts.day
+  if (opts.limit != null) extra.limit = opts.limit
+  if (opts.offset != null) extra.offset = opts.offset
+  const url = buildUrlWithToken(`${BACKEND_ORIGIN}/api/profit-analytics`, token, extra)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -496,10 +556,8 @@ export async function fetchProfitAnalytics(token, opts = {}) {
 
 /** Метаданные для фильтров прибыли (доступные годы/месяцы) */
 export async function fetchProfitMeta(token, opts = {}) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
-  const url = `${BACKEND_ORIGIN}/api/profit-analytics/meta?${params.toString()}`
+  const extra = opts.year != null && opts.year !== '' ? { year: opts.year } : {}
+  const url = buildUrlWithToken(`${BACKEND_ORIGIN}/api/profit-analytics/meta`, token, extra)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -510,12 +568,11 @@ export async function fetchProfitMeta(token, opts = {}) {
 
 /** Статистика по прибыли (агрегаты + самое прибыльное время) */
 export async function fetchProfitStats(token, opts = {}) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  if (opts.year != null && opts.year !== '') params.set('year', String(opts.year))
-  if (opts.month != null && opts.month !== '') params.set('month', String(opts.month))
-  if (opts.day != null && opts.day !== '') params.set('day', String(opts.day))
-  const url = `${BACKEND_ORIGIN}/api/profit-stats?${params.toString()}`
+  const extra = {}
+  if (opts.year != null && opts.year !== '') extra.year = opts.year
+  if (opts.month != null && opts.month !== '') extra.month = opts.month
+  if (opts.day != null && opts.day !== '') extra.day = opts.day
+  const url = buildUrlWithToken(`${BACKEND_ORIGIN}/api/profit-stats`, token, extra)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -599,19 +656,23 @@ export async function syncSalesFromPlayerokStream(token, onProgress) {
 /** Записать поднятие лота (вызов после поднятия на Playerok или для учёта) */
 export async function recordBump(token, { productKey, productTitle, itemId, price = 0, priorityStatusId }) {
   if (!productKey) throw new Error('productKey обязателен')
+  const body = {
+    ...(token ? { token } : {}),
+    productKey,
+    productTitle: productTitle || 'Товар',
+    itemId,
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    price: Number(price) || 0,
+  }
+  // Отправляем priorityStatusId только если он валидный (не null, не undefined, не пустая строка)
+  if (priorityStatusId && String(priorityStatusId).trim()) {
+    body.priorityStatusId = priorityStatusId
+  }
   const response = await trackedFetch(BACKEND_BUMP_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...(token ? { token } : {}),
-      productKey,
-      productTitle: productTitle || 'Товар',
-      itemId,
-      priorityStatusId,
-      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
-      price: Number(price) || 0,
-    }),
+    body: JSON.stringify(body),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -686,9 +747,7 @@ export async function fetchItemPriorityStatuses(token, { itemId, price }) {
 
 /** Список команд по категориям для вкладки «Команды» и «Выполнение» */
 export async function loadCategoryCommandsList(token) {
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  const url = `${BACKEND_CATEGORY_COMMANDS_LIST_URL}?${params.toString()}`
+  const url = buildUrlWithToken(BACKEND_CATEGORY_COMMANDS_LIST_URL, token)
   const response = await trackedFetch(url, FETCH_CREDENTIALS)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
@@ -717,6 +776,18 @@ export async function saveCategoryCommands(token, category, commands) {
   if (!response.ok) {
     throw new Error(data.error || `Ошибка сохранения команд: ${response.status}`)
   }
+  return data
+}
+
+/** Получение логов сервера */
+export async function fetchLogs(token) {
+  const url = buildUrlWithToken(BACKEND_LOGS_URL, token)
+  const response = await trackedFetch(url, FETCH_CREDENTIALS)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки логов: ${response.status}`)
+  }
+  const data = await response.json()
   return data
 }
 

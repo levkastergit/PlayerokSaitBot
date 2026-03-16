@@ -83,6 +83,7 @@ export function CommandsTab({ token, lots = [], loadingLots = false, errorLots =
         id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         label: '',
         text: '',
+        color: '#6c757d', // серый цвет по умолчанию
       },
     ])
   }
@@ -118,6 +119,7 @@ export function CommandsTab({ token, lots = [], loadingLots = false, errorLots =
         ...c,
         label: (c.label || '').trim(),
         text: (c.text || '').trim(),
+        color: (c.color || '#6c757d').trim(), // сохраняем цвет или используем серый по умолчанию
       }))
       .filter((c) => c.label || c.text)
 
@@ -269,6 +271,32 @@ export function CommandsTab({ token, lots = [], loadingLots = false, errorLots =
                           handleChangeCommand(index, 'text', e.target.value)
                         }
                       />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label
+                          style={{
+                            fontSize: '0.875rem',
+                            color: 'var(--text-secondary, #666)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Цвет:
+                        </label>
+                        <input
+                          type="color"
+                          value={cmd.color || '#6c757d'}
+                          onChange={(e) =>
+                            handleChangeCommand(index, 'color', e.target.value)
+                          }
+                          style={{
+                            width: '40px',
+                            height: '32px',
+                            border: '1px solid var(--border-color, #ddd)',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                          }}
+                          title="Выберите цвет кнопки"
+                        />
+                      </div>
                       <button
                         type="button"
                         className="commands-list__delete"

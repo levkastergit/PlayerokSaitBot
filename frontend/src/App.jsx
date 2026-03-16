@@ -15,19 +15,15 @@ import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
 import { ActiveLotsTab } from './features/active/ActiveLotsTab.jsx'
 import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
-import { InProgressLotsTab } from './features/completed/InProgressLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { ChatTab } from './features/chat/ChatTab.jsx'
 import { TokenTab } from './features/token/TokenTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
-import { OptimizationTab } from './features/optimization/OptimizationTab.jsx'
-
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
 const TABS = [
   { id: 'active', label: 'Активные' },
-  { id: 'in-progress', label: 'Выполнение' },
   { id: 'completed', label: 'Завершенные' },
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
@@ -36,7 +32,6 @@ const TABS = [
   { id: 'commands', label: 'Команды' },
   { id: 'token', label: 'Токен' },
   { id: 'profit', label: 'Статистика' },
-  { id: 'optimization', label: 'Оптимизация' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -299,7 +294,6 @@ function App() {
               errorLots={errorCompletedLots}
             />
           )}
-          {activeTab === 'in-progress' && <InProgressLotsTab token={token} />}
           {activeTab === 'chat' && <ChatTab token={token} />}
           {activeTab === 'commands' && (
             <CommandsTab
@@ -313,7 +307,6 @@ function App() {
             <TokenTab token={token} onTokenChange={handleTokenChange} />
           )}
           {activeTab === 'profit' && <ProfitTab token={token} />}
-          {activeTab === 'optimization' && <OptimizationTab />}
         </section>
       </main>
     </div>

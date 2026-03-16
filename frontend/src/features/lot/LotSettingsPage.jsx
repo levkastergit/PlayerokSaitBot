@@ -35,16 +35,28 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const splitSettingsForSave = (allSettings, label) => {
     const full = allSettings && typeof allSettings === 'object' ? allSettings : {}
     const trimmedLabel = String(label || '').trim()
+    
+    // Убираем priorityStatusId из autobump и autolist перед сохранением - всегда используем актуальные данные
+    const cleaned = { ...full }
+    if (cleaned.autobump && typeof cleaned.autobump === 'object') {
+      const { priorityStatusId, ...autobumpWithoutPriority } = cleaned.autobump
+      cleaned.autobump = autobumpWithoutPriority
+    }
+    if (cleaned.autolist && typeof cleaned.autolist === 'object') {
+      const { priorityStatusId, ...autolistWithoutPriority } = cleaned.autolist
+      cleaned.autolist = autolistWithoutPriority
+    }
+    
     const groupSettings = trimmedLabel
-      ? { ...full, settingsLabel: trimmedLabel }
-      : { ...full, settingsLabel: '' }
+      ? { ...cleaned, settingsLabel: trimmedLabel }
+      : { ...cleaned, settingsLabel: '' }
 
     // Автоподнятие не должно попадать в метку (групповые настройки).
     delete groupSettings.autobump
 
     const itemSettings = trimmedLabel
-      ? { settingsLabel: trimmedLabel, autobump: full.autobump || { enabled: false, schedule: [], priorityStatusId: null } }
-      : { ...full, settingsLabel: '' }
+      ? { settingsLabel: trimmedLabel, autobump: cleaned.autobump || { enabled: false, schedule: [] } }
+      : { ...cleaned, settingsLabel: '' }
 
     return { groupSettings, itemSettings, trimmedLabel }
   }
@@ -382,12 +394,13 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     setBumpCooldownUntil(Date.now() + 10_000)
     setNowTs(Date.now())
     try {
+      // НЕ передаем priorityStatusId - бэкенд всегда получает актуальный список статусов
       await recordBump(token, {
         productKey: baseProductKey,
         productTitle: lot.title || 'Товар',
         itemId: lot.id,
         price: lot.price,
-        priorityStatusId: productSettings?.autobump?.priorityStatusId || null,
+        // priorityStatusId не передается - всегда используется актуальный список статусов
       })
       setToast({ type: 'success', message: 'Товар поднят' })
     } catch (e) {
