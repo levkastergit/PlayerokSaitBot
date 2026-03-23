@@ -333,7 +333,8 @@ export function ChatTab({ token }) {
       setLoading(true)
       setError(null)
       try {
-        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        // `list` дальше может быть перенормализован, поэтому нужен `let`, а не `const`.
+        let { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
         if (cancelled) return
         // Проверка чатов без категории или с пустой категорией
         const chatsWithoutCategory = list.filter(chat => {

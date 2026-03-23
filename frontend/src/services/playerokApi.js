@@ -1,8 +1,16 @@
 import { trackedFetch } from './requestTracker'
 
-const BACKEND_ORIGIN =
-  import.meta.env.VITE_BACKEND_ORIGIN ||
-  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
+const ENV_ORIGIN = (import.meta.env.VITE_BACKEND_ORIGIN || '').trim()
+const RUNTIME_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
+
+// Важно: если `VITE_BACKEND_ORIGIN` задан (dev/prod), используем его напрямую.
+// Иначе пробуем вывести origin из текущего порта (например, Vite 5173 -> backend 3000).
+function inferBackendOrigin() {
+  if (ENV_ORIGIN) return ENV_ORIGIN
+  if (RUNTIME_ORIGIN && /:(5173|4173)$/i.test(RUNTIME_ORIGIN)) return 'http://localhost:3000'
+  return RUNTIME_ORIGIN || 'http://localhost:3000'
+}
+const BACKEND_ORIGIN = inferBackendOrigin()
 const BACKEND_ACTIVE_LOTS_URL =
   import.meta.env.VITE_BACKEND_ACTIVE_LOTS_URL ||
   `${BACKEND_ORIGIN}/api/playerok/active-lots`
