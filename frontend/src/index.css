@@ -119,6 +119,24 @@ body {
   color: var(--text-muted);
 }
 
+.theme-toggle__icon {
+  font-size: 1rem;
+  line-height: 1;
+  display: inline-flex;
+  width: 1rem;
+  justify-content: center;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  opacity: 1;
+}
+
+.theme-toggle__icon--sun {
+  color: #f59e0b;
+}
+
+.theme-toggle__icon--moon {
+  color: #818cf8;
+}
+
 .theme-toggle__input {
   position: absolute;
   width: 1px;
@@ -230,10 +248,34 @@ body {
     transform 0.08s ease;
 }
 
+.tab-button__icon {
+  width: 1.3rem;
+  height: 1.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tab-button__icon-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tab-button__text {
+  min-width: 0;
+}
+
 .tab-button:hover {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--text-main);
+}
+
+.tab-button:hover .tab-button__icon {
+  filter: saturate(1.05) brightness(1.02);
 }
 
 .tab-button--active {
@@ -242,6 +284,98 @@ body {
   color: var(--accent-strong);
   box-shadow: var(--shadow-soft);
   transform: translateY(-1px);
+}
+
+.tab-button--active .tab-button__icon {
+  filter: saturate(1.15) brightness(1.08);
+}
+
+.tab-button__icon--active {
+  color: #16a34a;
+}
+
+.tab-button__icon--completed {
+  color: #0ea5e9;
+}
+
+.tab-button__icon--auto-listing {
+  color: #8b5cf6;
+}
+
+.tab-button__icon--lot-boost {
+  color: #f97316;
+}
+
+.tab-button__icon--auto-delivery {
+  color: #06b6d4;
+}
+
+.tab-button__icon--chat {
+  color: #ec4899;
+}
+
+.tab-button__icon--commands {
+  color: #6366f1;
+}
+
+.tab-button__icon--settings {
+  color: #64748b;
+}
+
+.tab-button__icon--balance {
+  color: #eab308;
+}
+
+.tab-button__icon--profit {
+  color: #22c55e;
+}
+
+.tab-button__icon--actions {
+  color: #ef4444;
+}
+
+[data-theme="dark"] .tab-button__icon--active {
+  color: #4ade80;
+}
+
+[data-theme="dark"] .tab-button__icon--completed {
+  color: #38bdf8;
+}
+
+[data-theme="dark"] .tab-button__icon--auto-listing {
+  color: #a78bfa;
+}
+
+[data-theme="dark"] .tab-button__icon--lot-boost {
+  color: #fb923c;
+}
+
+[data-theme="dark"] .tab-button__icon--auto-delivery {
+  color: #22d3ee;
+}
+
+[data-theme="dark"] .tab-button__icon--chat {
+  color: #f472b6;
+}
+
+[data-theme="dark"] .tab-button__icon--commands {
+  color: #818cf8;
+}
+
+[data-theme="dark"] .tab-button__icon--settings {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .tab-button__icon--balance {
+  color: #facc15;
+}
+
+[data-theme="dark"] .tab-button__icon--profit {
+  color: #4ade80;
+}
+
+[data-theme="dark"] .tab-button__icon--actions {
+  color: #f87171;
 }
 
 .tab-page {
@@ -276,6 +410,17 @@ body {
   letter-spacing: 0.02em;
   line-height: 1.3;
   color: var(--text-main);
+}
+
+.tab-page-header--settings h1 {
+  font-size: 1.86rem;
+  font-weight: 750;
+  margin-bottom: 0.45rem;
+}
+
+.tab-page-header--settings .tab-page-description {
+  font-size: 1.02rem;
+  max-width: 56rem;
 }
 
 .tab-page-description {
@@ -315,15 +460,15 @@ body {
   min-height: 0;
 }
 
-.tab-grid .card > *:last-child:not(.chat-messages):not(.chat-list) {
+.tab-grid .card>*:last-child:not(.chat-messages):not(.chat-list) {
   margin-top: auto;
 }
 
 /* Для карточки с сообщениями - заголовок и другие элементы не должны мешать прокрутке */
-.tab-page--chat .tab-grid .card > .card-title,
-.tab-page--chat .tab-grid .card > .chat-header-row,
-.tab-page--chat .tab-grid .card > .chat-item-card,
-.tab-page--chat .tab-grid .card > form.deal-chat-row__input {
+.tab-page--chat .tab-grid .card>.card-title,
+.tab-page--chat .tab-grid .card>.chat-header-row,
+.tab-page--chat .tab-grid .card>.chat-item-card,
+.tab-page--chat .tab-grid .card>form.deal-chat-row__input {
   flex-shrink: 0;
 }
 
@@ -656,7 +801,7 @@ body {
 }
 
 /* Время в отдельной строке только если нет text-wrapper */
-.chat-message__bubble > .chat-message__time {
+.chat-message__bubble>.chat-message__time {
   margin-top: 0.35rem;
 }
 
@@ -1506,6 +1651,166 @@ body {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.settings-page {
+  max-width: 1520px;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(350px, 1fr) minmax(440px, 1fr);
+  gap: 1rem 1.25rem;
+  align-items: stretch;
+  max-width: 1320px;
+}
+
+.settings-card {
+  padding: 1.15rem 1.3rem;
+  height: 100%;
+}
+
+.settings-card .card-title {
+  margin-bottom: 0.25rem;
+}
+
+.settings-card--account {
+  min-height: 100%;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, var(--bg-root));
+}
+
+.settings-card--token,
+.settings-card--password {
+  min-width: 0;
+}
+
+.settings-card--password {
+  grid-column: 1 / -1;
+}
+
+.settings-form {
+  margin-top: 0.75rem;
+}
+
+.settings-label {
+  display: block;
+  margin: 0.55rem 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.settings-input {
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 0.15rem;
+}
+
+.settings-hint {
+  font-size: 0.86rem;
+  margin-top: 0.4rem;
+}
+
+.settings-meta-key {
+  color: var(--text-muted);
+}
+
+.settings-meta-value {
+  color: var(--text-main);
+}
+
+.settings-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.7rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.settings-updated-at {
+  margin-left: 0.15rem;
+  font-size: 0.8rem;
+}
+
+.settings-account-head {
+  align-items: flex-start;
+}
+
+.settings-account-hint {
+  margin-top: 0.2rem;
+}
+
+.settings-account-actions {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: flex-start;
+}
+
+.settings-message {
+  font-size: 0.86rem;
+  margin: 0.7rem 0 0.8rem;
+}
+
+.settings-message--error {
+  color: var(--color-error);
+}
+
+.settings-message--success {
+  color: var(--accent-strong);
+}
+
+.settings-logout-btn {
+  margin-top: 0;
+  margin-left: 0;
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #b91c1c;
+}
+
+.settings-logout-btn:hover {
+  border-color: rgba(239, 68, 68, 0.7);
+  background: rgba(239, 68, 68, 0.1);
+  color: #991b1b;
+}
+
+[data-theme="dark"] .settings-logout-btn {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+[data-theme="dark"] .settings-logout-btn:hover {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.75);
+  background: rgba(248, 113, 113, 0.15);
+}
+
+@media (max-width: 1200px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 920px;
+  }
+
+  .settings-card--account {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  .settings-card--account {
+    grid-row: auto;
+    position: static;
+  }
+}
+
+.settings-password-submit {
+  margin-top: 0.25rem;
+  align-self: flex-start;
 }
 
 .active-lots-total {
@@ -2342,10 +2647,12 @@ body {
   line-height: 1;
   border-radius: 2px;
 }
+
 .lot-settings-schedule-drag-handle:hover {
   color: var(--text);
   background: var(--bg-muted);
 }
+
 .lot-settings-schedule-drag-handle:active {
   cursor: grabbing;
 }
@@ -2353,6 +2660,7 @@ body {
 .lot-settings-schedule-item--dragging .lot-settings-schedule-drag-handle {
   cursor: grabbing;
 }
+
 .lot-settings-schedule-item--dragging {
   opacity: 0.7;
 }
@@ -2473,7 +2781,7 @@ body {
   background: var(--accent-soft);
 }
 
-.lot-card__body > .lot-settings-btn {
+.lot-card__body>.lot-settings-btn {
   margin-top: auto;
 }
 

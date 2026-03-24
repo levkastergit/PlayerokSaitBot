@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { changeAccountPassword, fetchAuthMe } from '../../services/authApi'
 
-export function SettingsTab({ token, onTokenChange }) {
+export function SettingsTab({ token, onTokenChange, onLogout }) {
   const [value, setValue] = useState(token ?? '')
   const [savedAt, setSavedAt] = useState(null)
   const [isSaved, setIsSaved] = useState(Boolean(token))
@@ -84,45 +84,58 @@ export function SettingsTab({ token, onTokenChange }) {
   }
 
   return (
-    <div className="tab-page">
-      <div className="tab-page-header">
+    <div className="tab-page settings-page">
+      <div className="tab-page-header tab-page-header--settings">
         <h1>Настройки</h1>
+        <p className="tab-page-description">
+          Управляйте доступом к аккаунту и настройками интеграции Playerok.
+        </p>
       </div>
 
-      <div className="tab-grid">
-        <section className="card" style={{ marginBottom: '1rem' }}>
-          <h2 className="card-title" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
-            Аккаунт
-          </h2>
+      <div className="settings-layout">
+        <section className="card settings-card settings-card--account">
+          <div className="card-title-row settings-account-head">
+            <div>
+              <h2 className="card-title">Аккаунт</h2>
+              <p className="card-text settings-hint settings-account-hint">
+                Основная информация по текущей сессии.
+              </p>
+            </div>
+            <span className="settings-chip">
+              {meLoading ? 'Проверка соединения...' : 'Аккаунт подключён'}
+            </span>
+          </div>
           {meLoading ? (
-            <p className="card-text" style={{ fontSize: '0.9rem' }}>Загрузка…</p>
+            <p className="card-text">Загрузка…</p>
           ) : (
             <>
-              <p className="card-text" style={{ fontSize: '0.95rem' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Имя (логин): </span>
-                <strong>{accountLabel}</strong>
+              <p className="card-text">
+                <span className="settings-meta-key">Имя (логин): </span>
+                <strong className="settings-meta-value">{accountLabel}</strong>
               </p>
               {showLoginHint && (
-                <p
-                  className="card-text"
-                  style={{ fontSize: '0.85rem', marginTop: '0.75rem', color: 'var(--text-muted)' }}
-                >
+                <p className="card-text settings-hint">
                   Не удалось загрузить логин. Выйдите и войдите снова или обновите страницу.
                 </p>
               )}
+              <div className="settings-account-actions">
+                <button
+                  type="button"
+                  className="btn-secondary settings-logout-btn"
+                  onClick={onLogout}
+                >
+                  Выйти из аккаунта
+                </button>
+              </div>
             </>
           )}
         </section>
 
-        <section className="card">
-          <h2 className="card-title" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
-            Токен Playerok
-          </h2>
-          <form onSubmit={handleSaveToken}>
-            <label
-              htmlFor="playerok-token"
-              style={{ display: 'block', fontSize: '0.85rem', marginBottom: 6 }}
-            >
+        <section className="card settings-card settings-card--token">
+          <h2 className="card-title">Токен Playerok</h2>
+          <p className="card-text settings-hint">Токен хранится в скрытом виде и используется для запросов к API.</p>
+          <form className="settings-form" onSubmit={handleSaveToken}>
+            <label htmlFor="playerok-token" className="settings-label">
               Токен
             </label>
             <input
@@ -144,7 +157,7 @@ export function SettingsTab({ token, onTokenChange }) {
               </button>
 
               {savedAt && (
-                <span className="card-text" style={{ fontSize: '0.8rem', marginLeft: '0.5rem' }}>
+                <span className="card-text settings-updated-at">
                   Обновлён: {savedAt.toLocaleTimeString()}
                 </span>
               )}
@@ -152,58 +165,54 @@ export function SettingsTab({ token, onTokenChange }) {
           </form>
         </section>
 
-        <section className="card" style={{ marginTop: '1rem' }}>
-          <h2 className="card-title" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
-            Пароль от аккаунта
-          </h2>
-          <form onSubmit={handlePasswordSubmit}>
-            <label htmlFor="settings-current-pwd" style={{ display: 'block', fontSize: '0.85rem', marginBottom: 6 }}>
+        <section className="card settings-card settings-card--password">
+          <h2 className="card-title">Пароль от аккаунта</h2>
+          <p className="card-text settings-hint">Используйте надежный пароль и не передавайте его третьим лицам.</p>
+          <form className="settings-form" onSubmit={handlePasswordSubmit}>
+            <label htmlFor="settings-current-pwd" className="settings-label">
               Текущий пароль
             </label>
             <input
               id="settings-current-pwd"
-              className="input-theme"
+              className="input-theme settings-input"
               type="password"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               autoComplete="current-password"
-              style={{ marginBottom: '0.75rem', width: '100%', maxWidth: '24rem' }}
             />
-            <label htmlFor="settings-new-pwd" style={{ display: 'block', fontSize: '0.85rem', marginBottom: 6 }}>
+            <label htmlFor="settings-new-pwd" className="settings-label">
               Новый пароль
             </label>
             <input
               id="settings-new-pwd"
-              className="input-theme"
+              className="input-theme settings-input"
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
-              style={{ marginBottom: '0.75rem', width: '100%', maxWidth: '24rem' }}
             />
-            <label htmlFor="settings-confirm-pwd" style={{ display: 'block', fontSize: '0.85rem', marginBottom: 6 }}>
+            <label htmlFor="settings-confirm-pwd" className="settings-label">
               Подтверждение нового пароля
             </label>
             <input
               id="settings-confirm-pwd"
-              className="input-theme"
+              className="input-theme settings-input"
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               autoComplete="new-password"
-              style={{ marginBottom: '1rem', width: '100%', maxWidth: '24rem' }}
             />
             {pwdError && (
-              <p style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+              <p className="settings-message settings-message--error">
                 {pwdError}
               </p>
             )}
             {pwdMessage && (
-              <p style={{ color: 'var(--success, #2e7d32)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+              <p className="settings-message settings-message--success">
                 {pwdMessage}
               </p>
             )}
-            <button type="submit" className="btn-primary" disabled={pwdSubmitting}>
+            <button type="submit" className="btn-primary settings-password-submit" disabled={pwdSubmitting}>
               {pwdSubmitting ? 'Сохранение…' : 'Сменить пароль'}
             </button>
           </form>

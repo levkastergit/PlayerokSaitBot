@@ -25,6 +25,132 @@ import { ActionsTab } from './features/actions/ActionsTab.jsx'
 import { BalanceTab } from './features/balance/BalanceTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
+const TabIcon = ({ id }) => {
+  const common = {
+    className: 'tab-button__icon-svg',
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+    focusable: 'false',
+  }
+
+  switch (id) {
+    case 'active':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4" opacity="0.22" fill="currentColor" stroke="none" />
+          <path d="M8.4 12.2l2.2 2.2 5-5" />
+        </svg>
+      )
+    case 'completed':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.4 8.8h7.2" />
+          <path d="M8.4 12h4.8" />
+          <path d="M8.7 15.3l1.6 1.6 3.1-3.2" />
+        </svg>
+      )
+    case 'auto-listing':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.4 9.1h7.2" />
+          <path d="M8.4 12h7.2" />
+          <path d="M8.4 14.9h4.3" />
+          <path d="M16.2 15.8h2.8" />
+          <path d="M17.6 14.4v2.8" />
+        </svg>
+      )
+    case 'lot-boost':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.4" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M12 16.7V8.8" />
+          <path d="M9.2 11.6L12 8.8l2.8 2.8" />
+        </svg>
+      )
+    case 'auto-delivery':
+      return (
+        <svg {...common}>
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" opacity="0.2" fill="currentColor" stroke="none" />
+          <path d="M5.4 8.1V16l6.6 3.2V11.4L5.4 8.1z" opacity="0.14" fill="currentColor" stroke="none" />
+          <path d="M18.6 8.1V16L12 19.2v-7.8l6.6-3.3z" />
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" />
+          <path d="M14.8 13.2h4.2" />
+          <path d="M17.7 11.1l2.1 2.1-2.1 2.1" />
+        </svg>
+      )
+    case 'chat':
+      return (
+        <svg {...common}>
+          <path d="M5.2 6.4h13.6v8.2a2 2 0 0 1-2 2h-6.1l-3.9 2v-2H7.2a2 2 0 0 1-2-2V6.4z" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.1 10h7.8" />
+          <path d="M8.1 12.9h5.4" />
+        </svg>
+      )
+    case 'commands':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="5.5" width="15" height="13" rx="3.2" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8 10.2l2.4 2.4L8 15" />
+          <path d="M12.4 14.9h3.6" />
+          <path d="M12.4 10.2h2.2" />
+        </svg>
+      )
+    case 'settings':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.2" opacity="0.16" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="12" r="2.3" />
+          <path d="M12 5.8v1.4" />
+          <path d="M12 16.8v1.4" />
+          <path d="M18.2 12h-1.4" />
+          <path d="M7.2 12H5.8" />
+          <path d="M16.4 7.6l-1 1" />
+          <path d="M8.6 15.4l-1 1" />
+          <path d="M16.4 16.4l-1-1" />
+          <path d="M8.6 8.6l-1-1" />
+        </svg>
+      )
+    case 'balance':
+      return (
+        <svg {...common}>
+          <rect x="4.2" y="6.4" width="15.6" height="11.2" rx="3.2" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M4.9 9.6h14.2" />
+          <circle cx="12" cy="13.3" r="1.8" />
+        </svg>
+      )
+    case 'profit':
+      return (
+        <svg {...common}>
+          <path d="M5.5 18.1h13" />
+          <path d="M7.3 14.6l3-3 2.1 2.1 4.3-4.3" />
+          <path d="M14.9 9.3h1.8v1.8" />
+          <circle cx="7.3" cy="14.6" r="1" opacity="0.25" fill="currentColor" stroke="none" />
+          <circle cx="10.3" cy="11.6" r="1" opacity="0.25" fill="currentColor" stroke="none" />
+        </svg>
+      )
+    case 'actions':
+      return (
+        <svg {...common}>
+          <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="3.2" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.9 8.9h6.2v6.2H8.9z" />
+          <path d="M3.8 12h1.8" />
+          <path d="M18.4 12h1.8" />
+          <path d="M12 3.8v1.8" />
+          <path d="M12 18.4v1.8" />
+        </svg>
+      )
+    default:
+      return null
+  }
+}
+
 const TABS = [
   { id: 'active', label: 'Активные' },
   { id: 'completed', label: 'Завершенные' },
@@ -248,10 +374,7 @@ function App() {
   return (
     <div className="app-root">
       <header className="app-header">
-        <div className="app-header-left">
-          <div className="app-logo">Playeroksait</div>
-          <div className="app-subtitle">Панель управления лотами</div>
-        </div>
+        <div className="app-header-left" />
         <div className="app-header-right">
           <label className="theme-toggle">
             <input
@@ -264,16 +387,9 @@ function App() {
             <span className="theme-toggle__switch" aria-hidden="true">
               <span className="theme-toggle__knob" />
             </span>
-            <span className="theme-toggle__label">Тёмная тема</span>
+            <span className={`theme-toggle__icon ${darkTheme ? 'theme-toggle__icon--moon' : 'theme-toggle__icon--sun'}`} aria-hidden="true">{darkTheme ? '🌙' : '☀'}</span>
+            <span className="theme-toggle__label">{darkTheme ? 'Тёмная тема' : 'Светлая тема'}</span>
           </label>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ marginLeft: '1rem' }}
-            onClick={handleLogout}
-          >
-            Выйти
-          </button>
         </div>
       </header>
 
@@ -290,7 +406,8 @@ function App() {
                 }
                 onClick={() => navigate('/' + tab.id)}
               >
-                {tab.label}
+                <span className={`tab-button__icon tab-button__icon--${tab.id}`}><TabIcon id={tab.id} /></span>
+                <span className="tab-button__text">{tab.label}</span>
               </button>
             ))}
           </nav>
@@ -363,7 +480,7 @@ function App() {
             />
           )}
           {activeTab === 'settings' && (
-            <SettingsTab token={token} onTokenChange={handleTokenChange} />
+            <SettingsTab token={token} onTokenChange={handleTokenChange} onLogout={handleLogout} />
           )}
           {activeTab === 'balance' && <BalanceTab token={token} />}
           {activeTab === 'profit' && <ProfitTab token={token} />}
