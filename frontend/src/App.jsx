@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './index.css'
-import { checkAuth, logout } from './services/authApi'
+import { checkAuth, fetchAuthMe, logout } from './services/authApi'
 import {
   fetchActiveLots,
   fetchCompletedLots,
@@ -19,8 +19,10 @@ import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { ChatTab } from './features/chat/ChatTab.jsx'
-import { TokenTab } from './features/token/TokenTab.jsx'
+import { SettingsTab } from './features/settings/SettingsTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
+import { ActionsTab } from './features/actions/ActionsTab.jsx'
+import { BalanceTab } from './features/balance/BalanceTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
 
 const TABS = [
@@ -31,8 +33,10 @@ const TABS = [
   { id: 'auto-delivery', label: 'Автовыдача' },
   { id: 'chat', label: 'Чаты' },
   { id: 'commands', label: 'Команды' },
-  { id: 'token', label: 'Токен' },
+  { id: 'settings', label: 'Настройки' },
+  { id: 'balance', label: 'Баланс' },
   { id: 'profit', label: 'Статистика' },
+  { id: 'actions', label: 'Действия' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -50,6 +54,7 @@ function App() {
 
   const [authChecked, setAuthChecked] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [moduleSupercellEnabled, setModuleSupercellEnabled] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -74,8 +79,33 @@ function App() {
   }, [authChecked, isLoginPage, isRegisterPage, isAuthenticated, navigate])
 
   useEffect(() => {
+    if (!authChecked || !isAuthenticated) {
+      setModuleSupercellEnabled(false)
+      return
+    }
+    let cancelled = false
+    fetchAuthMe()
+      .then((me) => {
+        if (cancelled) return
+        setModuleSupercellEnabled(Boolean(me?.ok && me?.moduleSupercell))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setModuleSupercellEnabled(false)
+      })
+    return () => { cancelled = true }
+  }, [authChecked, isAuthenticated])
+
+  useEffect(() => {
     if (location.pathname === '/' || location.pathname === '') {
       navigate('/active', { replace: true })
+    }
+  }, [location.pathname, navigate])
+
+  useEffect(() => {
+    const first = location.pathname.split('/').filter(Boolean)[0]
+    if (first === 'token') {
+      navigate('/settings', { replace: true })
     }
   }, [location.pathname, navigate])
   const [darkTheme, setDarkTheme] = useState(false)
@@ -323,7 +353,7 @@ function App() {
               errorLots={errorCompletedLots}
             />
           )}
-          {activeTab === 'chat' && <ChatTab token={token} />}
+          {activeTab === 'chat' && <ChatTab token={token} moduleSupercellEnabled={moduleSupercellEnabled} />}
           {activeTab === 'commands' && (
             <CommandsTab
               token={token}
@@ -332,10 +362,12 @@ function App() {
               errorLots={errorLots}
             />
           )}
-          {activeTab === 'token' && (
-            <TokenTab token={token} onTokenChange={handleTokenChange} />
+          {activeTab === 'settings' && (
+            <SettingsTab token={token} onTokenChange={handleTokenChange} />
           )}
+          {activeTab === 'balance' && <BalanceTab token={token} />}
           {activeTab === 'profit' && <ProfitTab token={token} />}
+          {activeTab === 'actions' && <ActionsTab token={token} />}
         </section>
       </main>
     </div>

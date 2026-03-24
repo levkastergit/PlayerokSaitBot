@@ -9,7 +9,7 @@ import {
   requestSupercellCode,
 } from '../../services/playerokApi'
 
-export function ChatTab({ token }) {
+export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const [chats, setChats] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -72,10 +72,10 @@ export function ChatTab({ token }) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
     return result
       ? {
-          r: parseInt(result[1], 16),
-          g: parseInt(result[2], 16),
-          b: parseInt(result[3], 16),
-        }
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16),
+      }
       : null
   }
 
@@ -130,7 +130,7 @@ export function ChatTab({ token }) {
 
   const formatMessageText = (text) => {
     if (!text || typeof text !== 'string') return text
-    
+
     // Словарь замены плейсхолдеров на понятные тексты
     const replacements = {
       '{{ITEM_PAID}}': 'Оплата покупки',
@@ -139,19 +139,19 @@ export function ChatTab({ token }) {
       '{{DEAL_CONFIRMED_AUTOMATICALLY}}': 'Сделка подтверждена автоматически',
       '{{DEAL_ROLLED_BACK}}': 'Сделка отменена',
     }
-    
+
     let result = text
-    
+
     // Заменяем известные плейсхолдеры
     for (const [placeholder, replacement] of Object.entries(replacements)) {
       result = result.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), replacement)
     }
-    
+
     // Универсальная замена для любых других плейсхолдеров в формате {{...}}
     result = result.replace(/\{\{([A-Z_]+)\}\}/g, (match, key) => {
       // Если уже обработано выше, пропускаем
       if (replacements[match]) return replacements[match]
-      
+
       // Преобразуем ключ в понятный текст
       const readable = key
         .replace(/_/g, ' ')
@@ -159,7 +159,7 @@ export function ChatTab({ token }) {
         .replace(/\b\w/g, (l) => l.toUpperCase())
       return readable
     })
-    
+
     return result
   }
 
@@ -364,28 +364,28 @@ export function ChatTab({ token }) {
                     break
                   }
                 }
-              if (!fallbackCategory) {
-                const words = title.split(/\s+/).filter(w => w.length > 0)
-                if (words.length > 0) {
-                  let candidate = words.slice(0, 3).join(' ')
-                  if (candidate.length > 50) candidate = candidate.substring(0, 50).trim()
-                  if (candidate) fallbackCategory = candidate
+                if (!fallbackCategory) {
+                  const words = title.split(/\s+/).filter(w => w.length > 0)
+                  if (words.length > 0) {
+                    let candidate = words.slice(0, 3).join(' ')
+                    if (candidate.length > 50) candidate = candidate.substring(0, 50).trim()
+                    if (candidate) fallbackCategory = candidate
+                  }
                 }
               }
+              // Если категория всё ещё не найдена, это критическая ошибка
+              if (!fallbackCategory || (typeof fallbackCategory === 'string' && !fallbackCategory.trim())) {
+                fallbackCategory = 'Категория не определена'
+              }
+              return { ...chat, category: fallbackCategory }
             }
-            // Если категория всё ещё не найдена, это критическая ошибка
-            if (!fallbackCategory || (typeof fallbackCategory === 'string' && !fallbackCategory.trim())) {
-              fallbackCategory = 'Категория не определена'
-            }
-            return { ...chat, category: fallbackCategory }
-          }
-          return chat
-        })
-          
+            return chat
+          })
+
           // Используем нормализованный список
           list = normalizedList
         }
-        
+
         setChats(list)
         setPageInfo(info || { hasNextPage: false, endCursor: null })
         if (list.length > 0) {
@@ -449,7 +449,7 @@ export function ChatTab({ token }) {
     if (loadingMoreRef.current) {
       return
     }
-    
+
     // Используем endCursor, даже если он null или пустая строка
     // API должен обработать это корректно
     const afterCursor = pageInfo.endCursor || null
@@ -508,22 +508,22 @@ export function ChatTab({ token }) {
           }
           return chat
         })
-        
+
         // Используем нормализованный список
         list = normalizedList
       }
-      
+
       if (!list || list.length === 0) {
         setPageInfo({ hasNextPage: false, endCursor: null })
         return
       }
-      
+
       setChats((prev) => {
         const updated = [...prev, ...list]
         return updated
       })
       void preloadChatsData(list, { delayMs: 150 })
-      
+
       const newPageInfo = info || { hasNextPage: false, endCursor: null }
       setPageInfo(newPageInfo)
     } catch (err) {
@@ -607,7 +607,7 @@ export function ChatTab({ token }) {
         chat.dealId || null,
         chatId
       )
-      
+
       applyLoadedChatData(chat, list, itemTitle, itemImageUrl, buyerSupercellEmail)
     } catch (err) {
       setChatStateById((prev) => ({
@@ -658,6 +658,7 @@ export function ChatTab({ token }) {
   const selectedChatEmailIsValid = isEmailValid(selectedChatEmail)
   const selectedChatEmailDraftIsValid = isEmailValid(selectedChatEmailDraft)
   const selectedChatIsSupercell = isSupercellCategory(selectedChat?.category || '')
+  const selectedChatCanUseSupercell = selectedChatIsSupercell && moduleSupercellEnabled
   const currentItemImageUrl =
     selectedChat && (selectedChatState?.itemImageUrl || selectedChat.itemImageUrl || null)
   const currentItemTitle =
@@ -768,7 +769,7 @@ export function ChatTab({ token }) {
   }
 
   const openRequestCodeModal = (chat) => {
-    if (!chat?.id) return
+    if (!chat?.id || !moduleSupercellEnabled) return
     setRequestCodeState({ loading: false, error: null })
     setEmailDraftByChatId((prev) => ({
       ...prev,
@@ -812,7 +813,7 @@ export function ChatTab({ token }) {
   }
 
   const handleRequestCodeForSelectedChat = async () => {
-    if (!selectedChat || !token) return
+    if (!selectedChat || !token || !moduleSupercellEnabled) return
     const email = String(emailDraftByChatId[selectedChat.id] || '').trim()
     if (!isEmailValid(email)) {
       setRequestCodeState({ loading: false, error: 'Введите корректную почту Supercell ID' })
@@ -867,7 +868,7 @@ export function ChatTab({ token }) {
             : c
         )
       )
-    } catch (err) {}
+    } catch (err) { }
   }
 
   return (
@@ -933,12 +934,12 @@ export function ChatTab({ token }) {
                 {visibleChats.map((chat) => {
                   const isActive = chat.id === selectedChatId
                   const unread = typeof chat.unreadCount === 'number' ? chat.unreadCount : null
-                  
+
                   // Определение категории с логированием
                   // КРИТИЧНО: категория должна быть всегда определена
                   let category = null
                   let categorySource = null
-                  
+
                   // 1. Пытаемся взять категорию из chat.category
                   if (chat.category && typeof chat.category === 'string') {
                     const trimmed = chat.category.trim()
@@ -947,7 +948,7 @@ export function ChatTab({ token }) {
                       categorySource = 'chat.category'
                     }
                   }
-                  
+
                   // 2. Если категории нет, пытаемся извлечь из itemTitle
                   if (!category && chat.itemTitle && typeof chat.itemTitle === 'string') {
                     const title = chat.itemTitle.trim()
@@ -969,7 +970,7 @@ export function ChatTab({ token }) {
                           break
                         }
                       }
-                      
+
                       // Если не нашли известную игру, используем первые слова названия
                       if (!category) {
                         const words = title.split(/\s+/).filter(w => w.length > 0)
@@ -986,7 +987,7 @@ export function ChatTab({ token }) {
                       }
                     }
                   }
-                  
+
                   // 3. Если категория всё ещё не определена, это критическая ошибка
                   // Категория должна быть всегда определена на бэкенде
                   if (!category || (typeof category === 'string' && !category.trim())) {
@@ -994,12 +995,12 @@ export function ChatTab({ token }) {
                     category = (chat.category && String(chat.category).trim()) || 'Категория не определена'
                     categorySource = 'error fallback'
                   }
-                  
+
                   const statusLabel = getStatusLabel(getDerivedChatStatus(chat))
                   const metaLine = category ? `${category} · ${statusLabel}` : statusLabel
-                  
+
                   const buyerNameToDisplay = chat.buyerName && chat.buyerName.trim() ? chat.buyerName.trim() : null
-                  
+
                   // Пытаемся извлечь имя из сообщений, если buyerName отсутствует
                   let displayName = buyerNameToDisplay
                   if (!displayName) {
@@ -1013,7 +1014,7 @@ export function ChatTab({ token }) {
                       }
                     }
                   }
-                  
+
                   return (
                     <button
                       key={chat.id}
@@ -1145,7 +1146,7 @@ export function ChatTab({ token }) {
                       </div>
                     ) : null
                   })()}
-                  {selectedChatIsSupercell && (
+                  {selectedChatCanUseSupercell && (
                     <div
                       className={
                         'chat-item-card__email-box ' +
@@ -1197,7 +1198,7 @@ export function ChatTab({ token }) {
                         const isSystem = m.text ? isSystemMessage(m.text) : false
                         const fromBuyer = isFromBuyer(m)
                         // Для системных сообщений используем только класс system, иначе определяем по автору
-                        const messageClass = isSystem 
+                        const messageClass = isSystem
                           ? 'chat-message chat-message--system'
                           : `chat-message ${fromBuyer ? 'chat-message--buyer' : 'chat-message--seller'}`
                         return (
@@ -1269,73 +1270,73 @@ export function ChatTab({ token }) {
 
               {!selectedChatState?.loading && !selectedChatState?.error && (
                 <>
-                  {(currentCategoryCommands.length > 0 || selectedChatIsSupercell) && (
+                  {(currentCategoryCommands.length > 0 || selectedChatCanUseSupercell) && (
                     <div className="chat-commands-buttons" style={{ marginBottom: '1rem' }}>
-                      <div className="chat-commands-buttons__label" style={{ 
-                        fontSize: '0.875rem', 
-                        color: 'var(--text-secondary, #666)', 
-                        marginBottom: '0.5rem' 
+                      <div className="chat-commands-buttons__label" style={{
+                        fontSize: '0.875rem',
+                        color: 'var(--text-secondary, #666)',
+                        marginBottom: '0.5rem'
                       }}>
                         Быстрые команды:
                       </div>
-                      <div className="chat-commands-buttons__list" style={{ 
-                        display: 'flex', 
-                        flexWrap: 'wrap', 
-                        gap: '0.5rem' 
+                      <div className="chat-commands-buttons__list" style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem'
                       }}>
                         {currentCategoryCommands.map((cmd, index) => {
                           const buttonColor = cmd.color || '#6c757d'
                           const textColor = getTextColor(buttonColor)
                           return (
-                          <button
-                            key={cmd.id || index}
-                            type="button"
-                            className="btn-secondary"
-                            style={{ 
-                              fontSize: '0.875rem', 
-                              padding: '0.5rem 1rem',
-                              backgroundColor: buttonColor,
-                              borderColor: buttonColor,
-                              color: textColor,
-                              transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              // Немного затемняем при наведении
-                              const rgb = hexToRgb(buttonColor)
-                              if (rgb) {
-                                const darkerR = Math.max(0, rgb.r - 20)
-                                const darkerG = Math.max(0, rgb.g - 20)
-                                const darkerB = Math.max(0, rgb.b - 20)
-                                const darkerColor = `rgb(${darkerR}, ${darkerG}, ${darkerB})`
-                                e.target.style.backgroundColor = darkerColor
-                                e.target.style.borderColor = darkerColor
-                                // Обновляем цвет текста для затемненного фона
-                                const darkerLuminance = getLuminance(darkerR, darkerG, darkerB)
-                                e.target.style.color = darkerLuminance > 128 ? '#000' : '#fff'
-                              }
-                            }}
-                            onMouseLeave={(e) => {
-                              e.target.style.backgroundColor = buttonColor
-                              e.target.style.borderColor = buttonColor
-                              e.target.style.color = textColor
-                            }}
-                            onClick={async () => {
-                              if (!selectedChat || !token) return
-                              try {
-                                await sendDealChatMessage(token, {
-                                  dealId: selectedChat.dealId || null,
-                                  chatId: selectedChat.id,
-                                  text: cmd.text,
-                                })
-                                appendLocalMessageForChat(selectedChat, cmd.text)
-                              } catch (err) {}
-                            }}
-                          >
-                            {cmd.label}
-                          </button>
+                            <button
+                              key={cmd.id || index}
+                              type="button"
+                              className="btn-secondary"
+                              style={{
+                                fontSize: '0.875rem',
+                                padding: '0.5rem 1rem',
+                                backgroundColor: buttonColor,
+                                borderColor: buttonColor,
+                                color: textColor,
+                                transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                              }}
+                              onMouseEnter={(e) => {
+                                // Немного затемняем при наведении
+                                const rgb = hexToRgb(buttonColor)
+                                if (rgb) {
+                                  const darkerR = Math.max(0, rgb.r - 20)
+                                  const darkerG = Math.max(0, rgb.g - 20)
+                                  const darkerB = Math.max(0, rgb.b - 20)
+                                  const darkerColor = `rgb(${darkerR}, ${darkerG}, ${darkerB})`
+                                  e.target.style.backgroundColor = darkerColor
+                                  e.target.style.borderColor = darkerColor
+                                  // Обновляем цвет текста для затемненного фона
+                                  const darkerLuminance = getLuminance(darkerR, darkerG, darkerB)
+                                  e.target.style.color = darkerLuminance > 128 ? '#000' : '#fff'
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                e.target.style.backgroundColor = buttonColor
+                                e.target.style.borderColor = buttonColor
+                                e.target.style.color = textColor
+                              }}
+                              onClick={async () => {
+                                if (!selectedChat || !token) return
+                                try {
+                                  await sendDealChatMessage(token, {
+                                    dealId: selectedChat.dealId || null,
+                                    chatId: selectedChat.id,
+                                    text: cmd.text,
+                                  })
+                                  appendLocalMessageForChat(selectedChat, cmd.text)
+                                } catch (err) { }
+                              }}
+                            >
+                              {cmd.label}
+                            </button>
                           )
                         })}
-                        {selectedChatIsSupercell && (
+                        {selectedChatCanUseSupercell && (
                           <button
                             type="button"
                             className="deal-chat-row__command-btn"

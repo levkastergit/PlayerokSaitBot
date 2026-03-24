@@ -2,3 +2,6 @@ node_modules/
 .env
 *.log
 .DS_Store
+frontend/.env.local
+supercell_auto_otp_plugin/__pycache__/
+backend/data/_git_untracked_backup/

@@ -138,7 +138,7 @@ export function ProfitTab({ token }) {
         if (ys.indexOf(currentY) === -1) setYears([...ys, currentY].sort((a, b) => a - b))
         else setYears(ys)
       })
-      .catch(() => {})
+      .catch(() => { })
 
     refresh().finally(() => {
       if (!cancelled) setLoading(false)
@@ -165,7 +165,7 @@ export function ProfitTab({ token }) {
           setPage(1)
         }
       })
-      .catch(() => {})
+      .catch(() => { })
   }, [token, year])
 
   // при смене месяца/года проверяем день (если выбранного дня нет в месяце — сбросим)
@@ -211,7 +211,7 @@ export function ProfitTab({ token }) {
               setList(Array.isArray(data?.list) ? data.list : [])
               setTotal(Number(data?.total) || 0)
             })
-            .catch(() => {})
+            .catch(() => { })
         }
       }
     })

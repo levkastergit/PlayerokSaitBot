@@ -111,7 +111,7 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
       .then((data) => {
         if (!cancelled) setSettingsList(data.list || [])
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => { cancelled = true }
   }, [token, lots.length])
 

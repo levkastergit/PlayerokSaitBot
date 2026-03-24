@@ -98,7 +98,7 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
       .then((data) => {
         if (!cancelled) setSettingsList(data.list || [])
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => { cancelled = true }
   }, [token, lots.length])
 

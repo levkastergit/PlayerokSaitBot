@@ -1,0 +1,159 @@
+const AUTOLIST_LAST_CHAT_FRESH_SEC = 600
+const AUTOLIST_MAX_CHATS_TO_SCAN = 10
+const AUTOLIST_PROCESSED_TTL_SEC = 60 * 60
+const AUTOLIST_SEEN_CHAT_TTL_SEC = 24 * 60 * 60
+const AUTOLIST_ITEM_STATE_TTL_SEC = 24 * 60 * 60
+// Даже если новых чатов нет, периодически сканируем последние завершённые товары.
+// Иначе "ожидает автовыставления" может висеть бесконечно. Интервал — 2 минуты.
+const AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC = 120
+
+function autolistGetProcessedMap(tokenHash) {
+  global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistProcessedByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistProcessedByTokenHash[key] = {}
+  return global.__autolistProcessedByTokenHash[key]
+}
+
+function autolistPruneProcessedMap(tokenHash, nowTs) {
+  const map = autolistGetProcessedMap(tokenHash)
+  for (const [k, ts] of Object.entries(map)) {
+    if (!ts || (nowTs - Number(ts)) > AUTOLIST_PROCESSED_TTL_SEC) delete map[k]
+  }
+}
+
+function autolistWasProcessed(tokenHash, eventKey) {
+  if (!eventKey) return false
+  const map = autolistGetProcessedMap(tokenHash)
+  return map[eventKey] != null
+}
+
+function autolistMarkProcessed(tokenHash, eventKey, nowTs) {
+  if (!eventKey) return
+  const map = autolistGetProcessedMap(tokenHash)
+  map[eventKey] = nowTs
+}
+
+function autolistGetSeenChatsMap(tokenHash) {
+  global.__autolistSeenChatsByTokenHash = global.__autolistSeenChatsByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistSeenChatsByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistSeenChatsByTokenHash[key] = {}
+  return global.__autolistSeenChatsByTokenHash[key]
+}
+
+function autolistPruneSeenChatsMap(tokenHash, nowTs) {
+  const map = autolistGetSeenChatsMap(tokenHash)
+  for (const [chatId, ts] of Object.entries(map)) {
+    if (!ts || (nowTs - Number(ts)) > AUTOLIST_SEEN_CHAT_TTL_SEC) delete map[chatId]
+  }
+}
+
+function autolistWasChatSeen(tokenHash, chatId) {
+  if (!chatId) return false
+  const map = autolistGetSeenChatsMap(tokenHash)
+  return map[String(chatId)] != null
+}
+
+function autolistMarkChatSeen(tokenHash, chatId, nowTs) {
+  if (!chatId) return
+  const map = autolistGetSeenChatsMap(tokenHash)
+  map[String(chatId)] = nowTs
+}
+
+function autolistGetItemStateMap(tokenHash) {
+  global.__autolistItemStateByTokenHash = global.__autolistItemStateByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistItemStateByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistItemStateByTokenHash[key] = {}
+  return global.__autolistItemStateByTokenHash[key]
+}
+
+function autolistPruneItemStateMap(tokenHash, nowTs) {
+  const map = autolistGetItemStateMap(tokenHash)
+  for (const [itemId, st] of Object.entries(map)) {
+    const ts = st && typeof st === 'object' ? Number(st.updatedAt || 0) : 0
+    if (!ts || (nowTs - ts) > AUTOLIST_ITEM_STATE_TTL_SEC) delete map[itemId]
+  }
+}
+
+function autolistSetItemState(tokenHash, itemId, state) {
+  if (!itemId) return
+  const map = autolistGetItemStateMap(tokenHash)
+  map[String(itemId)] = state
+}
+
+function autolistGetItemState(tokenHash, itemId) {
+  if (!itemId) return null
+  const map = autolistGetItemStateMap(tokenHash)
+  return map[String(itemId)] || null
+}
+
+function autolistGetCompletedScanMap(tokenHash) {
+  global.__autolistCompletedScanByTokenHash =
+    global.__autolistCompletedScanByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistCompletedScanByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistCompletedScanByTokenHash[key] = { lastScanTs: 0 }
+  return global.__autolistCompletedScanByTokenHash[key]
+}
+
+function autolistGetLastChatMeta(tokenHash) {
+  global.__autolistLastChatByTokenHash = global.__autolistLastChatByTokenHash || {}
+  const key = String(tokenHash)
+  const meta = global.__autolistLastChatByTokenHash[key]
+  if (meta && typeof meta === 'object') return meta
+  global.__autolistLastChatByTokenHash[key] = { lastChatId: null, lastPaidTs: 0 }
+  return global.__autolistLastChatByTokenHash[key]
+}
+
+function autolistGetSupercellFlowMap(tokenHash) {
+  global.__autolistSupercellFlowByTokenHash = global.__autolistSupercellFlowByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistSupercellFlowByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistSupercellFlowByTokenHash[key] = {}
+  return global.__autolistSupercellFlowByTokenHash[key]
+}
+
+function autolistPruneSupercellFlowMap(tokenHash, nowTs) {
+  const map = autolistGetSupercellFlowMap(tokenHash)
+  for (const [chatId, state] of Object.entries(map)) {
+    const updatedAt = Number(state?.updatedAt || state?.createdAt || 0)
+    const ageSec = updatedAt ? nowTs - updatedAt : Number.MAX_SAFE_INTEGER
+    const maxAgeSec = state?.active ? 24 * 60 * 60 : 60 * 60
+    if (ageSec > maxAgeSec) {
+      delete map[chatId]
+    }
+  }
+}
+
+module.exports = {
+  AUTOLIST_LAST_CHAT_FRESH_SEC,
+  AUTOLIST_MAX_CHATS_TO_SCAN,
+  AUTOLIST_PROCESSED_TTL_SEC,
+  AUTOLIST_SEEN_CHAT_TTL_SEC,
+  AUTOLIST_ITEM_STATE_TTL_SEC,
+  AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC,
+  autolistGetProcessedMap,
+  autolistPruneProcessedMap,
+  autolistWasProcessed,
+  autolistMarkProcessed,
+  autolistGetSeenChatsMap,
+  autolistPruneSeenChatsMap,
+  autolistWasChatSeen,
+  autolistMarkChatSeen,
+  autolistGetItemStateMap,
+  autolistPruneItemStateMap,
+  autolistSetItemState,
+  autolistGetItemState,
+  autolistGetCompletedScanMap,
+  autolistGetLastChatMeta,
+  autolistGetSupercellFlowMap,
+  autolistPruneSupercellFlowMap,
+}
+

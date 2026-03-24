@@ -554,16 +554,16 @@ export function LotBoostTab({
                   const remainingSec =
                     cooldownUntil && Date.now() < cooldownUntil
                       ? Math.max(
-                          1,
-                          Math.ceil((cooldownUntil - Date.now()) / 1000)
-                        )
+                        1,
+                        Math.ceil((cooldownUntil - Date.now()) / 1000)
+                      )
                       : 0
                   const bumpDisabled =
                     bumpInFlightKey === productKey || remainingSec > 0
 
                   const schedule = settings?.autobump?.schedule || []
-                  const intervalMinutes = schedule.length > 0 
-                    ? schedule[0].intervalMinutes || 3 
+                  const intervalMinutes = schedule.length > 0
+                    ? schedule[0].intervalMinutes || 3
                     : 3
 
                   let nextTitle = null

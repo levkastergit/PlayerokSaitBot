@@ -32,6 +32,12 @@ const BACKEND_PRODUCT_SETTINGS_DELETE_URL = `${BACKEND_ORIGIN}/api/product-setti
 const BACKEND_TOKEN_URL = `${BACKEND_ORIGIN}/api/token`
 const BACKEND_CATEGORY_COMMANDS_LIST_URL = `${BACKEND_ORIGIN}/api/category-commands/list`
 const BACKEND_CATEGORY_COMMANDS_URL = `${BACKEND_ORIGIN}/api/category-commands`
+const BACKEND_BALANCE_OVERVIEW_URL = `${BACKEND_ORIGIN}/api/playerok/balance-overview`
+const BACKEND_TRANSACTION_PROVIDERS_URL = `${BACKEND_ORIGIN}/api/playerok/transaction-providers`
+const BACKEND_TRANSACTIONS_URL = `${BACKEND_ORIGIN}/api/playerok/transactions`
+const BACKEND_VERIFIED_CARDS_URL = `${BACKEND_ORIGIN}/api/playerok/verified-cards`
+const BACKEND_REQUEST_WITHDRAWAL_URL = `${BACKEND_ORIGIN}/api/playerok/request-withdrawal`
+const BACKEND_REMOVE_TRANSACTION_URL = `${BACKEND_ORIGIN}/api/playerok/remove-transaction`
 
 const FETCH_CREDENTIALS = { credentials: 'include' }
 
@@ -243,6 +249,7 @@ export async function loadProductSettingsList(token) {
 }
 
 const BACKEND_BUMP_HISTORY_URL = `${BACKEND_ORIGIN}/api/bump-history`
+const BACKEND_ACTIONS_HISTORY_URL = `${BACKEND_ORIGIN}/api/actions-history`
 const BACKEND_SALES_HISTORY_URL = `${BACKEND_ORIGIN}/api/sales-history`
 const BACKEND_RELIST_ITEM_URL = `${BACKEND_ORIGIN}/api/playerok/relist-item`
 const BACKEND_AUTOLIST_TICK_URL = `${BACKEND_ORIGIN}/api/playerok/autolist-tick`
@@ -258,6 +265,18 @@ export async function fetchBumpHistory(token) {
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
     throw new Error(err.error || `Ошибка загрузки истории: ${response.status}`)
+  }
+  const data = await response.json()
+  return data
+}
+
+/** История действий: автовыставление и поднятия */
+export async function fetchActionsHistory(token) {
+  const url = buildUrlWithToken(BACKEND_ACTIONS_HISTORY_URL, token)
+  const response = await trackedFetch(url, FETCH_CREDENTIALS)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки истории действий: ${response.status}`)
   }
   const data = await response.json()
   return data
@@ -796,6 +815,101 @@ export async function fetchLogs(token) {
     throw new Error(err.error || `Ошибка загрузки логов: ${response.status}`)
   }
   const data = await response.json()
+  return data
+}
+
+export async function fetchBalanceOverview(token) {
+  const response = await trackedFetch(BACKEND_BALANCE_OVERVIEW_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка загрузки баланса: ${response.status}`)
+  return data
+}
+
+export async function fetchTransactionProviders(token, direction = 'OUT') {
+  const response = await trackedFetch(BACKEND_TRANSACTION_PROVIDERS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      direction,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка загрузки провайдеров: ${response.status}`)
+  return data
+}
+
+export async function fetchTransactions(token, opts = {}) {
+  const response = await trackedFetch(BACKEND_TRANSACTIONS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...opts,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка загрузки транзакций: ${response.status}`)
+  return data
+}
+
+export async function fetchVerifiedCards(token, opts = {}) {
+  const response = await trackedFetch(BACKEND_VERIFIED_CARDS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...opts,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка загрузки карт: ${response.status}`)
+  return data
+}
+
+export async function requestWithdrawal(token, payload) {
+  const response = await trackedFetch(BACKEND_REQUEST_WITHDRAWAL_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...payload,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка создания вывода: ${response.status}`)
+  return data
+}
+
+export async function removeTransaction(token, transactionId) {
+  const response = await trackedFetch(BACKEND_REMOVE_TRANSACTION_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      transactionId,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка отмены транзакции: ${response.status}`)
   return data
 }
 

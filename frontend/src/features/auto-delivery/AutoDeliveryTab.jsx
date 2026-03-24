@@ -33,7 +33,7 @@ export function AutoDeliveryTab({
       .then((data) => {
         if (!cancelled) setSettingsList(data.list || [])
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => {
       cancelled = true
     }
