@@ -62,9 +62,6 @@ export function ActionsTab({ token }) {
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Действия</h1>
-        <p className="tab-page-description">
-          История автовыставления и поднятия лотов: дата, сумма и ID товара.
-        </p>
       </div>
 
       <div className="tab-grid">

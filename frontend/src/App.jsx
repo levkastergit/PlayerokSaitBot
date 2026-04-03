@@ -19,6 +19,7 @@ import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
 import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { ChatTab } from './features/chat/ChatTab.jsx'
+import { PartnersTab } from './features/partners/PartnersTab.jsx'
 import { SettingsTab } from './features/settings/SettingsTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
 import { ActionsTab } from './features/actions/ActionsTab.jsx'
@@ -93,6 +94,17 @@ const TabIcon = ({ id }) => {
           <path d="M8.1 12.9h5.4" />
         </svg>
       )
+    case 'partners':
+      return (
+        <svg {...common}>
+          <path
+            d="M16.8 21v-2a4.2 4.2 0 0 0-4.2-4.2H7.4A4.2 4.2 0 0 0 3.2 19v2"
+          />
+          <path d="M10 10.3a3.8 3.8 0 1 0-7.6 0a3.8 3.8 0 0 0 7.6 0z" transform="translate(2.2 0)" />
+          <path d="M20.8 21v-2a3.7 3.7 0 0 0-3-3.6" />
+          <path d="M16.6 3.8a4 4 0 0 1 0 7.6" />
+        </svg>
+      )
     case 'commands':
       return (
         <svg {...common}>
@@ -158,6 +170,7 @@ const TABS = [
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
   { id: 'chat', label: 'Чаты' },
+  { id: 'partners', label: 'Напарники' },
   { id: 'commands', label: 'Команды' },
   { id: 'settings', label: 'Настройки' },
   { id: 'balance', label: 'Баланс' },
@@ -235,6 +248,7 @@ function App() {
     }
   }, [location.pathname, navigate])
   const [darkTheme, setDarkTheme] = useState(false)
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [token, setToken] = useState('')
 
   const [lots, setLots] = useState([])
@@ -337,6 +351,21 @@ function App() {
     document.documentElement.setAttribute('data-theme', darkTheme ? 'dark' : 'light')
   }, [darkTheme])
 
+  useEffect(() => {
+    setIsMobileMenuOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return undefined
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsMobileMenuOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isMobileMenuOpen])
+
   // Загружаем токен с сервера только после входа — иначе с другого устройства/браузера запрос идёт без сессии и токен не подставляется
   useEffect(() => {
     if (!authChecked || !isAuthenticated) return
@@ -372,9 +401,22 @@ function App() {
   }
 
   return (
-    <div className="app-root">
+    <div className={`app-root${isMobileMenuOpen ? ' app-root--menu-open' : ''}`}>
       <header className="app-header">
-        <div className="app-header-left" />
+        <div className="app-header-left">
+          <button
+            type="button"
+            className="mobile-menu-toggle"
+            onClick={() => setIsMobileMenuOpen((prev) => !prev)}
+            aria-label={isMobileMenuOpen ? 'Закрыть меню' : 'Открыть меню'}
+            aria-expanded={isMobileMenuOpen}
+            aria-controls="main-sidebar"
+          >
+            <span className="mobile-menu-toggle__line" />
+            <span className="mobile-menu-toggle__line" />
+            <span className="mobile-menu-toggle__line" />
+          </button>
+        </div>
         <div className="app-header-right">
           <label className="theme-toggle">
             <input
@@ -394,7 +436,17 @@ function App() {
       </header>
 
       <main className="app-main">
-        <aside className="app-sidebar">
+        <aside className={`app-sidebar${isMobileMenuOpen ? ' app-sidebar--open' : ''}`} id="main-sidebar">
+          <div className="app-sidebar__mobile-head">
+            <button
+              type="button"
+              className="mobile-menu-close"
+              onClick={() => setIsMobileMenuOpen(false)}
+              aria-label="Закрыть меню"
+            >
+              ✕
+            </button>
+          </div>
           <nav className="tabs-nav" aria-label="Основные разделы">
             {TABS.map((tab) => (
               <button
@@ -404,7 +456,10 @@ function App() {
                   'tab-button' +
                   (activeTab === tab.id ? ' tab-button--active' : '')
                 }
-                onClick={() => navigate('/' + tab.id)}
+                onClick={() => {
+                  navigate('/' + tab.id)
+                  setIsMobileMenuOpen(false)
+                }}
               >
                 <span className={`tab-button__icon tab-button__icon--${tab.id}`}><TabIcon id={tab.id} /></span>
                 <span className="tab-button__text">{tab.label}</span>
@@ -471,6 +526,7 @@ function App() {
             />
           )}
           {activeTab === 'chat' && <ChatTab token={token} moduleSupercellEnabled={moduleSupercellEnabled} />}
+          {activeTab === 'partners' && <PartnersTab token={token} />}
           {activeTab === 'commands' && (
             <CommandsTab
               token={token}

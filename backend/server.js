@@ -138,6 +138,16 @@ const {
   getSalesMonthsForYear,
 } = setupHistoryRepo(db)
 
+const { setupPartnersRepo } = require('./src/db/partnersRepo')
+const {
+  upsertInvite,
+  deleteInvite,
+  getInvite,
+  confirmConnect,
+  getPartnersForOwner,
+  getDirectorsForWorker,
+} = setupPartnersRepo(db)
+
 const CATEGORY_SETTINGS_PREFIX = '__category__::'
 const GROUP_SETTINGS_PREFIX = '__group__::'
 
@@ -501,6 +511,13 @@ const server = http.createServer(async (req, res) => {
         CATEGORY_SETTINGS_PREFIX,
         getCategorySettingsKey,
         getTokenFromBodyOrStored,
+        // partners
+        upsertInvite,
+        deleteInvite,
+        getInvite,
+        confirmConnect,
+        getPartnersForOwner,
+        getDirectorsForWorker,
       },
     })
     if (handled) return

@@ -531,11 +531,7 @@ export function LotBoostTab({
             </p>
           )}
 
-          {hasToken && !loadingLots && !errorLots && filteredLots.length === 0 && (
-            <p className="card-text">
-              Пока нет лотов с включённым автоподнятием. Откройте лот во вкладке «Активные» или «Завершенные» и включите автоподнятие в настройках товара.
-            </p>
-          )}
+          {hasToken && !loadingLots && !errorLots && filteredLots.length === 0 && null}
 
           {hasToken && !loadingLots && !errorLots && filteredLots.length > 0 && (
             <>

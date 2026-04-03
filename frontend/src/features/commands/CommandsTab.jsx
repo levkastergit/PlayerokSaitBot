@@ -148,11 +148,6 @@ export function CommandsTab({ token, lots = [], loadingLots = false, errorLots =
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Команды по категориям</h1>
-        <p className="tab-page-description">
-          Здесь можно создать быстрые команды для категорий товаров. На вкладке
-          «Выполнение» для сделок выбранной категории появятся кнопки с этими
-          командами.
-        </p>
       </div>
 
       <div className="tab-grid">

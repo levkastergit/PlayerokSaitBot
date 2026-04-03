@@ -23,6 +23,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const [loadingCommands, setLoadingCommands] = useState(false)
   const [requestCodeModal, setRequestCodeModal] = useState({ open: false, chatId: null })
   const [requestCodeState, setRequestCodeState] = useState({ loading: false, error: null })
+  const [isMobileChatLayout, setIsMobileChatLayout] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia('(max-width: 900px)').matches
+  })
+  const [mobileChatView, setMobileChatView] = useState('list')
   const CHAT_EMAIL_OVERRIDE_STORAGE_KEY = 'playerok-chat-supercell-email-overrides'
   const [manualEmailByChatId, setManualEmailByChatId] = useState(() => {
     try {
@@ -317,6 +322,30 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     const trimmed = String(lastText || '').trim()
     return COMPLETED_MARKERS.has(trimmed)
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const media = window.matchMedia('(max-width: 900px)')
+    const onChange = (event) => {
+      setIsMobileChatLayout(event.matches)
+      if (!event.matches) {
+        setMobileChatView('chat')
+      }
+    }
+    setIsMobileChatLayout(media.matches)
+    if (!media.matches) {
+      setMobileChatView('chat')
+    }
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileChatLayout) return
+    if (!selectedChatId) {
+      setMobileChatView('list')
+    }
+  }, [isMobileChatLayout, selectedChatId])
 
   useEffect(() => {
     if (!token) {
@@ -873,7 +902,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
 
   return (
     <div className="tab-page tab-page--chat">
-      <div className="tab-grid">
+      <div className={`tab-grid ${isMobileChatLayout ? `tab-grid--chat-mobile-${mobileChatView}` : ''}`}>
         <section className="card">
           <h2 className="card-title">Список чатов</h2>
 
@@ -1024,6 +1053,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                       }
                       onClick={() => {
                         setSelectedChatId(chat.id)
+                        if (isMobileChatLayout) {
+                          setMobileChatView('chat')
+                        }
                       }}
                     >
                       <div className="chat-list__title">
@@ -1059,6 +1091,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         </section>
 
         <section className="card">
+          <button
+            type="button"
+            className="chat-mobile-back-btn"
+            onClick={() => setMobileChatView('list')}
+          >
+            ← К списку чатов
+          </button>
           <h2 className="card-title">Сообщения</h2>
           {!hasToken && (
             <p className="card-text">
@@ -1196,7 +1235,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                       return messagesToRender.map((m) => {
                         const timeText = formatTime(m.createdAt)
                         const isSystem = m.text ? isSystemMessage(m.text) : false
-                        const fromBuyer = isFromBuyer(m)
+                        const messageUsername = String(m.user?.username || '').trim()
+                        const buyerName = String(selectedChat?.buyerName || '').trim()
+                        const fromBuyer = buyerName && messageUsername
+                          ? messageUsername === buyerName
+                          : isFromBuyer(m)
                         // Для системных сообщений используем только класс system, иначе определяем по автору
                         const messageClass = isSystem
                           ? 'chat-message chat-message--system'

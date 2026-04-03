@@ -119,9 +119,6 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Завершенные лоты</h1>
-        <p className="tab-page-description">
-          Список завершённых товаров из вашего профиля Playerok (проданы, отменены или истекли).
-        </p>
       </div>
 
       <div className="tab-grid">
@@ -145,11 +142,7 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
             </p>
           )}
 
-          {hasToken && !loadingLots && !errorLots && lots.length === 0 && (
-            <p className="card-text">
-              Завершённых лотов не найдено или API вернул пустой список.
-            </p>
-          )}
+          {hasToken && !loadingLots && !errorLots && lots.length === 0 && null}
 
           {hasToken && !loadingLots && !errorLots && lots.length > 0 && (
             <>

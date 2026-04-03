@@ -87,9 +87,6 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
     <div className="tab-page settings-page">
       <div className="tab-page-header tab-page-header--settings">
         <h1>Настройки</h1>
-        <p className="tab-page-description">
-          Управляйте доступом к аккаунту и настройками интеграции Playerok.
-        </p>
       </div>
 
       <div className="settings-layout">

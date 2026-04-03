@@ -69,9 +69,6 @@ export function AutoDeliveryTab({
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Автовыдача</h1>
-        <p className="tab-page-description">
-          Товары с включённой автовыдачей (из активных и завершённых). Откройте лот и включите автовыдачу в настройках.
-        </p>
       </div>
 
       <div className="tab-grid">
@@ -94,11 +91,7 @@ export function AutoDeliveryTab({
             </p>
           )}
 
-          {hasToken && !loadingLots && !errorLots && filteredLots.length === 0 && (
-            <p className="card-text">
-              Пока нет лотов с включённой автовыдачей. Откройте лот во вкладке «Активные» или «Завершенные» и включите автовыдачу в настройках товара.
-            </p>
-          )}
+          {hasToken && !loadingLots && !errorLots && filteredLots.length === 0 && null}
 
           {hasToken && !loadingLots && !errorLots && filteredLots.length > 0 && (
             <>

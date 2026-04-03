@@ -5,6 +5,7 @@ const { createBumpHistoryTable } = require('./createBumpHistoryTable')
 const { createSalesHistoryTable } = require('./createSalesHistoryTable')
 const { createListingFeesTable } = require('./createListingFeesTable')
 const { createActionsHistoryTable } = require('./createActionsHistoryTable')
+const { createPartnersTable } = require('./createPartnersTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -14,6 +15,7 @@ function initDbSchema(db) {
   createSalesHistoryTable(db)
   createListingFeesTable(db)
   createActionsHistoryTable(db)
+  createPartnersTable(db)
 }
 
 module.exports = { initDbSchema }

@@ -2,6 +2,62 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getProductKey, getGroupSettingsKey, loadProductSettingsList } from '../../services/playerokApi'
 
+const FeatureFilterIcon = ({ id }) => {
+  const common = {
+    className: 'tab-button__icon-svg',
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+    focusable: 'false',
+  }
+
+  switch (id) {
+    case 'active':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4" opacity="0.22" fill="currentColor" stroke="none" />
+          <path d="M8.4 12.2l2.2 2.2 5-5" />
+        </svg>
+      )
+    case 'auto-listing':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.4 9.1h7.2" />
+          <path d="M8.4 12h7.2" />
+          <path d="M8.4 14.9h4.3" />
+          <path d="M16.2 15.8h2.8" />
+          <path d="M17.6 14.4v2.8" />
+        </svg>
+      )
+    case 'lot-boost':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.4" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M12 16.7V8.8" />
+          <path d="M9.2 11.6L12 8.8l2.8 2.8" />
+        </svg>
+      )
+    case 'auto-delivery':
+      return (
+        <svg {...common}>
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" opacity="0.2" fill="currentColor" stroke="none" />
+          <path d="M5.4 8.1V16l6.6 3.2V11.4L5.4 8.1z" opacity="0.14" fill="currentColor" stroke="none" />
+          <path d="M18.6 8.1V16L12 19.2v-7.8l6.6-3.3z" />
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" />
+          <path d="M14.8 13.2h4.2" />
+          <path d="M17.7 11.1l2.1 2.1-2.1 2.1" />
+        </svg>
+      )
+    default:
+      return null
+  }
+}
+
 export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
   const navigate = useNavigate()
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set())
@@ -11,6 +67,12 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
   const clickTimeoutRef = useRef(null)
 
   const hasToken = Boolean(token)
+  const featureFilters = [
+    { id: 'all', label: 'Все', iconId: 'active', iconClass: 'tab-button__icon--active' },
+    { id: 'autodelivery', label: 'Автовыдача', iconId: 'auto-delivery', iconClass: 'tab-button__icon--auto-delivery' },
+    { id: 'autolist', label: 'Автовыставление', iconId: 'auto-listing', iconClass: 'tab-button__icon--auto-listing' },
+    { id: 'autobump', label: 'Автоподнятие', iconId: 'lot-boost', iconClass: 'tab-button__icon--lot-boost' },
+  ]
 
   const categories = useMemo(() => {
     const names = new Set()
@@ -106,9 +168,6 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Активные лоты</h1>
-        <p className="tab-page-description">
-          Список всех активных лотов из вашего профиля Playerok.
-        </p>
       </div>
 
       <div className="tab-grid">
@@ -147,26 +206,24 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
                 )}
               </p>
               <div className="active-lots-feature-filters">
-                <span className="active-lots-filters__label">Показать:</span>
-                {[
-                  { id: 'all', label: 'Все' },
-                  { id: 'autodelivery', label: 'Автовыдача' },
-                  { id: 'autolist', label: 'Автовыставление' },
-                  { id: 'autobump', label: 'Автоподнятие' },
-                ].map(({ id, label }) => (
+                {featureFilters.map(({ id, label, iconId, iconClass }) => (
                   <button
                     key={id}
                     type="button"
-                    className={`active-lots-filter-chip ${featureFilter === id ? 'active-lots-filter-chip--solo' : ''}`}
+                    className={`active-lots-filter-chip active-lots-filter-chip--icon ${featureFilter === id ? 'active-lots-filter-chip--solo' : ''}`}
                     onClick={() => setFeatureFilter(id)}
+                    title={label}
+                    aria-label={label}
                   >
-                    {label}
+                    <span className={`tab-button__icon ${iconClass}`} aria-hidden="true">
+                      <FeatureFilterIcon id={iconId} />
+                    </span>
                   </button>
                 ))}
               </div>
               {categories.length > 0 && (
                 <div className="active-lots-filters">
-                  <span className="active-lots-filters__label">Категории:</span>
+                  <span className="active-lots-filters__label">🏷</span>
                   <div className="active-lots-filters__chips">
                     {categories.map((name) => {
                       const isSolo = soloCategory === name

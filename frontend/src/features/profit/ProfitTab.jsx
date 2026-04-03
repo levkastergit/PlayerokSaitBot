@@ -263,9 +263,6 @@ export function ProfitTab({ token }) {
     <div className="tab-page">
       <div className="tab-page-header">
         <h1>Прибыль</h1>
-        <p className="tab-page-description">
-          Аналитика продаж: себестоимость, расходы на выставление и поднятия, прибыль по каждой сделке.
-        </p>
       </div>
 
       <div className="tab-grid">
@@ -400,12 +397,6 @@ export function ProfitTab({ token }) {
 
           {hasToken && view === 'sales' && !loading && error && (
             <p className="card-text card-text--error">{error}</p>
-          )}
-
-          {hasToken && view === 'sales' && !loading && !error && list.length === 0 && (
-            <p className="card-text">
-              Пока нет продаж. Укажите себестоимость в настройках товара для расчёта прибыли.
-            </p>
           )}
 
           {hasToken && view === 'sales' && !loading && !error && list.length > 0 && (

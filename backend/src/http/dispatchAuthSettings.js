@@ -16,6 +16,12 @@ const { handleCategoryCommandsUpsert } = require('../features/productSettings/ha
 const { handleUpsertProductSettings } = require('../features/productSettings/handleUpsertProductSettings')
 const { handleDeleteProductSettings } = require('../features/productSettings/handleDeleteProductSettings')
 
+const { handlePartnersInvite } = require('../features/partners/handlePartnersInvite')
+const { handlePartnersDeleteInvite } = require('../features/partners/handlePartnersDeleteInvite')
+const { handlePartnersGetOwnerList } = require('../features/partners/handlePartnersGetOwnerList')
+const { handlePartnersGetWorkerList } = require('../features/partners/handlePartnersGetWorkerList')
+const { handlePartnersConnect } = require('../features/partners/handlePartnersConnect')
+
 async function dispatchPublicAuth({ req, res, pathname, deps }) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     let payload
@@ -151,6 +157,57 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
       return true
     }
     const result = await handleDeleteProductSettings({ payload, currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/partners/owner') {
+    const result = await handlePartnersGetOwnerList({ deps, currentUserId })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/partners/worker') {
+    const result = await handlePartnersGetWorkerList({ deps, currentUserId })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/partners/invite') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handlePartnersInvite({ payload, deps, currentUserId })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/partners/invite/delete') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handlePartnersDeleteInvite({ payload, deps, currentUserId })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/partners/connect') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handlePartnersConnect({ payload, deps, currentUserId })
     sendJson(res, result.statusCode, result.data)
     return true
   }
