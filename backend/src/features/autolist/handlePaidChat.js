@@ -332,8 +332,14 @@ async function handlePaidChat({
         if (i < messages.length - 1) {
           await sleep(900)
         }
-      } catch (_) {
-        // ignore single message failure
+      } catch (err) {
+        console.warn('[autolist-tick] automessage не отправлено', {
+          reason: 'automessage_send_failed',
+          chatId: lastChat.id,
+          dealId: dealId || null,
+          index: i,
+          error: err?.message || String(err),
+        })
       }
     }
   }

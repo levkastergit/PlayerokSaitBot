@@ -10,6 +10,11 @@ const BACKEND_DIR = path.join(__dirname, '..', '..')
 const SUPERCELL_PLUGIN_DIR = path.join(BACKEND_DIR, 'supercell_auto_otp_plugin')
 const SUPERCELL_BRIDGE_SCRIPT = path.join(SUPERCELL_PLUGIN_DIR, 'bridge_request_code.py')
 const SUPERCELL_REQUEST_TIMEOUT_MS = Number(process.env.SUPERCELL_REQUEST_TIMEOUT_MS) || 45000
+const SUPERCELL_REQUEST_RETRIES = Math.max(0, Number(process.env.SUPERCELL_REQUEST_RETRIES) || 2)
+const SUPERCELL_REQUEST_RETRY_DELAY_MS = Math.max(
+  100,
+  Number(process.env.SUPERCELL_REQUEST_RETRY_DELAY_MS) || 1200
+)
 
 function resolveSupercellPython() {
   if (cachedSupercellPython) return cachedSupercellPython
@@ -40,7 +45,23 @@ function resolveSupercellPython() {
   )
 }
 
-function runSupercellRequestCode({ email, gameKey }) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetryableSupercellError(message) {
+  const text = String(message || '').toLowerCase()
+  if (!text) return false
+  return (
+    text.includes('recaptcha') ||
+    text.includes('таймаут') ||
+    text.includes('timeout') ||
+    text.includes('нет ответа') ||
+    text.includes('http 5')
+  )
+}
+
+function runSupercellRequestCodeOnce({ email, gameKey }) {
   if (!fs.existsSync(SUPERCELL_BRIDGE_SCRIPT)) {
     return Promise.reject(new Error('Файл bridge_request_code.py не найден'))
   }
@@ -90,6 +111,30 @@ function runSupercellRequestCode({ email, gameKey }) {
       }
     )
   })
+}
+
+async function runSupercellRequestCode({ email, gameKey }) {
+  let lastError = null
+  for (let attempt = 0; attempt <= SUPERCELL_REQUEST_RETRIES; attempt += 1) {
+    try {
+      return await runSupercellRequestCodeOnce({ email, gameKey })
+    } catch (err) {
+      lastError = err
+      const msg = err?.message || String(err)
+      const shouldRetry = attempt < SUPERCELL_REQUEST_RETRIES && isRetryableSupercellError(msg)
+      console.warn('[supercellBridge] ошибка запроса кода', {
+        reason: shouldRetry ? 'bridge_retryable_error' : 'bridge_fatal_error',
+        attempt: attempt + 1,
+        maxAttempts: SUPERCELL_REQUEST_RETRIES + 1,
+        gameKey: String(gameKey || ''),
+        email: String(email || ''),
+        error: msg,
+      })
+      if (!shouldRetry) break
+      await sleep(SUPERCELL_REQUEST_RETRY_DELAY_MS * (attempt + 1))
+    }
+  }
+  throw lastError || new Error('Не удалось запросить код Supercell')
 }
 
 module.exports = { runSupercellRequestCode }

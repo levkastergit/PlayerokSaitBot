@@ -1,0 +1,14 @@
+services:
+  app:
+    image: playeroksait:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/data:/app/backend/data
+    restart: unless-stopped
+

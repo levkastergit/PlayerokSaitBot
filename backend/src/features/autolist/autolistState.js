@@ -107,7 +107,7 @@ function autolistGetLastChatMeta(tokenHash) {
   const key = String(tokenHash)
   const meta = global.__autolistLastChatByTokenHash[key]
   if (meta && typeof meta === 'object') return meta
-  global.__autolistLastChatByTokenHash[key] = { lastChatId: null, lastPaidTs: 0 }
+  global.__autolistLastChatByTokenHash[key] = { lastChatId: null, lastMessageId: null, lastPaidTs: 0 }
   return global.__autolistLastChatByTokenHash[key]
 }
 

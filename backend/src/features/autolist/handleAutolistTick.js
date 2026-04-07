@@ -130,8 +130,14 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
     const currentLastChat = chatNodes.length > 0 ? chatNodes[0] : null
     const currentLastChatId = currentLastChat?.id || null
+    const currentLastMessageId = currentLastChat?.lastMessage?.id || null
 
-    if (currentLastChatId && lastChatMeta.lastChatId && lastChatMeta.lastChatId !== currentLastChatId) {
+    const hasNewTopEvent =
+      Boolean(currentLastChatId) &&
+      (lastChatMeta.lastChatId !== currentLastChatId ||
+        (currentLastMessageId && lastChatMeta.lastMessageId !== currentLastMessageId))
+
+    if (hasNewTopEvent) {
       const lm = currentLastChat?.lastMessage || null
       const d = lm?.deal || null
       const dItemId = d?.item?.id || null
@@ -268,7 +274,12 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       }
     }
 
-    lastChatMeta.lastChatId = currentLastChatId || lastChatMeta.lastChatId
+    if (currentLastChatId) {
+      lastChatMeta.lastChatId = currentLastChatId
+    }
+    if (currentLastMessageId) {
+      lastChatMeta.lastMessageId = currentLastMessageId
+    }
 
     if (supercellModuleEnabled) {
       await processActiveSupercellFlows({
