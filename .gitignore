@@ -5,3 +5,5 @@ node_modules/
 frontend/.env.local
 supercell_auto_otp_plugin/__pycache__/
 backend/data/_git_untracked_backup/
+backend/data/*.db
+**/product-settings.db
