@@ -2,12 +2,15 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
   if (!VERIFIED_CARDS_PERSISTED_HASH) throw new Error('VERIFIED_CARDS_PERSISTED_HASH is required')
 
   return function fetchVerifiedCards(token, userAgent, opts = {}) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const countRaw = Number(opts.count)
       const count = Number.isFinite(countRaw) && countRaw > 0 ? Math.min(24, Math.floor(countRaw)) : 24
       const direction = String(opts.direction || 'ASC').toUpperCase()
@@ -75,7 +78,8 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

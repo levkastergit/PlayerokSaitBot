@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH }) {
   if (!ITEM_PRIORITY_STATUSES_PERSISTED_HASH) {
@@ -9,7 +10,9 @@ function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH
   }
 
   return function fetchItemPriorityStatuses(token, userAgent, itemId, price) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         itemId: String(itemId),
         price: Number(price) || 0,
@@ -84,7 +87,8 @@ function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

@@ -122,6 +122,7 @@ initLogger()
 // "Код от хеда": user-agent для запросов к Playerok берём из .env, чтобы не был захардкожен в коде.
 const PLAYEROK_USER_AGENT =
   process.env.PLAYEROK_USER_AGENT == null ? '' : String(process.env.PLAYEROK_USER_AGENT).trim()
+// Лимитер Playerok: PLAYEROK_MIN_REQUEST_GAP_MS; UI чата обходит очередь (runPlayerokInteractive в dispatchPlayerok), warmup — нет.
 
 const { hashPassword, verifyPassword, encryptToken, decryptToken } = require('./src/infra/crypto/tokenCrypto')
 const {

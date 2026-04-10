@@ -1,10 +1,13 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createUpdateDealStatus() {
   return function updateDealStatus(token, userAgent, dealId, newStatus) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const bodyJson = {
         operationName: 'updateDeal',
         variables: {
@@ -87,7 +90,8 @@ function createUpdateDealStatus() {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

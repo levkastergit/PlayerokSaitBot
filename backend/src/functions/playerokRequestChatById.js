@@ -2,12 +2,15 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createRequestChatById({ CHAT_PERSISTED_HASH }) {
   if (!CHAT_PERSISTED_HASH) throw new Error('CHAT_PERSISTED_HASH is required')
 
   return function requestChatById(token, userAgent, chatId) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = { id: String(chatId) }
       const params = new URLSearchParams({
         operationName: 'chat',
@@ -68,7 +71,8 @@ function createRequestChatById({ CHAT_PERSISTED_HASH }) {
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

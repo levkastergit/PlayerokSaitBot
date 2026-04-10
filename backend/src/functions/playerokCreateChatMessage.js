@@ -1,10 +1,13 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createCreateChatMessage() {
   return function createChatMessage(token, userAgent, chatId, text, opts = {}) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const referer =
         (opts && typeof opts.referer === 'string' && opts.referer.trim()) ||
         (chatId ? `https://playerok.com/chats/${String(chatId)}` : 'https://playerok.com/chats')
@@ -92,7 +95,8 @@ function createCreateChatMessage() {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

@@ -1,6 +1,7 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { extractItemImageUrl } = require('./extractItemImageUrl')
 
 function dealCategoryHintFromNode(deal) {
@@ -33,7 +34,9 @@ function createRequestChatMessagesPage() {
   ) {
     const referer = opts.referer || 'https://playerok.com/chats'
 
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const first = Math.min(50, Math.max(1, Number(count) || 24))
       // $hasSupportAccess / $showForbiddenImage должны фигурировать в документе (как у веб-клиента),
       // иначе GraphQL_VALIDATION_FAILED. Вложенный deal.item нужен для превью товара и категории,
@@ -229,7 +232,8 @@ function createRequestChatMessagesPage() {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

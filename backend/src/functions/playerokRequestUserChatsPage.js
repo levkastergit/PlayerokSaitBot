@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PERSISTED_HASH }) {
   if (!AUTOLIST_MAX_CHATS_TO_SCAN) throw new Error('AUTOLIST_MAX_CHATS_TO_SCAN is required')
@@ -15,7 +16,9 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
     if (first > 50) first = 50
     const after = options.after != null ? String(options.after) : null
 
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         pagination: { first, after },
         filter: { userId, type: null, status: null },
@@ -86,7 +89,8 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

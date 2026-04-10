@@ -1,5 +1,6 @@
 const { sendJson } = require('./sendJson')
 const { readJsonBody } = require('./readJsonBody')
+const { runPlayerokInteractive } = require('../infra/playerokRequestGate')
 
 const { handleActiveLots } = require('../features/playerok/activeLots/handleActiveLots')
 const { handleChats } = require('../features/playerok/chats/handleChats')
@@ -63,30 +64,30 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/chats') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleChats({
-      payload,
-      currentUserId,
-      deps: {
-        getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
-        getHiddenChats: deps.getHiddenChats,
-        withRetry: deps.withRetry,
-        isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
-        getViewer: deps.getViewer,
-        requestUserChatsPage: deps.requestUserChatsPage,
-        fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok,
-        fetchCompletedItemsFromPlayerok: deps.fetchCompletedItemsFromPlayerok,
-        fetchDealsFromPlayerok: deps.fetchDealsFromPlayerok,
-        requestDealById: deps.requestDealById,
-        requestChatById: deps.requestChatById,
-        requestItemById: deps.requestItemById,
-        requestChatMessagesPage: deps.requestChatMessagesPage,
-        extractItemImageUrl: deps.extractItemImageUrl,
-        getChatsSnapshotCache: deps.getChatsSnapshotCache,
-        setChatsSnapshotCache: deps.setChatsSnapshotCache,
-        isChatsSnapshotFresh: deps.isChatsSnapshotFresh,
-        scheduleChatsSnapshotRefresh: deps.scheduleChatsSnapshotRefresh,
-      },
-    })
+    const chatsDeps = {
+      getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+      getHiddenChats: deps.getHiddenChats,
+      withRetry: deps.withRetry,
+      isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+      getViewer: deps.getViewer,
+      requestUserChatsPage: deps.requestUserChatsPage,
+      fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok,
+      fetchCompletedItemsFromPlayerok: deps.fetchCompletedItemsFromPlayerok,
+      fetchDealsFromPlayerok: deps.fetchDealsFromPlayerok,
+      requestDealById: deps.requestDealById,
+      requestChatById: deps.requestChatById,
+      requestItemById: deps.requestItemById,
+      requestChatMessagesPage: deps.requestChatMessagesPage,
+      extractItemImageUrl: deps.extractItemImageUrl,
+      getChatsSnapshotCache: deps.getChatsSnapshotCache,
+      setChatsSnapshotCache: deps.setChatsSnapshotCache,
+      isChatsSnapshotFresh: deps.isChatsSnapshotFresh,
+      scheduleChatsSnapshotRefresh: deps.scheduleChatsSnapshotRefresh,
+    }
+    const result =
+      payload.warmup === true
+        ? await handleChats({ payload, currentUserId, deps: chatsDeps })
+        : await runPlayerokInteractive(() => handleChats({ payload, currentUserId, deps: chatsDeps }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -267,47 +268,53 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleDealChatMessages({
-      payload,
-      currentUserId,
-      deps: {
-        getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
-        withRetry: deps.withRetry,
-        isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
-        getViewer: deps.getViewer,
-        fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
-        autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
-        processSingleSupercellFlow: deps.processSingleSupercellFlow,
-        isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
-      },
-    })
+    const result = await runPlayerokInteractive(() =>
+      handleDealChatMessages({
+        payload,
+        currentUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          withRetry: deps.withRetry,
+          isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+          getViewer: deps.getViewer,
+          fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
+          autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
+          processSingleSupercellFlow: deps.processSingleSupercellFlow,
+          isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+        },
+      })
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/send-chat-message') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleSendChatMessage({
-      payload,
-      currentUserId,
-      deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, sendChatMessageToPlayerok: deps.sendChatMessageToPlayerok },
-    })
+    const result = await runPlayerokInteractive(() =>
+      handleSendChatMessage({
+        payload,
+        currentUserId,
+        deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, sendChatMessageToPlayerok: deps.sendChatMessageToPlayerok },
+      })
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/request-supercell-code') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleRequestSupercellCode({
-      payload,
-      currentUserId,
-      deps: {
-        getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
-        getSupercellGameByCategory: deps.getSupercellGameByCategory,
-        requestSupercellCodeForChat: deps.requestSupercellCodeForChat,
-        isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
-      },
-    })
+    const result = await runPlayerokInteractive(() =>
+      handleRequestSupercellCode({
+        payload,
+        currentUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          getSupercellGameByCategory: deps.getSupercellGameByCategory,
+          requestSupercellCodeForChat: deps.requestSupercellCodeForChat,
+          isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+        },
+      })
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 

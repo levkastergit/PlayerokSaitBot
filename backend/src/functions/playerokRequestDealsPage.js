@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { normalizeKeyPart, buildProductKey } = require('./keyUtils')
 
 function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
@@ -16,7 +17,9 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
     statusList,
     direction = 'OUT'
   ) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         pagination: { first: PAGE_SIZE, after: afterCursor },
         filter: {
@@ -230,7 +233,8 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

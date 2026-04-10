@@ -1,6 +1,7 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   if (!AUTOBUMP_PRIORITY_STATUS_ID) {
@@ -8,7 +9,9 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   }
 
   return function publishItem(token, userAgent, itemId, opts = {}) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       // Если priorityStatusId явно передан (включая null), используем его; иначе используем значение по умолчанию
       // Используем hasOwnProperty чтобы различать "не передан" и "передан как null"
       let priorityStatusId = Object.prototype.hasOwnProperty.call(opts, 'priorityStatusId')
@@ -113,7 +116,8 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

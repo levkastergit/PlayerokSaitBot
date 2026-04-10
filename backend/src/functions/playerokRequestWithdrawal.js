@@ -1,10 +1,13 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createRequestWithdrawal() {
   return function requestWithdrawal(token, userAgent, payload) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const bodyJson = {
         operationName: 'requestWithdrawal',
         variables: {
@@ -85,7 +88,8 @@ function createRequestWithdrawal() {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

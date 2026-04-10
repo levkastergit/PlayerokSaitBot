@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH }) {
   if (!TRANSACTION_PROVIDERS_PERSISTED_HASH) {
@@ -9,7 +10,9 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
   }
 
   return function fetchTransactionProviders(token, userAgent, direction = 'OUT') {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         filter: {
           direction: String(direction || 'OUT').toUpperCase(),
@@ -67,7 +70,8 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

@@ -1,11 +1,14 @@
 'use strict'
 
 const https = require('https')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
   if (!VIEWER_QUERY) throw new Error('VIEWER_QUERY is required')
   return function getViewer(token, userAgent) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const body = JSON.stringify({
         operationName: 'viewer',
         query: VIEWER_QUERY,
@@ -85,7 +88,8 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
       req.on('error', reject)
       req.write(body)
       req.end()
-    })
+        })
+    )
   }
 }
 

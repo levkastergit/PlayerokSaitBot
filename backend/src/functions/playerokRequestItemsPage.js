@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
@@ -14,7 +15,9 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
     afterCursor,
     statusList = ['APPROVED']
   ) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         pagination: {
           first: PAGE_SIZE,
@@ -127,7 +130,8 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 

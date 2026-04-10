@@ -2,12 +2,15 @@
 
 const https = require('https')
 const { URLSearchParams } = require('url')
+const { withPlayerokGate } = require('../infra/playerokRequestGate')
 
 function createRequestItemById({ ITEM_PERSISTED_HASH }) {
   if (!ITEM_PERSISTED_HASH) throw new Error('ITEM_PERSISTED_HASH is required')
 
   return function requestItemById(token, userAgent, itemId) {
-    return new Promise((resolve, reject) => {
+    return withPlayerokGate(
+      () =>
+        new Promise((resolve, reject) => {
       const variables = {
         id: String(itemId),
         slug: null,
@@ -76,7 +79,8 @@ function createRequestItemById({ ITEM_PERSISTED_HASH }) {
 
       req.on('error', reject)
       req.end()
-    })
+        })
+    )
   }
 }
 
