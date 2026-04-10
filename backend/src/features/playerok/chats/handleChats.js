@@ -11,13 +11,20 @@ async function handleChats({ payload, currentUserId, deps }) {
     fetchDealsFromPlayerok,
     requestDealById,
     requestChatById,
+    requestItemById,
     requestChatMessagesPage,
     extractItemImageUrl,
+    getChatsSnapshotCache,
+    setChatsSnapshotCache,
+    isChatsSnapshotFresh,
+    scheduleChatsSnapshotRefresh,
   } = deps
 
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
   const userAgent = payload.userAgent
   const afterCursor = payload.afterCursor || payload.after || null
+  const preferCache = payload?.preferCache !== false
+  const warmup = payload?.warmup === true
 
   const limitRaw = payload.limit
   let limit = Number.isFinite(limitRaw) ? Number(limitRaw) : null
@@ -26,6 +33,103 @@ async function handleChats({ payload, currentUserId, deps }) {
 
   if (!token) {
     return { statusCode: 400, data: { error: 'Token is required' } }
+  }
+
+  const cacheKey = JSON.stringify({
+    limit,
+    afterCursor: afterCursor || null,
+  })
+  if (preferCache && typeof getChatsSnapshotCache === 'function') {
+    const cached = getChatsSnapshotCache(currentUserId, cacheKey)
+    if (cached && cached.data) {
+      const data = cached.data
+      const fresh = typeof isChatsSnapshotFresh === 'function'
+        ? isChatsSnapshotFresh(currentUserId, cacheKey)
+        : false
+      if (fresh) {
+        return { statusCode: 200, data }
+      }
+      if (!warmup && typeof scheduleChatsSnapshotRefresh === 'function') {
+        scheduleChatsSnapshotRefresh(currentUserId, token, userAgent, { limit, afterCursor: afterCursor || null })
+      }
+      return { statusCode: 200, data }
+    }
+  }
+
+  const DEFAULT_CATEGORY = 'Категория не определена'
+  const COMMON_CATEGORY_HINTS = [
+    'Clash of Clans',
+    'Clash Royale',
+    'Brawl Stars',
+    'Hay Day',
+    'Boom Beach',
+    'PUBG',
+    'PUBG Mobile',
+    'Call of Duty',
+    'Free Fire',
+    'Fortnite',
+    'CS:GO',
+    'CS2',
+    'Counter-Strike',
+    'Dota 2',
+    'League of Legends',
+    'Valorant',
+    'Apex Legends',
+    'Genshin Impact',
+    'Honkai',
+    'Star Rail',
+    'World of Tanks',
+    'World of Warships',
+    'War Thunder',
+    'Minecraft',
+    'Roblox',
+    'Among Us',
+    'Fall Guys',
+    'Mobile Legends',
+    'Wild Rift',
+    'Arena of Valor',
+    'Heroes of the Storm',
+    'Overwatch',
+    'YouTube',
+    'Claude',
+    'ChatGPT',
+    'ЧатГПТ',
+    'Telegram',
+    'Discord',
+  ]
+
+  const normalizeCategory = (value) => {
+    if (typeof value !== 'string') return null
+    const normalized = value.trim().replace(/\s+/g, ' ')
+    if (!normalized) return null
+    if (normalized.toLowerCase() === DEFAULT_CATEGORY.toLowerCase()) return null
+    return normalized
+  }
+
+  const categoryFromProductKey = (productKey) => {
+    if (typeof productKey !== 'string') return null
+    const sepIndex = productKey.indexOf('::')
+    if (sepIndex <= 0) return null
+    return normalizeCategory(productKey.slice(0, sepIndex))
+  }
+
+  const categoryFromTextHints = (value) => {
+    if (typeof value !== 'string') return null
+    const text = value.trim().toLowerCase()
+    if (!text) return null
+    for (const hint of COMMON_CATEGORY_HINTS) {
+      if (text.includes(String(hint).toLowerCase())) {
+        return hint
+      }
+    }
+    return null
+  }
+
+  const shortCategoryFromText = (value, wordsCount = 2) => {
+    if (typeof value !== 'string') return null
+    const words = value.trim().split(/\s+/).filter(Boolean)
+    if (words.length === 0) return null
+    return normalizeCategory(words.slice(0, wordsCount).join(' '))
   }
 
   try {
@@ -91,6 +195,19 @@ async function handleChats({ payload, currentUserId, deps }) {
     )
     const edges = Array.isArray(chatsData?.edges) ? chatsData.edges : []
 
+    const runPlayerokBatches = async (ids, batchSize, gapMs, worker) => {
+      const list = Array.isArray(ids) ? ids : Array.from(ids)
+      for (let i = 0; i < list.length; i += batchSize) {
+        const batch = list.slice(i, i + batchSize)
+        await Promise.all(batch.map((id) => worker(id)))
+        if (i + batchSize < list.length && gapMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, gapMs))
+        }
+      }
+    }
+    const PLAYEROK_DEAL_BATCH = 2
+    const PLAYEROK_DEAL_GAP_MS = 450
+
     const itemIdSet = new Set()
     const dealIdSet = new Set()
     for (const edge of edges) {
@@ -151,38 +268,36 @@ async function handleChats({ payload, currentUserId, deps }) {
     if (dealIdSet.size > 0) {
       const dealIds = Array.from(dealIdSet)
       try {
-        await Promise.all(
-          dealIds.map(async (id) => {
-            try {
-              const fullDeal = await withRetry(() => requestDealById(token, userAgent, id), {
-                label: 'dealById(userChats)',
-                retries: 2,
-                shouldRetry: isPlayerokRateLimitError,
-              })
-              if (!fullDeal) return
+        await runPlayerokBatches(dealIds, PLAYEROK_DEAL_BATCH, PLAYEROK_DEAL_GAP_MS, async (id) => {
+          try {
+            const fullDeal = await withRetry(() => requestDealById(token, userAgent, id), {
+              label: 'dealById(userChats)',
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            })
+            if (!fullDeal) return
 
-              let category = (fullDeal.category && String(fullDeal.category).trim()) || null
-              const item = fullDeal.item || null
-              if (!category && item) {
-                const gameName = (item.game && (item.game.name || item.game.title)) || null
-                if (gameName) category = String(gameName).trim()
-              }
-              if (!category && typeof fullDeal.productKey === 'string') {
-                const pk = fullDeal.productKey
-                const sepIndex = pk.indexOf('::')
-                if (sepIndex > 0) {
-                  const gameFromPk = pk.slice(0, sepIndex).trim()
-                  if (gameFromPk) category = gameFromPk
-                }
-              }
-              if (category) {
-                dealIdToCategory.set(String(id), category)
-              }
-            } catch (e) {
-              // ignore single deal errors
+            let category = (fullDeal.category && String(fullDeal.category).trim()) || null
+            const item = fullDeal.item || null
+            if (!category && item) {
+              const gameName = (item.game && (item.game.name || item.game.title)) || null
+              if (gameName) category = String(gameName).trim()
             }
-          })
-        )
+            if (!category && typeof fullDeal.productKey === 'string') {
+              const pk = fullDeal.productKey
+              const sepIndex = pk.indexOf('::')
+              if (sepIndex > 0) {
+                const gameFromPk = pk.slice(0, sepIndex).trim()
+                if (gameFromPk) category = gameFromPk
+              }
+            }
+            if (category) {
+              dealIdToCategory.set(String(id), category)
+            }
+          } catch (e) {
+            // ignore single deal errors
+          }
+        })
       } catch (_) {
         // ignore batch errors
       }
@@ -211,8 +326,11 @@ async function handleChats({ payload, currentUserId, deps }) {
 
     if (dealIdsToLoad.size > 0) {
       try {
-        await Promise.all(
-          Array.from(dealIdsToLoad).map(async (dealId) => {
+        await runPlayerokBatches(
+          Array.from(dealIdsToLoad),
+          PLAYEROK_DEAL_BATCH,
+          PLAYEROK_DEAL_GAP_MS,
+          async (dealId) => {
             try {
               if (dealIdToCategory.has(dealId)) {
                 return
@@ -245,7 +363,7 @@ async function handleChats({ payload, currentUserId, deps }) {
             } catch (e) {
               // ignore found deal errors
             }
-          })
+          }
         )
       } catch (e) {
         // ignore batch errors
@@ -411,12 +529,19 @@ async function handleChats({ payload, currentUserId, deps }) {
           )
 
           if (i + BATCH_SIZE < chatsNeedingFullInfo.length) {
-            await new Promise((resolve) => setTimeout(resolve, 300))
+            await new Promise((resolve) => setTimeout(resolve, 450))
           }
         }
       } catch (e) {
         // ignore batch errors
       }
+    }
+
+    const toUnreadCount = (value) => {
+      if (value == null) return null
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed) || parsed < 0) return null
+      return Math.trunc(parsed)
     }
 
     const list = edges
@@ -728,9 +853,12 @@ async function handleChats({ payload, currentUserId, deps }) {
         }
 
         const status = deal && typeof deal.status === 'string' ? deal.status : null
+        const unreadCount = toUnreadCount(
+          node.unreadMessagesCount ?? node.unreadCount ?? node.unread_messages_count
+        )
         return {
           id: node.id,
-          unreadCount: typeof node.unreadMessagesCount === 'number' ? node.unreadMessagesCount : null,
+          unreadCount,
           lastMessageId: lastMessage?.id || null,
           lastMessageText: lastMessage?.text || null,
           lastMessageCreatedAt: lastMessage?.createdAt || null,
@@ -745,10 +873,237 @@ async function handleChats({ payload, currentUserId, deps }) {
         }
       })
 
+    const categoryFromItemNode = (itemNode) => {
+      if (!itemNode || typeof itemNode !== 'object') return null
+      let cat =
+        (itemNode.game && (itemNode.game.name || itemNode.game.title)) ||
+        (itemNode.category && (itemNode.category.name || itemNode.category.title)) ||
+        null
+      if (cat && String(cat).trim()) return String(cat).trim()
+      return null
+    }
+    const rememberItemCategory = (iid, itemNode) => {
+      const cat = categoryFromItemNode(itemNode)
+      if (cat && !itemIdToGame.has(iid)) itemIdToGame.set(iid, cat)
+      return cat
+    }
+
+    const resolveCategoryFromDeal = async (dealId) => {
+      const did = dealId != null ? String(dealId) : ''
+      if (!did) return null
+      if (dealIdToCategory.has(did)) return dealIdToCategory.get(did) || null
+      try {
+        const fullDeal = await withRetry(() => requestDealById(token, userAgent, did), {
+          label: 'dealById(userChats-deepResolve)',
+          retries: 2,
+          shouldRetry: isPlayerokRateLimitError,
+        })
+        if (!fullDeal) return null
+        let dealCategory = (fullDeal.category && String(fullDeal.category).trim()) || null
+        const dealItem = fullDeal.item || null
+        if (!dealCategory && dealItem) {
+          const gameName = (dealItem.game && (dealItem.game.name || dealItem.game.title)) || null
+          if (gameName) dealCategory = String(gameName).trim()
+        }
+        if (!dealCategory && typeof fullDeal.productKey === 'string') {
+          const sepIndex = fullDeal.productKey.indexOf('::')
+          if (sepIndex > 0) {
+            const gameFromPk = fullDeal.productKey.slice(0, sepIndex).trim()
+            if (gameFromPk) dealCategory = gameFromPk
+          }
+        }
+        if (dealCategory) {
+          dealIdToCategory.set(did, dealCategory)
+          return dealCategory
+        }
+      } catch (_) {
+        // ignore deep deal resolve error
+      }
+      return null
+    }
+
+    const resolveCategoryFromItemMaps = (chat) => {
+      const iid = chat.itemId != null ? String(chat.itemId) : null
+      if (iid && itemIdToGame.has(iid)) return itemIdToGame.get(iid) || null
+      const title =
+        chat.itemTitle && typeof chat.itemTitle === 'string' ? chat.itemTitle.trim() : ''
+      if (title && titleToGame.has(title)) return titleToGame.get(title) || null
+      return null
+    }
+
+    const resolveCategoryFromItemApi = async (chat) => {
+      if (!requestItemById || chat.itemId == null) return null
+      const iid = String(chat.itemId)
+      const cached = resolveCategoryFromItemMaps(chat)
+      if (cached) return cached
+      try {
+        const itemNode = await withRetry(() => requestItemById(token, userAgent, iid), {
+          label: 'itemById(userChats-deepResolve)',
+          retries: 1,
+          shouldRetry: isPlayerokRateLimitError,
+        })
+        return rememberItemCategory(iid, itemNode)
+      } catch (_) {
+        return null
+      }
+    }
+
+    const resolveCategoryFromChatMessagesHistory = async (chatId) => {
+      const cid = chatId != null ? String(chatId) : ''
+      if (!cid) return null
+
+      let afterCursor = null
+      const maxPages = 6
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        let messagesData = null
+        try {
+          messagesData = await withRetry(
+            () => requestChatMessagesPage(token, userAgent, cid, afterCursor, 24),
+            {
+              label: 'chatMessages(userChats-deepHistory)',
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            }
+          )
+        } catch (_) {
+          break
+        }
+
+        const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : []
+        for (const msg of messages) {
+          const dealIdFromMsg = msg?.dealId != null ? String(msg.dealId) : null
+          if (dealIdFromMsg) {
+            const fromDeal = await resolveCategoryFromDeal(dealIdFromMsg)
+            if (fromDeal) return fromDeal
+          }
+          const fromText = categoryFromTextHints(msg?.text || '')
+          if (fromText) return fromText
+        }
+
+        const hasNext = Boolean(messagesData?.pageInfo?.hasNextPage)
+        afterCursor = hasNext ? (messagesData?.pageInfo?.endCursor || null) : null
+        if (!afterCursor) break
+      }
+
+      return null
+    }
+
+    const resolveCategoryByDeepChatLookup = async (chat) => {
+      const chatId = chat?.id != null ? String(chat.id) : ''
+      if (!chatId) return null
+
+      if (chat.dealId != null) {
+        const fromDeal = await resolveCategoryFromDeal(chat.dealId)
+        if (fromDeal) return fromDeal
+      }
+
+      const fromMapsEarly = resolveCategoryFromItemMaps(chat)
+      if (fromMapsEarly) return fromMapsEarly
+
+      try {
+        const fullChat = await withRetry(() => requestChatById(token, userAgent, chatId), {
+          label: 'chatById(userChats-deepResolve)',
+          retries: 2,
+          shouldRetry: isPlayerokRateLimitError,
+        })
+
+        const chatDeal = fullChat?.deal || null
+        const chatItem = chatDeal?.item || null
+        let category =
+          (chatItem?.game && (chatItem.game.name || chatItem.game.title)) ||
+          (chatItem?.category && (chatItem.category.name || chatItem.category.title)) ||
+          (typeof chatDeal?.category === 'string' && chatDeal.category) ||
+          null
+
+        if (!category && typeof chatDeal?.productKey === 'string') {
+          const sepIndex = chatDeal.productKey.indexOf('::')
+          if (sepIndex > 0) {
+            category = chatDeal.productKey.slice(0, sepIndex).trim() || null
+          }
+        }
+        if (category && String(category).trim()) {
+          return String(category).trim()
+        }
+
+        if (chatDeal?.id != null) {
+          const fromDeal = await resolveCategoryFromDeal(chatDeal.id)
+          if (fromDeal) return fromDeal
+        }
+      } catch (_) {
+        // ignore deep chat resolve error
+      }
+
+      const fromMaps = resolveCategoryFromItemMaps(chat)
+      if (fromMaps) return fromMaps
+
+      const fromItemApi = await resolveCategoryFromItemApi(chat)
+      if (fromItemApi) return fromItemApi
+
+      const fromMessagesHistory = await resolveCategoryFromChatMessagesHistory(chatId)
+      if (fromMessagesHistory) return fromMessagesHistory
+
+      return null
+    }
+
+    const chatsNeedingDeepResolve = list.filter((chat) => {
+      const category = typeof chat?.category === 'string' ? chat.category.trim() : ''
+      return !category || category === 'Категория не определена'
+    })
+    if (chatsNeedingDeepResolve.length > 0) {
+      const ITEM_PREFETCH_GAP_MS = 520
+      const MAX_ITEM_PREFETCH_PER_REQUEST = 36
+      if (requestItemById) {
+        const prefetchIds = []
+        const seenPrefetch = new Set()
+        for (const chat of chatsNeedingDeepResolve) {
+          const iid = chat.itemId != null ? String(chat.itemId) : null
+          if (!iid || itemIdToGame.has(iid) || seenPrefetch.has(iid)) continue
+          seenPrefetch.add(iid)
+          prefetchIds.push(iid)
+        }
+        const toPrefetch = prefetchIds.slice(0, MAX_ITEM_PREFETCH_PER_REQUEST)
+        for (let pi = 0; pi < toPrefetch.length; pi += 1) {
+          const iid = toPrefetch[pi]
+          try {
+            const itemNode = await withRetry(() => requestItemById(token, userAgent, iid), {
+              label: 'itemById(userChats-deepPrefetch)',
+              retries: 1,
+              shouldRetry: isPlayerokRateLimitError,
+            })
+            rememberItemCategory(iid, itemNode)
+          } catch (_) {
+            // ignore prefetch errors
+          }
+          if (pi + 1 < toPrefetch.length) {
+            await new Promise((resolve) => setTimeout(resolve, ITEM_PREFETCH_GAP_MS))
+          }
+        }
+      }
+
+      const BATCH_SIZE = 1
+      const DEEP_RESOLVE_CHAT_GAP_MS = 650
+      for (let i = 0; i < chatsNeedingDeepResolve.length; i += BATCH_SIZE) {
+        const batch = chatsNeedingDeepResolve.slice(i, i + BATCH_SIZE)
+        await Promise.all(
+          batch.map(async (chat) => {
+            const resolvedCategory = await resolveCategoryByDeepChatLookup(chat)
+            if (!resolvedCategory) return
+            const chatIndex = list.findIndex((c) => c.id === chat.id)
+            if (chatIndex !== -1) {
+              list[chatIndex].category = resolvedCategory
+            }
+          })
+        )
+        if (i + BATCH_SIZE < chatsNeedingDeepResolve.length) {
+          await new Promise((resolve) => setTimeout(resolve, DEEP_RESOLVE_CHAT_GAP_MS))
+        }
+      }
+    }
+
     const chatsNeedingBuyerName = list.filter((chat) => !chat.buyerName && chat.id != null)
     if (chatsNeedingBuyerName.length > 0) {
       try {
-        const BATCH_SIZE = 4
+        const BATCH_SIZE = 2
         for (let i = 0; i < chatsNeedingBuyerName.length; i += BATCH_SIZE) {
           const batch = chatsNeedingBuyerName.slice(i, i + BATCH_SIZE)
           await Promise.all(
@@ -773,7 +1128,7 @@ async function handleChats({ payload, currentUserId, deps }) {
             })
           )
           if (i + BATCH_SIZE < chatsNeedingBuyerName.length) {
-            await new Promise((resolve) => setTimeout(resolve, 250))
+            await new Promise((resolve) => setTimeout(resolve, 400))
           }
         }
 
@@ -1019,39 +1374,69 @@ async function handleChats({ payload, currentUserId, deps }) {
       }
     }
 
-    const chatsWithoutCategory = list.filter(
-      (c) => !c.category || (typeof c.category === 'string' && !c.category.trim())
-    )
-    if (chatsWithoutCategory.length > 0) {
-      for (const chat of chatsWithoutCategory) {
-        const chatIndex = list.findIndex((c) => c.id === chat.id)
-        if (chatIndex !== -1) {
-          if (chat.itemTitle && typeof chat.itemTitle === 'string' && chat.itemTitle.trim()) {
-            const words = chat.itemTitle.trim().split(/\s+/).filter((w) => w.length > 0)
-            if (words.length > 0) {
-              list[chatIndex].category = words.slice(0, 2).join(' ')
-            } else {
-              list[chatIndex].category = 'Категория не определена'
-            }
-          } else {
-            list[chatIndex].category = 'Категория не определена'
-          }
+    // Единая и детерминированная финализация категории для всех чатов.
+    // Стабилизирует результат, даже если часть промежуточных источников отдала неполные данные.
+    for (const chat of list) {
+      let category = normalizeCategory(chat.category)
+
+      if (!category) {
+        category = normalizeCategory(chatIdToLatestSale.get(String(chat.id || ''))?.category || null)
+      }
+      if (!category && chat.dealId != null) {
+        category = normalizeCategory(dealIdToCategory.get(String(chat.dealId)) || null)
+      }
+      if (!category && chat.itemId != null) {
+        category = normalizeCategory(itemIdToGame.get(String(chat.itemId)) || null)
+      }
+      if (!category && chat.itemTitle) {
+        category = normalizeCategory(titleToGame.get(String(chat.itemTitle).trim()) || null)
+      }
+      if (!category && chat.itemTitle) {
+        category = categoryFromTextHints(chat.itemTitle)
+      }
+      if (!category && chat.lastMessageText) {
+        category = categoryFromTextHints(chat.lastMessageText)
+      }
+      if (!category && chat.itemTitle) {
+        category = shortCategoryFromText(chat.itemTitle, 2)
+      }
+      // Не используем произвольные первые слова из последнего сообщения:
+      // это может давать шум вроде "Хорошо!" как категорию.
+
+      if (!category && chat.dealId != null) {
+        // Последняя попытка: прямой запрос сделки, если всё еще не удалось.
+        try {
+          const fullDeal = await withRetry(() => requestDealById(token, userAgent, String(chat.dealId)), {
+            label: 'dealById(userChats-finalNormalize)',
+            retries: 2,
+            shouldRetry: isPlayerokRateLimitError,
+          })
+          category =
+            normalizeCategory(fullDeal?.category) ||
+            normalizeCategory(fullDeal?.item?.game?.name || fullDeal?.item?.game?.title || null) ||
+            normalizeCategory(fullDeal?.item?.category?.name || fullDeal?.item?.category?.title || null) ||
+            categoryFromProductKey(fullDeal?.productKey)
+        } catch (_) {
+          // ignore final normalize deal error
         }
       }
+
+      chat.category = category || DEFAULT_CATEGORY
     }
 
     const pageInfo = (chatsData && chatsData.pageInfo) || {}
 
-    return {
-      statusCode: 200,
-      data: {
-        list,
-        pageInfo: {
-          hasNextPage: Boolean(pageInfo.hasNextPage),
-          endCursor: pageInfo.endCursor || null,
-        },
+    const response = {
+      list,
+      pageInfo: {
+        hasNextPage: Boolean(pageInfo.hasNextPage),
+        endCursor: pageInfo.endCursor || null,
       },
     }
+    if (typeof setChatsSnapshotCache === 'function') {
+      setChatsSnapshotCache(currentUserId, cacheKey, response)
+    }
+    return { statusCode: 200, data: response }
   } catch (err) {
     const message = err && err.message ? String(err.message) : 'Не удалось загрузить чаты с Playerok'
     return { statusCode: 500, data: { error: message } }
