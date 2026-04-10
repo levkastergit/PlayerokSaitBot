@@ -12,10 +12,16 @@ function setupAutobumpBackgroundJob({
   // Автоподнятие: раз в 15 сек проверяем для каждого товара «пора ли поднять» по его расписанию.
   // Отдельный таймер на каждый товар не делаем — один общий цикл проще и надёжнее при перезапуске процесса.
   const autobumpLastAttemptByKey = {}
+  let autobumpViewerBackoffUntil = 0
+  let autobumpViewerFailStreak = 0
+  let autobumpLastErrorLogTs = 0
   console.log('[autobump] фоновое задание запланировано (интервал: 15 с)')
 
   setInterval(async () => {
     try {
+      if (Date.now() < autobumpViewerBackoffUntil) {
+        return
+      }
       // Пока фоновое автоподнятие работает только для базового пользователя id=1
       const userId = 1
       const row = getStoredToken.get(userId)
@@ -30,6 +36,9 @@ function setupAutobumpBackgroundJob({
         Promise.resolve(getSalesHistoryAll.all(userId)),
         fetchActiveItemsFromPlayerok(token, userAgent),
       ])
+
+      autobumpViewerFailStreak = 0
+      autobumpViewerBackoffUntil = 0
 
       const settingsByKey = {}
       for (const r of settingsRows || []) {
@@ -171,9 +180,33 @@ function setupAutobumpBackgroundJob({
       const errMsg = err?.message || String(err || '')
       if (errMsg.includes('OOM') || errMsg.includes('maxmemory')) {
         console.warn('[autobump-tick] Redis OOM — пропуск этого тика', { error: errMsg })
-      } else {
-        console.error('[autobump-tick] ошибка', err)
+        return
       }
+
+      const statusCode = Number(err?.statusCode)
+      const isViewerUpstream =
+        errMsg.includes('Playerok viewer:') ||
+        (Number.isFinite(statusCode) && statusCode >= 500 && statusCode < 600)
+
+      if (isViewerUpstream) {
+        autobumpViewerFailStreak += 1
+        const backoffSec = Math.min(
+          300,
+          30 * 2 ** Math.min(autobumpViewerFailStreak - 1, 4)
+        )
+        autobumpViewerBackoffUntil = Date.now() + backoffSec * 1000
+        const now = Date.now()
+        if (now - autobumpLastErrorLogTs > 120000) {
+          autobumpLastErrorLogTs = now
+          console.warn(
+            '[autobump-tick] Playerok viewer недоступен (5xx/сеть). Пауза',
+            { backoffSec, message: errMsg.slice(0, 280) }
+          )
+        }
+        return
+      }
+
+      console.error('[autobump-tick] ошибка', err)
     }
   }, intervalMs)
 }

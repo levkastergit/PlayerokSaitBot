@@ -171,7 +171,15 @@ export async function fetchCompletedLots(token) {
   const data = await response.json()
   const rawItems = Array.isArray(data) ? data : data.items || []
 
-  return rawItems.map(mapLotItem)
+  const mapped = rawItems.map(mapLotItem)
+  const withRt = mapped.filter((x) => x.autolistRuntime).length
+  console.log(
+    '[Playerok autolist] completed-lots загружено:',
+    mapped.length,
+    'с полем autolistRuntime:',
+    withRt
+  )
+  return mapped
 }
 
 /** Ключ продукта для настроек: полностью повторяет normalizeKeyPart/buildProductKey на бэкенде */
@@ -405,7 +413,15 @@ export async function unhideChat(token, chatId) {
 
 /** Сообщения чата по сделке (для вкладок Выполнение и Чат). chatId — если есть (из списка сделок), иначе бэкенд возьмёт по dealId. */
 export async function fetchDealChatMessages(token, dealId, chatId) {
-  if (!dealId && !chatId) return { list: [], buyerSupercellEmail: null, itemTitle: null, itemImageUrl: null }
+  if (!dealId && !chatId) {
+    return {
+      list: [],
+      buyerSupercellEmail: null,
+      itemTitle: null,
+      itemImageUrl: null,
+      itemCategory: null,
+    }
+  }
   const response = await trackedFetch(BACKEND_DEAL_CHAT_MESSAGES_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
@@ -428,7 +444,8 @@ export async function fetchDealChatMessages(token, dealId, chatId) {
     : null
   const itemTitle = data && typeof data.itemTitle === 'string' ? data.itemTitle : null
   const itemImageUrl = data && typeof data.itemImageUrl === 'string' ? data.itemImageUrl : null
-  return { list, buyerSupercellEmail, itemTitle, itemImageUrl }
+  const itemCategory = data && typeof data.itemCategory === 'string' ? data.itemCategory : null
+  return { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory }
 }
 
 /** Отправить сообщение в чат по сделке или chatId. */
@@ -735,6 +752,7 @@ export async function relistItem(token, { itemId, priorityStatusId }) {
 
 /** Автовыставление: проверка последнего чата и перевыставление, если нужно */
 export async function autolistTick(token) {
+  console.log('[Playerok autolist] → POST /api/playerok/autolist-tick')
   const response = await trackedFetch(BACKEND_AUTOLIST_TICK_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
@@ -744,11 +762,13 @@ export async function autolistTick(token) {
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     }),
   })
+  const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(err.error || `Ошибка автoвыставления: ${response.status}`)
+    console.warn('[Playerok autolist] ← autolist-tick HTTP', response.status, data)
+    throw new Error(data.error || `Ошибка автoвыставления: ${response.status}`)
   }
-  return response.json()
+  console.log('[Playerok autolist] ← autolist-tick ответ', data)
+  return data
 }
 
 /** Получить доступные статусы поднятия (кнопка "Поднять в топ") */

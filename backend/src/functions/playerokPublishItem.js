@@ -53,6 +53,7 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
       }
 
       const body = JSON.stringify(bodyJson)
+      const itemIdStr = String(itemId)
       const options = {
         hostname: 'playerok.com',
         path: '/graphql',
@@ -62,9 +63,11 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
           'content-type': 'application/json',
           cookie: `token=${token}`,
           origin: 'https://playerok.com',
-          referer: 'https://playerok.com/',
+          referer: `https://playerok.com/products/${itemIdStr}`,
           'apollographql-client-name': 'web',
           'apollo-require-preflight': 'true',
+          'x-gql-op': 'publishItem',
+          'x-gql-path': '/',
           'user-agent':
             userAgent ||
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',

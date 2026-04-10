@@ -31,13 +31,10 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
       viewer = null
     }
 
-    const { messages, buyerSupercellEmail, itemTitle, itemImageUrl } = await fetchDealChatMessagesFromPlayerok(
-      token,
-      userAgent,
-      dealId,
-      chatId,
-      { viewerUsername: viewer?.username || null }
-    )
+    const { messages, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory } =
+      await fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatId, {
+        viewerUsername: viewer?.username || null,
+      })
 
     // Немедленная обработка Supercell flow для этого чата, если он активен
     if (chatId && isSupercellModuleEnabled(currentUserId)) {
@@ -56,7 +53,10 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
       }
     }
 
-    return { statusCode: 200, data: { list: messages, buyerSupercellEmail, itemTitle, itemImageUrl } }
+    return {
+      statusCode: 200,
+      data: { list: messages, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory },
+    }
   } catch (err) {
     const message = err && err.message ? String(err.message) : 'Не удалось загрузить сообщения чата с Playerok'
     return { statusCode: 500, data: { error: message } }

@@ -10,6 +10,39 @@ import {
 } from '../../services/playerokApi'
 
 export function ChatTab({ token, moduleSupercellEnabled = false }) {
+  const CHAT_DEBUG_PREFIX = '[CHAT_DEBUG]'
+  const isChatDebugEnabled = useMemo(() => {
+    if (typeof window === 'undefined') return true
+    try {
+      const value = String(window.localStorage.getItem('chatDebug') || '').trim().toLowerCase()
+      if (value === '0' || value === 'false' || value === 'off') return false
+      if (value === '1' || value === 'true' || value === 'on') return true
+    } catch {
+      // ignore storage issues
+    }
+    return true
+  }, [])
+  const chatDebugLog = useCallback((event, payload = null) => {
+    if (!isChatDebugEnabled) return
+    const stamp = new Date().toISOString()
+    if (payload == null) {
+      console.log(`${CHAT_DEBUG_PREFIX} ${stamp} ${event}`)
+      return
+    }
+    console.log(`${CHAT_DEBUG_PREFIX} ${stamp} ${event}`, payload)
+  }, [isChatDebugEnabled])
+  const summarizeChatForLog = useCallback((chat) => ({
+    id: chat?.id ?? null,
+    dealId: chat?.dealId ?? null,
+    itemId: chat?.itemId ?? null,
+    buyerName: String(chat?.buyerName || '').trim() || null,
+    category: String(chat?.category || '').trim() || null,
+    itemTitle: String(chat?.itemTitle || '').trim() || null,
+    status: String(chat?.status || '').trim() || null,
+    unreadCount: typeof chat?.unreadCount === 'number' ? chat.unreadCount : null,
+    isHidden: Boolean(chat?.isHidden),
+  }), [])
+
   const [chats, setChats] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -43,6 +76,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const listRef = useRef(null)
   const loadingMoreRef = useRef(false)
   const chatStateByIdRef = useRef({})
+  const selectedChatIdRef = useRef(null)
 
   const hasToken = Boolean(token)
   const OUR_USERNAME = 'Levkaster'
@@ -55,6 +89,19 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     'клеш рояль',
     'клеш оф кланс',
     'клеш оф кленс',
+  ]
+  const CHAT_CATEGORY_HINTS = [
+    'YouTube',
+    'Claude',
+    'ChatGPT',
+    'ЧатГПТ',
+    'Brawl Stars',
+    'Clash Royale',
+    'Clash of Clans',
+    'PUBG',
+    'Call of Duty',
+    'Discord',
+    'Telegram',
   ]
 
   const SYSTEM_STATUS_BY_MARKER = useMemo(
@@ -113,6 +160,18 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const isSupercellCategory = (name) =>
     SUPERCELL_EMAIL_GAMES.includes(normalizeCategoryName(name))
 
+  const deriveCategoryFromText = useCallback((value) => {
+    const text = String(value || '').trim()
+    if (!text) return null
+    const lower = text.toLowerCase()
+    for (const hint of CHAT_CATEGORY_HINTS) {
+      if (lower.includes(hint.toLowerCase())) return hint
+    }
+    const words = text.split(/\s+/).filter(Boolean)
+    if (words.length === 0) return null
+    return words.slice(0, 2).join(' ')
+  }, [])
+
   const isEmailValid = (email) => {
     const value = String(email || '').trim()
     if (!value) return false
@@ -168,6 +227,35 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return result
   }
 
+  /** Последнее НЕ системное сообщение в чате + кто отправил. */
+  const getLastChatMessagePreviewInfo = (chat) => {
+    if (!chat?.id) return null
+    const state = chatStateById[chat.id]
+    const messages = Array.isArray(state?.messages) ? state.messages : []
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]
+      if (!m) continue
+
+      // В превью списка не показываем системные сообщения.
+      if (isSystemMessage(m.text)) continue
+
+      if (m.imageUrl && !String(m.text || '').trim()) {
+        return {
+          text: 'Картинка',
+          fromBuyer: isFromBuyer(m),
+        }
+      }
+      const t = String(m.text || '').trim()
+      if (!t) continue
+      return {
+        text: formatMessageText(t),
+        fromBuyer: isFromBuyer(m),
+      }
+    }
+    return null
+  }
+
   const getDerivedChatStatus = (chat) => {
     if (!chat) return ''
     const state = chatStateById[chat.id]
@@ -203,15 +291,53 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     })
   }
 
-  const applyLoadedChatData = (chat, list, itemTitle, itemImageUrl, buyerSupercellEmail) => {
+  const applyLoadedChatData = (
+    chat,
+    list,
+    itemTitle,
+    itemImageUrl,
+    buyerSupercellEmail,
+    itemCategory = null
+  ) => {
     const chatId = chat.id
     const extractedBuyerName = chat.buyerName || extractBuyerNameFromMessages(list)
+    const currentCategory = String(chat.category || '').trim()
+    const shouldRecoverCategory = !currentCategory || currentCategory === 'Категория не определена'
+    const serverCategory =
+      itemCategory && String(itemCategory).trim() ? String(itemCategory).trim() : null
+    const recoveredCategory = shouldRecoverCategory
+      ? deriveCategoryFromText(itemTitle || chat.itemTitle || '')
+      : null
+    const resolvedCategory = shouldRecoverCategory
+      ? serverCategory || recoveredCategory || null
+      : null
 
     if (extractedBuyerName && !chat.buyerName) {
       setChats((prev) =>
         prev.map((c) =>
           c.id === chatId ? { ...c, buyerName: extractedBuyerName } : c
         )
+      )
+    }
+    if (resolvedCategory) {
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                category: resolvedCategory,
+                itemTitle: itemTitle || c.itemTitle || null,
+              }
+            : c
+        )
+      )
+      chatDebugLog(
+        serverCategory ? 'category_from_deal_messages' : 'category_recovered_from_itemTitle',
+        {
+          chat: summarizeChatForLog(chat),
+          resolvedCategory,
+          itemTitle: itemTitle || chat.itemTitle || null,
+        }
       )
     }
 
@@ -223,16 +349,56 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         error: null,
         messages: sortChatMessages(list),
         loaded: true,
-        itemTitle: itemTitle || chat.itemTitle || null,
-        itemImageUrl: itemImageUrl || null,
+        itemTitle: itemTitle || chat.itemTitle || prev[chatId]?.itemTitle || null,
+        itemImageUrl: itemImageUrl || chat.itemImageUrl || prev[chatId]?.itemImageUrl || null,
         buyerSupercellEmail: buyerSupercellEmail ?? prev[chatId]?.buyerSupercellEmail ?? null,
       },
     }))
+    chatDebugLog('applyLoadedChatData', {
+      chat: summarizeChatForLog(chat),
+      messagesCount: Array.isArray(list) ? list.length : 0,
+      loadedItemTitle: itemTitle || null,
+      loadedItemImageUrl: itemImageUrl || null,
+      buyerSupercellEmail: buyerSupercellEmail || null,
+      itemCategory: serverCategory || null,
+    })
   }
 
   useEffect(() => {
     chatStateByIdRef.current = chatStateById
   }, [chatStateById])
+
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId
+  }, [selectedChatId])
+
+  const normalizeUnreadCount = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+    return Math.trunc(value)
+  }
+
+  const resolveUnreadCount = (prevChat, incomingChat, selectedChatIdForCalc) => {
+    const incomingUnread = normalizeUnreadCount(incomingChat?.unreadCount)
+    if (incomingUnread != null) {
+      return incomingChat?.id === selectedChatIdForCalc ? 0 : incomingUnread
+    }
+
+    const prevUnreadRaw = normalizeUnreadCount(prevChat?.unreadCount)
+    const prevUnread = prevUnreadRaw != null ? prevUnreadRaw : 0
+    const hasNewLastMessage =
+      Boolean(prevChat && incomingChat) &&
+      Boolean(prevChat?.lastMessageId) &&
+      Boolean(incomingChat?.lastMessageId) &&
+      prevChat.lastMessageId !== incomingChat.lastMessageId
+
+    if (incomingChat?.id === selectedChatIdForCalc) {
+      return 0
+    }
+    if (hasNewLastMessage) {
+      return prevUnread + 1
+    }
+    return prevUnread
+  }
 
   const preloadChatsData = useCallback(async (targetChats, options = {}) => {
     if (!token || !Array.isArray(targetChats) || targetChats.length === 0) return
@@ -251,6 +417,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       return !(state && (state.loading || state.loaded))
     })
     if (chatsToPreload.length === 0) return
+    chatDebugLog('preloadChatsData:start', {
+      targetChats: targetChats.length,
+      chatsToPreload: chatsToPreload.length,
+      chatIds: chatsToPreload.map((chat) => chat.id),
+    })
 
     const BATCH_SIZE = 4
     const BATCH_DELAY_MS = 400
@@ -277,14 +448,24 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         }))
 
         try {
-          const { list, itemTitle, itemImageUrl, buyerSupercellEmail } = await fetchDealChatMessages(
-            token,
-            chat.dealId || null,
-            chatId
-          )
+          chatDebugLog('preloadChatsData:fetchDealChatMessages:start', {
+            chat: summarizeChatForLog(chat),
+          })
+          const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
+            await fetchDealChatMessages(token, chat.dealId || null, chatId)
           if (shouldCancel()) return
-          applyLoadedChatData(chat, list, itemTitle, itemImageUrl, buyerSupercellEmail)
+          applyLoadedChatData(
+            chat,
+            list,
+            itemTitle,
+            itemImageUrl,
+            buyerSupercellEmail,
+            itemCategory
+          )
         } catch {
+          chatDebugLog('preloadChatsData:fetchDealChatMessages:error', {
+            chat: summarizeChatForLog(chat),
+          })
           if (shouldCancel()) return
           setChatStateById((prev) => ({
             ...prev,
@@ -362,60 +543,29 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       setLoading(true)
       setError(null)
       try {
-        // `list` дальше может быть перенормализован, поэтому нужен `let`, а не `const`.
-        let { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        chatDebugLog('fetchUserChats:start', { limit: 24 })
+        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
         if (cancelled) return
-        // Проверка чатов без категории или с пустой категорией
-        const chatsWithoutCategory = list.filter(chat => {
-          const cat = chat.category
-          return !cat || (typeof cat === 'string' && !cat.trim())
+
+        chatDebugLog('fetchUserChats:success', {
+          count: list.length,
+          pageInfo: info || { hasNextPage: false, endCursor: null },
+          undefinedCategoryCount: list.filter((c) => {
+            const category = String(c?.category || '').trim()
+            return !category || category === 'Категория не определена'
+          }).length,
+          sample: list.slice(0, 10).map(summarizeChatForLog),
         })
-        if (chatsWithoutCategory.length > 0) {
-          // Нормализуем категории для чатов без категории прямо здесь
-          const normalizedList = list.map(chat => {
-            const cat = chat.category
-            if (!cat || (typeof cat === 'string' && !cat.trim())) {
-              let fallbackCategory = 'Общий чат'
-              if (chat.itemTitle && typeof chat.itemTitle === 'string' && chat.itemTitle.trim()) {
-                const title = chat.itemTitle.trim()
-                const commonGames = [
-                  'Clash of Clans', 'Clash Royale', 'Brawl Stars', 'Hay Day', 'Boom Beach',
-                  'PUBG', 'PUBG Mobile', 'Call of Duty', 'Free Fire', 'Fortnite',
-                  'CS:GO', 'CS2', 'Counter-Strike', 'Dota 2', 'League of Legends',
-                  'Valorant', 'Apex Legends', 'Genshin Impact', 'Honkai', 'Star Rail',
-                  'World of Tanks', 'World of Warships', 'War Thunder',
-                  'Minecraft', 'Roblox', 'Among Us', 'Fall Guys', 'Mobile Legends',
-                  'Wild Rift', 'Arena of Valor', 'Heroes of the Storm', 'Overwatch'
-                ]
-                for (const game of commonGames) {
-                  if (title.toLowerCase().includes(game.toLowerCase())) {
-                    fallbackCategory = game
-                    break
-                  }
-                }
-                if (!fallbackCategory) {
-                  const words = title.split(/\s+/).filter(w => w.length > 0)
-                  if (words.length > 0) {
-                    let candidate = words.slice(0, 3).join(' ')
-                    if (candidate.length > 50) candidate = candidate.substring(0, 50).trim()
-                    if (candidate) fallbackCategory = candidate
-                  }
-                }
-              }
-              // Если категория всё ещё не найдена, это критическая ошибка
-              if (!fallbackCategory || (typeof fallbackCategory === 'string' && !fallbackCategory.trim())) {
-                fallbackCategory = 'Категория не определена'
-              }
-              return { ...chat, category: fallbackCategory }
+        setChats((prev) => {
+          const prevById = new Map((prev || []).map((chat) => [chat.id, chat]))
+          return (list || []).map((incomingChat) => {
+            const prevChat = prevById.get(incomingChat.id) || null
+            return {
+              ...incomingChat,
+              unreadCount: resolveUnreadCount(prevChat, incomingChat, selectedChatIdRef.current),
             }
-            return chat
           })
-
-          // Используем нормализованный список
-          list = normalizedList
-        }
-
-        setChats(list)
+        })
         setPageInfo(info || { hasNextPage: false, endCursor: null })
         if (list.length > 0) {
           setSelectedChatId((prev) => {
@@ -430,6 +580,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         }
       } catch (err) {
         if (cancelled) return
+        chatDebugLog('fetchUserChats:error', {
+          message: err instanceof Error ? err.message : String(err),
+        })
         setError(err instanceof Error ? err.message : 'Ошибка загрузки чатов')
         setChats([])
         setPageInfo({ hasNextPage: false, endCursor: null })
@@ -485,67 +638,32 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     loadingMoreRef.current = true
     setLoadingMore(true)
     try {
+      chatDebugLog('loadMore:start', {
+        requestParams: {
+          limit: 24,
+          afterCursor: pageInfo.endCursor || null,
+        },
+      })
       const requestParams = { limit: 24 }
       if (afterCursor) {
         requestParams.afterCursor = afterCursor
       }
-      let { list, pageInfo: info } = await fetchUserChats(token, requestParams)
-
-      // Проверка чатов без категории в loadMore
-      const chatsWithoutCategory = (list || []).filter(chat => {
-        const cat = chat.category
-        return !cat || (typeof cat === 'string' && !cat.trim())
-      })
-      if (chatsWithoutCategory.length > 0) {
-        // Нормализуем категории для чатов без категории
-        // КРИТИЧНО: категория должна быть всегда определена на бэкенде
-        const normalizedList = (list || []).map(chat => {
-          const cat = chat.category
-          if (!cat || (typeof cat === 'string' && !cat.trim())) {
-            let fallbackCategory = null
-            if (chat.itemTitle && typeof chat.itemTitle === 'string' && chat.itemTitle.trim()) {
-              const title = chat.itemTitle.trim()
-              const commonGames = [
-                'Clash of Clans', 'Clash Royale', 'Brawl Stars', 'Hay Day', 'Boom Beach',
-                'PUBG', 'PUBG Mobile', 'Call of Duty', 'Free Fire', 'Fortnite',
-                'CS:GO', 'CS2', 'Counter-Strike', 'Dota 2', 'League of Legends',
-                'Valorant', 'Apex Legends', 'Genshin Impact', 'Honkai', 'Star Rail',
-                'World of Tanks', 'World of Warships', 'War Thunder',
-                'Minecraft', 'Roblox', 'Among Us', 'Fall Guys', 'Mobile Legends',
-                'Wild Rift', 'Arena of Valor', 'Heroes of the Storm', 'Overwatch'
-              ]
-              for (const game of commonGames) {
-                if (title.toLowerCase().includes(game.toLowerCase())) {
-                  fallbackCategory = game
-                  break
-                }
-              }
-              if (!fallbackCategory) {
-                const words = title.split(/\s+/).filter(w => w.length > 0)
-                if (words.length > 0) {
-                  let candidate = words.slice(0, 3).join(' ')
-                  if (candidate.length > 50) candidate = candidate.substring(0, 50).trim()
-                  if (candidate) fallbackCategory = candidate
-                }
-              }
-            }
-            // Если категория всё ещё не найдена, это критическая ошибка
-            if (!fallbackCategory || (typeof fallbackCategory === 'string' && !fallbackCategory.trim())) {
-              fallbackCategory = 'Категория не определена'
-            }
-            return { ...chat, category: fallbackCategory }
-          }
-          return chat
-        })
-
-        // Используем нормализованный список
-        list = normalizedList
-      }
+      const { list, pageInfo: info } = await fetchUserChats(token, requestParams)
 
       if (!list || list.length === 0) {
+        chatDebugLog('loadMore:emptyPage', null)
         setPageInfo({ hasNextPage: false, endCursor: null })
         return
       }
+      chatDebugLog('loadMore:success', {
+        count: list.length,
+        pageInfo: info || { hasNextPage: false, endCursor: null },
+        undefinedCategoryCount: list.filter((c) => {
+          const category = String(c?.category || '').trim()
+          return !category || category === 'Категория не определена'
+        }).length,
+        sample: list.slice(0, 10).map(summarizeChatForLog),
+      })
 
       setChats((prev) => {
         const updated = [...prev, ...list]
@@ -556,6 +674,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       const newPageInfo = info || { hasNextPage: false, endCursor: null }
       setPageInfo(newPageInfo)
     } catch (err) {
+      chatDebugLog('loadMore:error', {
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setLoadingMore(false)
       loadingMoreRef.current = false
@@ -631,14 +752,25 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       },
     }))
     try {
-      const { list, itemTitle, itemImageUrl, buyerSupercellEmail } = await fetchDealChatMessages(
-        token,
-        chat.dealId || null,
-        chatId
-      )
+      chatDebugLog('loadMessagesForChat:start', {
+        chat: summarizeChatForLog(chat),
+      })
+      const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
+        await fetchDealChatMessages(token, chat.dealId || null, chatId)
 
-      applyLoadedChatData(chat, list, itemTitle, itemImageUrl, buyerSupercellEmail)
+      applyLoadedChatData(
+        chat,
+        list,
+        itemTitle,
+        itemImageUrl,
+        buyerSupercellEmail,
+        itemCategory
+      )
     } catch (err) {
+      chatDebugLog('loadMessagesForChat:error', {
+        chat: summarizeChatForLog(chat),
+        message: err instanceof Error ? err.message : String(err),
+      })
       setChatStateById((prev) => ({
         ...prev,
         [chatId]: {
@@ -650,6 +782,17 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       }))
     }
   }
+
+  const markChatAsRead = useCallback((chatId) => {
+    if (!chatId) return
+    setChats((prev) =>
+      prev.map((chat) =>
+        chat.id === chatId && Number(chat.unreadCount || 0) > 0
+          ? { ...chat, unreadCount: 0 }
+          : chat
+      )
+    )
+  }, [])
 
   useEffect(() => {
     if (!token || !selectedChatId) return
@@ -700,29 +843,94 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
 
     const refreshSelectedChat = async () => {
       try {
-        const { list, itemTitle, itemImageUrl, buyerSupercellEmail } = await fetchDealChatMessages(
-          token,
-          selectedChat.dealId || null,
-          selectedChat.id
-        )
+        const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
+          await fetchDealChatMessages(token, selectedChat.dealId || null, selectedChat.id)
         if (cancelled) return
-        applyLoadedChatData(selectedChat, list, itemTitle, itemImageUrl, buyerSupercellEmail)
+        applyLoadedChatData(
+          selectedChat,
+          list,
+          itemTitle,
+          itemImageUrl,
+          buyerSupercellEmail,
+          itemCategory
+        )
       } catch (_err) {
         if (cancelled) return
       } finally {
         if (!cancelled) {
-          timerId = setTimeout(refreshSelectedChat, 15000)
+          timerId = setTimeout(refreshSelectedChat, 3000)
         }
       }
     }
 
-    timerId = setTimeout(refreshSelectedChat, 15000)
+    timerId = setTimeout(refreshSelectedChat, 3000)
     return () => {
       cancelled = true
       if (timerId) clearTimeout(timerId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, selectedChat?.id, selectedChat?.dealId])
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    let timerId = null
+
+    const mergeChats = (prevChats, incomingChats) => {
+      const isPoorCategory = (value) => {
+        const s = String(value || '').trim()
+        return !s || s === 'Категория не определена'
+      }
+      const prevById = new Map((prevChats || []).map((chat) => [chat.id, chat]))
+      const next = []
+      for (const incoming of incomingChats || []) {
+        const prev = prevById.get(incoming.id)
+        if (!prev) {
+          next.push({
+            ...incoming,
+            unreadCount: resolveUnreadCount(null, incoming, selectedChatIdRef.current),
+          })
+          continue
+        }
+        const incCat = String(incoming.category || '').trim()
+        const prevCat = String(prev.category || '').trim()
+        const incPoor = isPoorCategory(incCat)
+        const prevPoor = isPoorCategory(prevCat)
+        const mergedCategory = incPoor ? (prevPoor ? incCat : prevCat) : incCat
+        next.push({
+          ...prev,
+          ...incoming,
+          category: mergedCategory,
+          itemImageUrl: incoming.itemImageUrl || prev.itemImageUrl || null,
+          itemTitle: incoming.itemTitle || prev.itemTitle || null,
+          unreadCount: resolveUnreadCount(prev, incoming, selectedChatIdRef.current),
+        })
+      }
+      return next
+    }
+
+    const refreshChatsList = async () => {
+      try {
+        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        if (cancelled) return
+
+        setChats((prev) => mergeChats(prev, list))
+        setPageInfo(info || { hasNextPage: false, endCursor: null })
+      } catch (_err) {
+        if (cancelled) return
+      } finally {
+        if (!cancelled) {
+          timerId = setTimeout(refreshChatsList, 5000)
+        }
+      }
+    }
+
+    timerId = setTimeout(refreshChatsList, 5000)
+    return () => {
+      cancelled = true
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [token])
 
   // Получаем команды для категории выбранного чата
   const currentCategoryCommands = useMemo(() => {
@@ -739,15 +947,31 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       }))
   }, [selectedChat, categoryCommands])
 
-  const getStatusLabel = (status) => {
+  useEffect(() => {
+    chatDebugLog('chat-state-snapshot', {
+      chatsCount: chats.length,
+      visibleChatsCount: visibleChats.length,
+      selectedChatId,
+      selectedChat: selectedChat ? summarizeChatForLog(selectedChat) : null,
+      emptyOrUndefinedCategories: chats
+        .filter((chat) => {
+          const category = String(chat?.category || '').trim()
+          return !category || category === 'Категория не определена'
+        })
+        .map(summarizeChatForLog)
+        .slice(0, 30),
+    })
+  }, [chats, visibleChats, selectedChatId, selectedChat, chatDebugLog, summarizeChatForLog])
+
+  const getStatusIcon = (status) => {
     const s = String(status || '').toUpperCase()
-    if (!s) return '—'
-    if (s === 'PAID') return 'Выполнение'
-    if (s === 'SENT') return 'Отправлено'
-    if (s === 'CONFIRMED') return 'Завершено'
-    if (s === 'ROLLED_BACK') return 'Возврат'
-    if (s === 'PENDING') return 'Ожидание'
-    return s
+    if (!s) return { icon: '—', label: '—', tone: 'muted' }
+    if (s === 'PAID') return { icon: '🛠️', label: 'Выполнение', tone: 'work' }
+    if (s === 'SENT') return { icon: '⏳', label: 'Отправлено', tone: 'sent' }
+    if (s === 'CONFIRMED') return { icon: '✓', label: 'Завершено', tone: 'success' }
+    if (s === 'ROLLED_BACK') return { icon: '↩', label: 'Возврат', tone: 'rollback' }
+    if (s === 'PENDING') return { icon: '⏳', label: 'Ожидание', tone: 'sent' }
+    return { icon: '•', label: s, tone: 'muted' }
   }
 
   const handleSendMessage = async (chat) => {
@@ -963,119 +1187,90 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                 {visibleChats.map((chat) => {
                   const isActive = chat.id === selectedChatId
                   const unread = typeof chat.unreadCount === 'number' ? chat.unreadCount : null
+                  const category = String(chat.category || '').trim() || 'Категория не определена'
 
-                  // Определение категории с логированием
-                  // КРИТИЧНО: категория должна быть всегда определена
-                  let category = null
-                  let categorySource = null
+                  const derivedStatus = getDerivedChatStatus(chat)
+                  const statusIcon = getStatusIcon(derivedStatus)
+                  const statusColor =
+                    statusIcon.tone === 'success'
+                      ? '#16a34a'
+                      : statusIcon.tone === 'rollback'
+                        ? '#ef4444'
+                        : statusIcon.tone === 'work'
+                          ? '#0ea5e9'
+                          : statusIcon.tone === 'sent'
+                            ? '#f59e0b'
+                            : 'var(--text-muted)'
 
-                  // 1. Пытаемся взять категорию из chat.category
-                  if (chat.category && typeof chat.category === 'string') {
-                    const trimmed = chat.category.trim()
-                    if (trimmed) {
-                      category = trimmed
-                      categorySource = 'chat.category'
-                    }
-                  }
-
-                  // 2. Если категории нет, пытаемся извлечь из itemTitle
-                  if (!category && chat.itemTitle && typeof chat.itemTitle === 'string') {
-                    const title = chat.itemTitle.trim()
-                    if (title) {
-                      // Список известных игр для поиска в названии
-                      const commonGames = [
-                        'Clash of Clans', 'Clash Royale', 'Brawl Stars', 'Hay Day', 'Boom Beach',
-                        'PUBG', 'PUBG Mobile', 'Call of Duty', 'Free Fire', 'Fortnite',
-                        'CS:GO', 'CS2', 'Counter-Strike', 'Dota 2', 'League of Legends',
-                        'Valorant', 'Apex Legends', 'Genshin Impact', 'Honkai', 'Star Rail',
-                        'World of Tanks', 'World of Warships', 'War Thunder',
-                        'Minecraft', 'Roblox', 'Among Us', 'Fall Guys', 'Mobile Legends',
-                        'Wild Rift', 'Arena of Valor', 'Heroes of the Storm', 'Overwatch'
-                      ]
-                      for (const game of commonGames) {
-                        if (title.toLowerCase().includes(game.toLowerCase())) {
-                          category = game
-                          categorySource = 'itemTitle (common games)'
-                          break
-                        }
-                      }
-
-                      // Если не нашли известную игру, используем первые слова названия
-                      if (!category) {
-                        const words = title.split(/\s+/).filter(w => w.length > 0)
-                        if (words.length > 0) {
-                          let candidate = words.slice(0, 3).join(' ')
-                          if (candidate.length > 50) {
-                            candidate = candidate.substring(0, 50).trim()
-                          }
-                          if (candidate) {
-                            category = candidate
-                            categorySource = 'itemTitle (first words)'
-                          }
-                        }
-                      }
-                    }
-                  }
-
-                  // 3. Если категория всё ещё не определена, это критическая ошибка
-                  // Категория должна быть всегда определена на бэкенде
-                  if (!category || (typeof category === 'string' && !category.trim())) {
-                    // Используем категорию из chat.category, даже если она пустая - это ошибка бэкенда
-                    category = (chat.category && String(chat.category).trim()) || 'Категория не определена'
-                    categorySource = 'error fallback'
-                  }
-
-                  const statusLabel = getStatusLabel(getDerivedChatStatus(chat))
-                  const metaLine = category ? `${category} · ${statusLabel}` : statusLabel
-
-                  const buyerNameToDisplay = chat.buyerName && chat.buyerName.trim() ? chat.buyerName.trim() : null
-
-                  // Пытаемся извлечь имя из сообщений, если buyerName отсутствует
-                  let displayName = buyerNameToDisplay
-                  if (!displayName) {
-                    const chatState = chatStateById[chat.id]
-                    const messages = chatState?.messages || []
-                    for (const msg of messages) {
-                      const msgUser = msg.user
-                      if (msgUser && msgUser.username && msgUser.username !== OUR_USERNAME) {
-                        displayName = msgUser.username
-                        break
-                      }
-                    }
-                  }
+                  const displayName = String(chat.buyerName || '').trim() || 'Покупатель'
+                  const lastMessagePreview = getLastChatMessagePreviewInfo(chat)
+                  const hasUnread =
+                    unread != null &&
+                    unread > 0 &&
+                    (lastMessagePreview ? lastMessagePreview.fromBuyer : true)
 
                   return (
                     <button
                       key={chat.id}
                       type="button"
                       className={
-                        'chat-list__item' + (isActive ? ' chat-list__item--active' : '')
+                        'chat-list__item' +
+                        (isActive ? ' chat-list__item--active' : '') +
+                        (hasUnread ? ' chat-list__item--unread' : '')
                       }
                       onClick={() => {
                         setSelectedChatId(chat.id)
+                        void loadMessagesForChat(chat)
+                        markChatAsRead(chat.id)
                         if (isMobileChatLayout) {
                           setMobileChatView('chat')
                         }
                       }}
                     >
-                      <div className="chat-list__title">
-                        {displayName || 'Покупатель'}
-                      </div>
-                      <div className="chat-list__meta">
-                        <span className="chat-list__buyer">
-                          {category}
+                      <div
+                        className="chat-list__status-slot chat-list__preview--status-icon"
+                        title={statusIcon.label}
+                        aria-label={statusIcon.label}
+                        style={{ color: statusColor }}
+                      >
+                        <span aria-hidden="true" className="chat-list__status-glyph">
+                          {statusIcon.icon}
                         </span>
-                        {unread != null && unread > 0 && (
-                          <span className="chat-list__badge">
-                            {unread}
+                      </div>
+                      <div className="chat-list__main">
+                        <div className="chat-list__title">
+                          {displayName}
+                        </div>
+                        <div className="chat-list__meta">
+                          <span className="chat-list__buyer">
+                            {category}
                           </span>
-                        )}
-                      </div>
-                      <div className="chat-list__preview">
-                        {statusLabel}
-                      </div>
-                      <div className="chat-list__time">
-                        {formatTime(chat.lastMessageCreatedAt)}
+                        </div>
+                        {lastMessagePreview ? (
+                          <div className="chat-list__buyer-last-msg">
+                            <span
+                              className={
+                                'chat-list__buyer-last-msg-author ' +
+                                (lastMessagePreview.fromBuyer
+                                  ? 'chat-list__buyer-last-msg-author--buyer'
+                                  : 'chat-list__buyer-last-msg-author--seller')
+                              }
+                            >
+                              {lastMessagePreview.fromBuyer ? 'Заказчик:' : 'Вы:'}
+                            </span>{' '}
+                            <span className="chat-list__buyer-last-msg-text">{lastMessagePreview.text}</span>
+                            {hasUnread && (
+                              <span className="chat-list__unread-pill">
+                                Новых: {unread}
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
+                        <div className="chat-list__item-footer">
+                          <div className="chat-list__time">
+                            {formatTime(chat.lastMessageCreatedAt)}
+                          </div>
+                        </div>
                       </div>
                     </button>
                   )
@@ -1115,26 +1310,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                 <div className="card-text chat-header-row__info">
                   <div className="chat-header-row__text">
                     <strong>Чат по товару</strong>
-                    {(() => {
-                      // Пытаемся получить buyerName из разных источников
-                      let buyerName = selectedChat.buyerName
-                      if (!buyerName) {
-                        const chatState = chatStateById[selectedChat.id]
-                        const messages = chatState?.messages || []
-                        for (const msg of messages) {
-                          const msgUser = msg.user
-                          if (msgUser && msgUser.username && msgUser.username !== OUR_USERNAME) {
-                            buyerName = msgUser.username
-                            break
-                          }
-                        }
-                      }
-                      return buyerName ? (
-                        <span className="chat-header-row__buyer">
-                          Покупатель: {buyerName}
-                        </span>
-                      ) : null
-                    })()}
+                    {selectedChat.buyerName ? (
+                      <span className="chat-header-row__buyer">
+                        Покупатель: {selectedChat.buyerName}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <button
@@ -1165,26 +1345,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                       {currentItemTitle}
                     </div>
                   )}
-                  {(() => {
-                    // Пытаемся получить buyerName из разных источников
-                    let buyerName = selectedChat.buyerName
-                    if (!buyerName) {
-                      const chatState = chatStateById[selectedChat.id]
-                      const messages = chatState?.messages || []
-                      for (const msg of messages) {
-                        const msgUser = msg.user
-                        if (msgUser && msgUser.username && msgUser.username !== OUR_USERNAME) {
-                          buyerName = msgUser.username
-                          break
-                        }
-                      }
-                    }
-                    return buyerName ? (
-                      <div className="chat-item-card__buyer">
-                        Покупатель: {buyerName}
-                      </div>
-                    ) : null
-                  })()}
+                  {selectedChat.buyerName ? (
+                    <div className="chat-item-card__buyer">
+                      Покупатель: {selectedChat.buyerName}
+                    </div>
+                  ) : null}
                   {selectedChatCanUseSupercell && (
                     <div
                       className={

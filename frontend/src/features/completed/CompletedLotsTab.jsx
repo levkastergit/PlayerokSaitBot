@@ -1,6 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getProductKey, getGroupSettingsKey, loadProductSettingsList } from '../../services/playerokApi'
+import {
+  autolistTick,
+  getProductKey,
+  getGroupSettingsKey,
+  loadProductSettingsList,
+} from '../../services/playerokApi'
+
+const AUTOLOG = '[Playerok autolist]'
 
 export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
   const navigate = useNavigate()
@@ -48,9 +55,33 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
     const error = rt && typeof rt.error === 'string' ? rt.error : null
 
     if (status === 'error' && error) return { type: 'error', title: error }
+    if (status === 'success') return { type: 'success', title: 'Товар перевыставлен' }
+    if (status === 'retry') return { type: 'processing', title: 'Повтор автовыставления после ошибки сервера' }
     if (status === 'processing') return { type: 'processing', title: 'В процессе автовыставления' }
+    if (status === 'disabled') {
+      return {
+        type: 'disabled',
+        title: error || 'Сервер пометил товар как не требующий перевыставления (например, автовыкл в настройках или статус уже нельзя сменить)',
+      }
+    }
+
+    const rawLotStatus = lot?.status != null ? String(lot.status) : ''
+    if (rawLotStatus && rawLotStatus !== 'SOLD' && autolistEnabled) {
+      return {
+        type: 'disabled',
+        title:
+          rawLotStatus === 'EXPIRED'
+            ? 'Истёкший лот (EXPIRED), не продажа — автоперевыставление только для проданных (SOLD)'
+            : `Статус на Playerok: ${rawLotStatus}. В скан попадают только лоты со статусом SOLD.`,
+      }
+    }
+
     if (!autolistEnabled) return { type: 'disabled', title: 'Нет настройки автовыставления' }
-    return { type: 'processing', title: 'Ожидает автовыставления' }
+    return {
+      type: 'processing',
+      title:
+        'Ожидает автовыставления. Подробности в консоли (F12) — фильтр «Playerok autolist». Скан последних завершённых на сервере — примерно раз в 2 мин.',
+    }
   }
 
   const filteredLots = useMemo(() => {
@@ -113,6 +144,59 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
       })
       .catch(() => { })
     return () => { cancelled = true }
+  }, [token, lots.length])
+
+  useEffect(() => {
+    if (!token || lots.length === 0) return
+    console.groupCollapsed(`${AUTOLOG} Завершённые лоты (${lots.length}) — разбор автовыставления`)
+    console.info(
+      `${AUTOLOG} На сервере фоновый autolist-tick каждые ~15 с вызывается только для пользователей с модулем Supercell. ` +
+        'Если модуля нет, автосрабатывание идёт через свежую оплату в чате, разовый запрос при открытии этой вкладки или вручную. ' +
+        'Периодический скан последних завершённых товаров на бэкенде — не чаще чем раз в ~2 мин. ' +
+        'В списке завершённых есть и SOLD, и EXPIRED: автовыставление обрабатывает только SOLD (до 15 последних продаж). ' +
+        'Смотрите поле playerokStatus у каждого лота.'
+    )
+    for (const lot of lots) {
+      const s = resolveSettingsForLot(lot)
+      const pk = getProductKey(lot)
+      const autolistOn = Boolean(s?.autolist?.enabled)
+      const rt = lot.autolistRuntime || null
+      const b = getAutolistBadge(lot)
+      console.log({
+        lotId: lot.id,
+        title: lot.title,
+        game: lot.game,
+        playerokStatus: lot.status,
+        productKey: pk,
+        settingsFound: Boolean(s),
+        autolistEnabledInUi: autolistOn,
+        serverAutolistRuntime: rt,
+        badge: b.type,
+        badgeHint: b.title,
+      })
+    }
+    console.groupEnd()
+  }, [token, lots, settingsByKey])
+
+  useEffect(() => {
+    if (!token || lots.length === 0) return
+    let alive = true
+    ;(async () => {
+      try {
+        console.log(`${AUTOLOG} Запуск autolist-tick при открытии вкладки «Завершённые» (чтобы сработало без фона Supercell)…`)
+        await autolistTick(token)
+      } catch (err) {
+        if (alive) {
+          console.warn(
+            `${AUTOLOG} autolist-tick при открытии вкладки не удался:`,
+            err instanceof Error ? err.message : err
+          )
+        }
+      }
+    })()
+    return () => {
+      alive = false
+    }
   }, [token, lots.length])
 
   return (
@@ -212,16 +296,19 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
                       {(() => {
                         const b = getAutolistBadge(lot)
                         const isError = b.type === 'error'
+                        const isSuccess = b.type === 'success'
                         const isProcessing = b.type === 'processing'
                         const isDisabled = b.type === 'disabled'
-                        const label = isError ? '?' : isProcessing ? '⏱' : '✕'
+                        const label = isError ? '?' : isSuccess ? '✓' : isProcessing ? '⏱' : '✕'
                         const cls =
                           'lot-card__autolist-badge ' +
                           (isError
                             ? 'lot-card__autolist-badge--error'
-                            : isProcessing
-                              ? 'lot-card__autolist-badge--processing'
-                              : 'lot-card__autolist-badge--disabled')
+                            : isSuccess
+                              ? 'lot-card__autolist-badge--success'
+                              : isProcessing
+                                ? 'lot-card__autolist-badge--processing'
+                                : 'lot-card__autolist-badge--disabled')
                         return (
                           <span
                             className={cls}

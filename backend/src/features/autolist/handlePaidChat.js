@@ -1,3 +1,5 @@
+const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
+
 async function handlePaidChat({
   currentUserId,
   tokenHash,
@@ -14,6 +16,7 @@ async function handlePaidChat({
   AUTOBUMP_PRIORITY_STATUS_ID,
   withRetry,
   isPlayerokRateLimitError,
+  isPlayerokPublishRetryable,
   requestItemById,
   fetchItemPriorityStatuses,
   publishItem,
@@ -125,7 +128,12 @@ async function handlePaidChat({
         try {
           relisted = await withRetry(
             () => publishItem(token, userAgent, dealItemId, { priorityStatusId: tryStatusId }),
-            { label: 'publishItem(paid_chat)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+            {
+              label: 'publishItem(paid_chat)',
+              retries: 4,
+              baseDelayMs: 1000,
+              shouldRetry: isPlayerokPublishRetryable,
+            }
           )
           publishError = null
           break
@@ -141,7 +149,12 @@ async function handlePaidChat({
         try {
           relisted = await withRetry(
             () => publishItem(token, userAgent, dealItemId, { priorityStatusId: null }),
-            { label: 'publishItem(paid_chat-no-status)', retries: 1, shouldRetry: isPlayerokRateLimitError }
+            {
+              label: 'publishItem(paid_chat-no-status)',
+              retries: 3,
+              baseDelayMs: 1000,
+              shouldRetry: isPlayerokPublishRetryable,
+            }
           )
           publishError = null
         } catch (err) {
@@ -181,15 +194,14 @@ async function handlePaidChat({
   } catch (err) {
     const msg = err && err.message ? String(err.message) : String(err)
     const cannotUpdateStatus = msg.includes('нельзя обновить статус')
-    const isServerError =
-      msg.includes('status 500') || msg.includes('INTERNAL_SERVER_ERROR') || msg.includes('priorityStatuses')
+    const retryable = isAutolistRetryableMessage(msg)
 
     console.warn('[autolist-tick] перевыставление не удалось', {
       trigger: 'paid_chat',
       itemId: dealItemId,
       productKey: String(productKey || ''),
       error: msg,
-      isServerError,
+      retryable,
       paidChatItemStatus: item?.status ?? null,
       paidChatPriorityStatusId: paidChatPriorityStatusId,
       paidChatStatusIdsFromApi: paidChatStatusIds,
@@ -203,9 +215,8 @@ async function handlePaidChat({
         error: msg,
         updatedAt: nowTs,
       })
-    } else if (isServerError) {
-      // Ошибка 500 - не помечаем как обработанное, чтобы система продолжала пытаться выставить товар
-      // Помечаем как 'retry' чтобы система знала, что нужно продолжать попытки
+    } else if (retryable) {
+      // 429 / 5xx — повтор позже
       autolistSetItemState(tokenHash, dealItemId, {
         status: 'retry',
         error: msg,

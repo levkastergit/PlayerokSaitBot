@@ -3,8 +3,14 @@
 const https = require('https')
 
 function createCreateChatMessage() {
-  return function createChatMessage(token, userAgent, chatId, text) {
+  return function createChatMessage(token, userAgent, chatId, text, opts = {}) {
     return new Promise((resolve, reject) => {
+      const referer =
+        (opts && typeof opts.referer === 'string' && opts.referer.trim()) ||
+        (chatId ? `https://playerok.com/chats/${String(chatId)}` : 'https://playerok.com/chats')
+
+      // Как в бандле _app: createChatMessage(input, file); плюс $showForbiddenImage — только в директиве,
+      // иначе GraphQL_VALIDATION_FAILED («variable never used»), если не тянуть фрагмент RegularChatMessage.
       const bodyJson = {
         operationName: 'createChatMessage',
         variables: {
@@ -12,12 +18,16 @@ function createCreateChatMessage() {
             chatId: String(chatId),
             text: String(text || ''),
           },
+          file: null,
+          showForbiddenImage: false,
         },
-        query: `mutation createChatMessage($input: CreateChatMessageInput!) {
-  createChatMessage(input: $input) {
+        query: `mutation createChatMessage($input: CreateChatMessageInput!, $file: Upload, $showForbiddenImage: Boolean!) {
+  createChatMessage(input: $input, file: $file) {
     id
     text
+    createdAt
     __typename
+    _showForbiddenImageScope: __typename @skip(if: $showForbiddenImage)
   }
 }
 `,
@@ -30,12 +40,15 @@ function createCreateChatMessage() {
         method: 'POST',
         headers: {
           accept: '*/*',
+          'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
           'content-type': 'application/json',
           cookie: `token=${token}`,
           origin: 'https://playerok.com',
-          referer: 'https://playerok.com/chats',
+          referer,
           'apollographql-client-name': 'web',
           'apollo-require-preflight': 'true',
+          'x-gql-op': 'createChatMessage',
+          'x-gql-path': '/',
           'user-agent':
             userAgent ||
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',

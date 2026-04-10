@@ -30,7 +30,9 @@ function createSendChatMessageToPlayerok({ requestDealById, createChatMessage })
       throw new Error('Не удалось определить чат для отправки сообщения')
     }
 
-    const msg = await createChatMessage(token, userAgent, chatId, trimmed)
+    const msg = await createChatMessage(token, userAgent, chatId, trimmed, {
+      referer: dealId ? `https://playerok.com/deal/${dealId}` : undefined,
+    })
     const nowIso = new Date().toISOString()
 
     return {

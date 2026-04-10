@@ -1,5 +1,45 @@
 'use strict'
 
+function categoryHintFromFullDeal(fullDeal) {
+  if (!fullDeal || typeof fullDeal !== 'object') return null
+  const item = fullDeal.item
+  if (item && typeof item === 'object') {
+    const game = item.game
+    if (game && typeof game === 'object') {
+      const n = String(game.name || game.title || '').trim()
+      if (n) return n
+    }
+    const cat = item.category
+    if (cat && typeof cat === 'object') {
+      const n = String(cat.name || cat.title || '').trim()
+      if (n) return n
+    }
+  }
+  if (typeof fullDeal.category === 'string') {
+    const c = fullDeal.category.trim()
+    if (c) return c
+  }
+  if (typeof fullDeal.productKey === 'string') {
+    const i = fullDeal.productKey.indexOf('::')
+    if (i > 0) {
+      const left = fullDeal.productKey.slice(0, i).trim()
+      if (left) return left
+    }
+  }
+  return null
+}
+
+const MESSAGE_INTERNAL_KEYS = ['dealItemTitle', 'dealItemImageUrl', 'itemCategory']
+
+function stripInternalMessageFields(message) {
+  if (!message || typeof message !== 'object') return message
+  const out = { ...message }
+  for (const k of MESSAGE_INTERNAL_KEYS) {
+    if (k in out) delete out[k]
+  }
+  return out
+}
+
 function createFetchDealChatMessagesFromPlayerok({
   requestDealById,
   requestChatMessagesPage,
@@ -42,6 +82,7 @@ function createFetchDealChatMessagesFromPlayerok({
         buyerMessageSupercellEmail: null,
         itemTitle: null,
         itemImageUrl: null,
+        itemCategory: null,
       }
     }
 
@@ -65,6 +106,15 @@ function createFetchDealChatMessagesFromPlayerok({
       pageCount++
     } while (afterCursor && pageCount < maxPages)
 
+    let hintTitle = null
+    let hintImage = null
+    let hintCategory = null
+    for (const m of allMessages) {
+      if (!hintTitle && m.dealItemTitle) hintTitle = m.dealItemTitle
+      if (!hintImage && m.dealItemImageUrl) hintImage = m.dealItemImageUrl
+      if (!hintCategory && m.itemCategory) hintCategory = m.itemCategory
+    }
+
     // Пытаемся определить сделку и вытащить почту Supercell ID и данные товара
     let effectiveDealId = dealId || null
     if (!effectiveDealId) {
@@ -77,16 +127,19 @@ function createFetchDealChatMessagesFromPlayerok({
     }
 
     let dealBuyerSupercellEmail = null
-    let itemTitle = null
-    let itemImageUrl = null
+    let itemTitle = hintTitle || null
+    let itemImageUrl = hintImage || null
+    let itemCategory = hintCategory || null
 
     if (effectiveDealId) {
       try {
         const fullDeal = await requestDealById(token, userAgent, effectiveDealId)
         const item = fullDeal && fullDeal.item ? fullDeal.item : null
         itemTitle =
-          (item && (item.title || item.name)) || fullDeal?.productTitle || null
+          (item && (item.title || item.name)) || fullDeal?.productTitle || itemTitle
         itemImageUrl = extractItemImageUrl(item) || itemImageUrl
+        const fromDeal = categoryHintFromFullDeal(fullDeal)
+        if (fromDeal) itemCategory = fromDeal
 
         // chat-image debug logging removed
         const fields =
@@ -110,13 +163,16 @@ function createFetchDealChatMessagesFromPlayerok({
     const buyerSupercellEmail =
       buyerMessageSupercellEmail || dealBuyerSupercellEmail || null
 
+    const messages = allMessages.map(stripInternalMessageFields)
+
     return {
-      messages: allMessages,
+      messages,
       buyerSupercellEmail,
       dealBuyerSupercellEmail,
       buyerMessageSupercellEmail,
       itemTitle,
       itemImageUrl,
+      itemCategory,
     }
   }
 }

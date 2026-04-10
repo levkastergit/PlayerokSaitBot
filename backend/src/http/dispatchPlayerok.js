@@ -78,8 +78,13 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         fetchDealsFromPlayerok: deps.fetchDealsFromPlayerok,
         requestDealById: deps.requestDealById,
         requestChatById: deps.requestChatById,
+        requestItemById: deps.requestItemById,
         requestChatMessagesPage: deps.requestChatMessagesPage,
         extractItemImageUrl: deps.extractItemImageUrl,
+        getChatsSnapshotCache: deps.getChatsSnapshotCache,
+        setChatsSnapshotCache: deps.setChatsSnapshotCache,
+        isChatsSnapshotFresh: deps.isChatsSnapshotFresh,
+        scheduleChatsSnapshotRefresh: deps.scheduleChatsSnapshotRefresh,
       },
     })
     return sendJson(res, result.statusCode, result.data) || true
@@ -138,6 +143,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
         withRetry: deps.withRetry,
         isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+        isPlayerokPublishRetryable: deps.isPlayerokPublishRetryable,
         getViewer: deps.getViewer,
         requestUserChatsPage: deps.requestUserChatsPage,
         AUTOLIST_MAX_CHATS_TO_SCAN: deps.AUTOLIST_MAX_CHATS_TO_SCAN,

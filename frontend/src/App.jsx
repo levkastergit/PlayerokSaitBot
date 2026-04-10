@@ -249,6 +249,8 @@ function App() {
   }, [location.pathname, navigate])
   const [darkTheme, setDarkTheme] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  /** На странице чатов по умолчанию боковое меню скрыто, чтобы область чата была шире; ⋯ в шапке переключает меню */
+  const [sidebarNavCompact, setSidebarNavCompact] = useState(false)
   const [token, setToken] = useState('')
 
   const [lots, setLots] = useState([])
@@ -297,6 +299,11 @@ function App() {
       lastFetchedTokenRef.current = null
       return
     }
+    const needActiveLots =
+      activeTab === 'active' ||
+      LOTS_TABS.has(activeTab) ||
+      pathParts[0] === 'lot'
+    if (!needActiveLots) return
     if (lots.length > 0 && lastFetchedTokenRef.current === token) return
 
     lastFetchedTokenRef.current = token
@@ -354,6 +361,14 @@ function App() {
   useEffect(() => {
     setIsMobileMenuOpen(false)
   }, [location.pathname])
+
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      setSidebarNavCompact(true)
+    } else {
+      setSidebarNavCompact(false)
+    }
+  }, [activeTab])
 
   useEffect(() => {
     if (!isMobileMenuOpen) return undefined
@@ -416,6 +431,17 @@ function App() {
             <span className="mobile-menu-toggle__line" />
             <span className="mobile-menu-toggle__line" />
           </button>
+          {activeTab === 'chat' ? (
+            <button
+              type="button"
+              className="header-sidebar-compact-toggle"
+              onClick={() => setSidebarNavCompact((prev) => !prev)}
+              title={sidebarNavCompact ? 'Показать боковое меню' : 'Скрыть боковое меню'}
+              aria-label={sidebarNavCompact ? 'Показать боковое меню' : 'Скрыть боковое меню'}
+            >
+              <span aria-hidden="true">⋯</span>
+            </button>
+          ) : null}
         </div>
         <div className="app-header-right">
           <label className="theme-toggle">
@@ -435,7 +461,12 @@ function App() {
         </div>
       </header>
 
-      <main className="app-main">
+      <main
+        className={
+          'app-main' +
+          (sidebarNavCompact && activeTab === 'chat' ? ' app-main--nav-compact' : '')
+        }
+      >
         <aside className={`app-sidebar${isMobileMenuOpen ? ' app-sidebar--open' : ''}`} id="main-sidebar">
           <div className="app-sidebar__mobile-head">
             <button
@@ -456,6 +487,7 @@ function App() {
                   'tab-button' +
                   (activeTab === tab.id ? ' tab-button--active' : '')
                 }
+                title={tab.label}
                 onClick={() => {
                   navigate('/' + tab.id)
                   setIsMobileMenuOpen(false)
@@ -468,7 +500,7 @@ function App() {
           </nav>
         </aside>
 
-        <section className="app-content">
+        <section className={`app-content${activeTab === 'chat' ? ' app-content--chat' : ''}`}>
           {activeTab === 'lot' && (
             <LotSettingsPage
               key={lotIdFromUrl || 'lot'}

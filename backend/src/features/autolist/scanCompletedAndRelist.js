@@ -1,3 +1,6 @@
+const { isAutolistRetryableMessage, autolistReasonShort, isPlayerokRateLimitMessage } = require('./autolistErrorClassify')
+const { sleep } = require('../../infra/retry/withRetry')
+
 async function scanCompletedAndRelist({
   trigger,
   scanMeta,
@@ -10,6 +13,7 @@ async function scanCompletedAndRelist({
   AUTOBUMP_PRIORITY_STATUS_ID,
   withRetry,
   isPlayerokRateLimitError,
+  isPlayerokPublishRetryable,
   fetchCompletedItemsFromPlayerok,
   autolistGetItemState,
   autolistWasProcessed,
@@ -27,16 +31,20 @@ async function scanCompletedAndRelist({
   scanMeta.lastScanTs = nowTs
 
   try {
-    const completed = await withRetry(() => fetchCompletedItemsFromPlayerok(token, userAgent), {
+    // Без кэша: иначе скан может видеть устаревший список и не попасть в нужные SOLD.
+    const completed = await withRetry(() => fetchCompletedItemsFromPlayerok(token, userAgent, false), {
       label: 'completedItems',
       retries: 3,
       shouldRetry: isPlayerokRateLimitError,
     })
 
     const items = Array.isArray(completed?.items) ? completed.items : []
-    const lastTen = items.slice(0, 10)
+    // В «завершённых» приходят и SOLD, и EXPIRED. Раньше брались первые 10 строк целиком —
+    // при нескольких EXPIRED сверху реальные продажи не попадали в окно и autolistRuntime оставался null.
+    const soldItems = items.filter((it) => String(it?.status) === 'SOLD')
+    const lastTen = soldItems.slice(0, 15)
 
-    // Собираем товары со статусом 'retry' или 'error' (после 500) для повторной обработки
+    // Собираем товары со статусом 'retry' или временной 'error' (429/5xx) для повторной обработки
     const retryItems = []
     for (const it of items) {
       const itemId = it?.id != null ? String(it.id) : null
@@ -45,10 +53,7 @@ async function scanCompletedAndRelist({
       const shouldCollect =
         itemState &&
         (itemState.status === 'retry' ||
-          (itemState.status === 'error' &&
-            (itemState.error?.includes('status 500') ||
-              itemState.error?.includes('INTERNAL_SERVER_ERROR') ||
-              itemState.error?.includes('priorityStatuses'))))
+          (itemState.status === 'error' && isAutolistRetryableMessage(itemState.error || '')))
 
       if (shouldCollect) {
         retryItems.push(it)
@@ -102,10 +107,7 @@ async function scanCompletedAndRelist({
       const shouldRetry =
         itemState &&
         (itemState.status === 'retry' ||
-          (itemState.status === 'error' &&
-            (itemState.error?.includes('status 500') ||
-              itemState.error?.includes('INTERNAL_SERVER_ERROR') ||
-              itemState.error?.includes('priorityStatuses'))))
+          (itemState.status === 'error' && isAutolistRetryableMessage(itemState.error || '')))
       const wasProcessed = autolistWasProcessed(tokenHash, eventKey)
 
       if (wasProcessed && !shouldRetry) {
@@ -209,8 +211,9 @@ async function scanCompletedAndRelist({
           try {
             relisted = await withRetry(() => publishItem(token, userAgent, itemId, { priorityStatusId: tryStatusId }), {
               label: 'publishItem(completedScan)',
-              retries: 3,
-              shouldRetry: isPlayerokRateLimitError,
+              retries: 4,
+              baseDelayMs: 1000,
+              shouldRetry: isPlayerokPublishRetryable,
             })
             publishError = null
             break
@@ -226,8 +229,9 @@ async function scanCompletedAndRelist({
           try {
             relisted = await withRetry(() => publishItem(token, userAgent, itemId, { priorityStatusId: null }), {
               label: 'publishItem(completedScan-no-status)',
-              retries: 1,
-              shouldRetry: isPlayerokRateLimitError,
+              retries: 3,
+              baseDelayMs: 1000,
+              shouldRetry: isPlayerokPublishRetryable,
             })
             publishError = null
           } catch (err) {
@@ -268,9 +272,15 @@ async function scanCompletedAndRelist({
       } catch (err) {
         const msg = err && err.message ? String(err.message) : String(err)
         const cannotUpdateStatus = msg.includes('нельзя обновить статус')
-        const isServerError =
-          msg.includes('status 500') || msg.includes('INTERNAL_SERVER_ERROR') || msg.includes('priorityStatuses')
-        const reasonShort = cannotUpdateStatus ? 'нельзя обновить статус' : isServerError ? 'ошибка сервера (500)' : msg.slice(0, 80)
+        const retryable = isAutolistRetryableMessage(msg)
+        const reasonShort = cannotUpdateStatus ? 'нельзя обновить статус' : autolistReasonShort(msg)
+        console.warn('[autolist-tick] перевыставление лота не удалось', {
+          trigger,
+          itemId,
+          productKey: String(productKey || ''),
+          причинаКратко: reasonShort,
+          error: msg,
+        })
         scanSummary.push({ товар: shortLabel(it, productKey), результат: 'не выставлен', причина: reasonShort })
         if (cannotUpdateStatus) {
           // Товар уже в нужном статусе: помечаем событие обработанным и больше не трогаем его.
@@ -280,9 +290,8 @@ async function scanCompletedAndRelist({
             error: msg,
             updatedAt: nowTs,
           })
-        } else if (isServerError) {
-          // Ошибка 500 - не помечаем как обработанное, чтобы система продолжала пытаться выставить товар
-          // Помечаем как 'retry' чтобы система знала, что нужно продолжать попытки
+        } else if (retryable) {
+          // 429 / 5xx — повторяем позже
           autolistSetItemState(tokenHash, itemId, {
             status: 'retry',
             error: msg,
@@ -303,6 +312,9 @@ async function scanCompletedAndRelist({
           productKey,
           error: msg,
         })
+        if (isPlayerokRateLimitMessage(msg)) {
+          await sleep(2500)
+        }
       }
     }
 

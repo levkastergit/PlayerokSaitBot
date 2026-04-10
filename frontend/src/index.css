@@ -89,8 +89,13 @@ body {
 
 .app-header-left {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.75rem;
+}
+
+/* Свернуть/развернуть боковое меню (только на десктопе, вкладка «Чаты») */
+.header-sidebar-compact-toggle {
+  display: none;
 }
 
 .mobile-menu-toggle,
@@ -236,6 +241,44 @@ body {
 .app-sidebar {
   padding-right: 1.5rem;
   border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+@media (min-width: 901px) {
+  .header-sidebar-compact-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .header-sidebar-compact-toggle:hover {
+    border-color: var(--accent);
+    color: var(--text-main);
+    background: var(--accent-soft);
+  }
+
+  /* Сайдбар полностью скрыт — только контент на всю ширину; «» в шапке снова показывает меню */
+  .app-main--nav-compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-main--nav-compact .app-sidebar {
+    display: none;
+  }
 }
 
 .app-content {
@@ -247,10 +290,17 @@ body {
   overscroll-behavior: contain;
 }
 
+.app-content--chat {
+  overflow: hidden;
+}
+
 .tabs-nav {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .tab-button {
@@ -473,11 +523,14 @@ body {
   align-items: start;
 }
 
-/* Для страницы чатов - grid занимает всю оставшуюся высоту */
+/* Для страницы чатов - grid на всю высоту; список на 3cm уже прежних ~35% (с учётом gap 1.5rem) */
 .tab-page--chat .tab-grid {
   flex: 1;
   min-height: 0;
   align-items: stretch;
+  grid-template-columns:
+    minmax(0, max(0px, calc((100% - 1.5rem) * 0.35 - 3cm)))
+    minmax(0, 1fr);
 }
 
 .tab-page--partners .tab-grid {
@@ -820,8 +873,9 @@ body {
 
 /* Для страницы чатов - сообщения занимают всю доступную высоту */
 .tab-page--chat .chat-messages {
-  flex: 1;
-  min-height: 200px;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 0;
   max-height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1069,8 +1123,10 @@ body {
 /* Для страницы чатов - список чатов занимает всю доступную высоту */
 .tab-page--chat .chat-list {
   max-height: none;
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
+  height: 0;
+  overflow-y: auto;
 }
 
 .chat-list::-webkit-scrollbar {
@@ -1099,9 +1155,27 @@ body {
   background: var(--bg-elevated);
   cursor: pointer;
   display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.5rem;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-list__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-list__status-slot {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
 }
 
 .chat-list__item:hover {
@@ -1113,6 +1187,11 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
   background: var(--accent-soft);
+}
+
+.chat-list__item--unread:not(.chat-list__item--active) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .chat-list__title {
@@ -1155,6 +1234,103 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-list__buyer-last-msg {
+  font-size: 0.8rem;
+  color: var(--text-main);
+  line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.chat-list__buyer-last-msg-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-list__unread-pill {
+  display: inline-block;
+  margin-left: 0.35rem;
+  margin-top: 0.2rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .chat-list__unread-pill {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(248, 113, 113, 0.22);
+  color: #fecaca;
+}
+
+.chat-list__buyer-last-msg-author {
+  font-weight: 700;
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  margin-right: 0.2rem;
+}
+
+.chat-list__buyer-last-msg-author--buyer {
+  color: #0c4a6e;
+  background: rgba(14, 165, 233, 0.2);
+}
+
+.chat-list__buyer-last-msg-author--seller {
+  color: #1e3a8a;
+  background: rgba(37, 99, 235, 0.22);
+}
+
+[data-theme="dark"] .chat-list__buyer-last-msg-author--buyer {
+  color: #bae6fd;
+  background: rgba(56, 189, 248, 0.25);
+}
+
+[data-theme="dark"] .chat-list__buyer-last-msg-author--seller {
+  color: #dbeafe;
+  background: rgba(96, 165, 250, 0.28);
+}
+
+.chat-list__item-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.chat-list__item-footer .chat-list__time {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
+.chat-list__preview--status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.5rem;
+  font-size: 1.25rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chat-list__status-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  transform: translateY(0.04em);
 }
 
 .chat-list__time {
@@ -2223,6 +2399,12 @@ body {
   color: #1d4ed8;
 }
 
+.lot-card__autolist-badge--success {
+  background: #dcfce7;
+  border-color: rgba(22, 163, 74, 0.55);
+  color: #14532d;
+}
+
 .lot-card__autolist-badge--error {
   background: #ffedd5;
   border-color: rgba(180, 83, 9, 0.55);
@@ -2239,6 +2421,12 @@ body {
   background: rgba(37, 99, 235, 0.35);
   border-color: rgba(147, 197, 253, 0.55);
   color: #eff6ff;
+}
+
+[data-theme="dark"] .lot-card__autolist-badge--success {
+  background: rgba(22, 163, 74, 0.35);
+  border-color: rgba(134, 239, 172, 0.55);
+  color: #f0fdf4;
 }
 
 [data-theme="dark"] .lot-card__autolist-badge--error {

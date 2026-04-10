@@ -8,9 +8,25 @@ function isPlayerokRateLimitError(err) {
     msg.includes('Слишком много попыток') ||
     msg.toLowerCase().includes('too many attempts') ||
     msg.toLowerCase().includes('rate limit') ||
-    msg.toLowerCase().includes('status 429') ||
-    msg.toLowerCase().includes('status 403')
+    msg.toLowerCase().includes('status 429')
   )
+}
+
+/** Кратковременные сбои Playerok / прокси: имеет смысл повторить publishItem */
+function isPlayerokTransientServerError(err) {
+  const msg = err && err.message ? String(err.message) : String(err || '')
+  return (
+    /\bstatus 50[023]\b/.test(msg) ||
+    msg.includes('INTERNAL_SERVER_ERROR') ||
+    msg.includes('Internal server error') ||
+    msg.toLowerCase().includes('bad gateway') ||
+    msg.toLowerCase().includes('service unavailable') ||
+    msg.toLowerCase().includes('gateway timeout')
+  )
+}
+
+function isPlayerokPublishRetryable(err) {
+  return isPlayerokRateLimitError(err) || isPlayerokTransientServerError(err)
 }
 
 async function withRetry(fn, opts = {}) {
@@ -45,5 +61,11 @@ async function withRetry(fn, opts = {}) {
   throw lastErr
 }
 
-module.exports = { isPlayerokRateLimitError, withRetry, sleep }
+module.exports = {
+  isPlayerokRateLimitError,
+  isPlayerokTransientServerError,
+  isPlayerokPublishRetryable,
+  withRetry,
+  sleep,
+}
 

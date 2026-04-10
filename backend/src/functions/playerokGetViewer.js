@@ -25,6 +25,8 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
           referer: 'https://playerok.com/',
           'apollographql-client-name': 'web',
           'apollo-require-preflight': 'true',
+          'x-gql-op': 'viewer',
+          'x-gql-path': '/',
           'user-agent':
             userAgent ||
             PLAYEROK_USER_AGENT ||
@@ -40,7 +42,12 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
         })
         resp.on('end', () => {
           if (resp.statusCode !== 200) {
-            return reject(new Error(`Playerok viewer: status ${resp.statusCode}`))
+            const preview = String(data || '').replace(/\s+/g, ' ').slice(0, 400)
+            const err = new Error(
+              `Playerok viewer: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')
+            )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json

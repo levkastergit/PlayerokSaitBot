@@ -18,6 +18,71 @@ const PORT = parseInt(process.env.PORT, 10) || 3000
 // Кэш для лотов: уменьшает количество запросов к Playerok API и предотвращает rate limit
 const LOTS_CACHE_TTL_MS = 2 * 60 * 1000 // 2 минуты
 const lotsCache = new Map() // token -> { active: { data, expiresAt }, completed: { data, expiresAt } }
+const CHATS_CACHE_TTL_MS = 90 * 1000 // 90 секунд
+const chatsRefreshInFlight = new Set()
+let postLocalRef = null
+let chatSnapshotsRepo = null
+
+function getChatsSnapshotCache(userId, cacheKey) {
+  if (!chatSnapshotsRepo) return null
+  const row = chatSnapshotsRepo.getChatSnapshot.get(Number(userId), String(cacheKey || ''))
+  if (!row || !row.payload) return null
+  try {
+    const data = JSON.parse(row.payload)
+    return {
+      data,
+      updatedAt: Number(row.updated_at || 0),
+    }
+  } catch (_) {
+    return null
+  }
+}
+
+function setChatsSnapshotCache(userId, cacheKey, data) {
+  if (!chatSnapshotsRepo) return
+  const uid = Number(userId)
+  const key = String(cacheKey || '')
+  if (!Number.isFinite(uid) || uid <= 0 || !key) return
+  try {
+    const payload = JSON.stringify(data || {})
+    chatSnapshotsRepo.upsertChatSnapshot.run(uid, key, payload, Date.now())
+  } catch (_) {
+    // ignore cache write errors
+  }
+}
+
+function isChatsSnapshotFresh(userId, cacheKey) {
+  const entry = getChatsSnapshotCache(userId, cacheKey)
+  if (!entry) return false
+  return Date.now() - Number(entry.updatedAt || 0) <= CHATS_CACHE_TTL_MS
+}
+
+function scheduleChatsSnapshotRefresh(userId, token, userAgent, opts = {}) {
+  if (!postLocalRef || !token) return
+  const uid = Number(userId)
+  if (!Number.isFinite(uid) || uid <= 0) return
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 24
+  const afterCursor = opts.afterCursor || null
+  const key = `${uid}:${limit}:${afterCursor || ''}`
+  if (chatsRefreshInFlight.has(key)) return
+  chatsRefreshInFlight.add(key)
+  setTimeout(async () => {
+    try {
+      await postLocalRef('/api/playerok/chats', {
+        token,
+        userAgent,
+        limit,
+        ...(afterCursor ? { afterCursor } : {}),
+        preferCache: false,
+        warmup: true,
+      })
+    } catch (_) {
+      // ignore background refresh errors
+    } finally {
+      chatsRefreshInFlight.delete(key)
+    }
+  }, 0)
+}
 
 // Периодическая очистка устаревших записей из кэша
 setInterval(() => {
@@ -41,6 +106,16 @@ setInterval(() => {
   }
 }, 60 * 1000) // Проверяем каждую минуту
 
+setInterval(() => {
+  if (!chatSnapshotsRepo) return
+  try {
+    const thresholdTs = Date.now() - CHATS_CACHE_TTL_MS * 3
+    chatSnapshotsRepo.deleteExpiredChatSnapshots.run(thresholdTs)
+  } catch (_) {
+    // ignore chat snapshots cleanup errors
+  }
+}, 60 * 1000)
+
 const { initLogger, getLogsBuffer } = require('./src/infra/logger')
 initLogger()
 
@@ -49,7 +124,12 @@ const PLAYEROK_USER_AGENT =
   process.env.PLAYEROK_USER_AGENT == null ? '' : String(process.env.PLAYEROK_USER_AGENT).trim()
 
 const { hashPassword, verifyPassword, encryptToken, decryptToken } = require('./src/infra/crypto/tokenCrypto')
-const { withRetry, isPlayerokRateLimitError, sleep } = require('./src/infra/retry/withRetry')
+const {
+  withRetry,
+  isPlayerokRateLimitError,
+  isPlayerokPublishRetryable,
+  sleep,
+} = require('./src/infra/retry/withRetry')
 const {
   getSessionIdFromRequest,
   isSessionValid,
@@ -105,6 +185,7 @@ function isSupercellModuleEnabled(userId) {
 }
 
 const { setupTokensRepo } = require('./src/db/tokensRepo')
+const { setupChatSnapshotsRepo } = require('./src/db/chatSnapshotsRepo')
 
 const {
   getStoredToken,
@@ -115,6 +196,8 @@ const {
   getTokenFromBodyOrStored,
   getTokenFromQueryOrStored,
 } = setupTokensRepo(db)
+
+chatSnapshotsRepo = setupChatSnapshotsRepo(db)
 
 const { setupProductSettingsRepo } = require('./src/db/productSettingsRepo')
 
@@ -572,6 +655,7 @@ const server = http.createServer(async (req, res) => {
         increaseItemPriorityStatus,
         insertBump,
         isPlayerokRateLimitError,
+        isPlayerokPublishRetryable,
         withRetry,
         getViewer,
         requestUserChatsPage,
@@ -631,6 +715,10 @@ const server = http.createServer(async (req, res) => {
         fetchVerifiedCards,
         requestWithdrawal,
         removeTransaction,
+        getChatsSnapshotCache,
+        setChatsSnapshotCache,
+        isChatsSnapshotFresh,
+        scheduleChatsSnapshotRefresh,
       },
     })
 
@@ -681,9 +769,11 @@ server.listen(PORT, () => {
 
   const { createPostLocal } = require('./src/functions/postLocal')
   const postLocal = createPostLocal({ PORT, http })
+  postLocalRef = postLocal
 
   const { setupAutolistBackgroundJob } = require('./src/jobs/autolistBackgroundJob')
   const { setupAutobumpBackgroundJob } = require('./src/jobs/autobumpBackgroundJob')
+  const { setupChatsWarmupBackgroundJob } = require('./src/jobs/chatsWarmupBackgroundJob')
 
   setupAutolistBackgroundJob({
     postLocal,
@@ -702,6 +792,13 @@ server.listen(PORT, () => {
     buildProductKey,
     postLocal,
     getDefaultUserAgent: () => DEFAULT_USER_AGENT,
+  })
+
+  setupChatsWarmupBackgroundJob({
+    postLocal,
+    getAllStoredTokens,
+    loadStoredTokenPlain,
+    getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
   })
 })
 
