@@ -174,9 +174,11 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         handlePaidChat: deps.handlePaidChat,
         requestDealById: deps.requestDealById,
         toUnixTs: deps.toUnixTs,
+        dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
         insertSale: deps.insertSale,
         resolveEffectiveProductSettings: deps.resolveEffectiveProductSettings,
         getSupercellGameByCategory: deps.getSupercellGameByCategory,
+        pickSupercellCategoryFromItemHints: deps.pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
         extractSupercellEmailFromFields: deps.extractSupercellEmailFromFields,
         upsertSettings: deps.upsertSettings,
@@ -312,6 +314,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           getSupercellGameByCategory: deps.getSupercellGameByCategory,
           requestSupercellCodeForChat: deps.requestSupercellCodeForChat,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+          requestDealById: deps.requestDealById,
         },
       })
     )

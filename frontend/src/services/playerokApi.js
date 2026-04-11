@@ -412,7 +412,7 @@ export async function unhideChat(token, chatId) {
 }
 
 /** Сообщения чата по сделке (для вкладок Выполнение и Чат). chatId — если есть (из списка сделок), иначе бэкенд возьмёт по dealId. */
-export async function fetchDealChatMessages(token, dealId, chatId) {
+export async function fetchDealChatMessages(token, dealId, chatId, options = {}) {
   if (!dealId && !chatId) {
     return {
       list: [],
@@ -422,6 +422,14 @@ export async function fetchDealChatMessages(token, dealId, chatId) {
       itemCategory: null,
     }
   }
+  const buyerName =
+    options && typeof options.buyerName === 'string' && options.buyerName.trim()
+      ? options.buyerName.trim()
+      : undefined
+  const category =
+    options && typeof options.category === 'string' && options.category.trim()
+      ? options.category.trim()
+      : undefined
   const response = await trackedFetch(BACKEND_DEAL_CHAT_MESSAGES_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
@@ -430,6 +438,8 @@ export async function fetchDealChatMessages(token, dealId, chatId) {
       ...(token ? { token } : {}),
       dealId: dealId || undefined,
       chatId: chatId || undefined,
+      ...(buyerName ? { buyerName } : {}),
+      ...(category ? { category } : {}),
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     }),
   })

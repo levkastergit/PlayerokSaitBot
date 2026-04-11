@@ -7,7 +7,10 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 function createRequestChatById({ CHAT_PERSISTED_HASH }) {
   if (!CHAT_PERSISTED_HASH) throw new Error('CHAT_PERSISTED_HASH is required')
 
-  return function requestChatById(token, userAgent, chatId) {
+  return function requestChatById(token, userAgent, chatId, opts = {}) {
+    const referer =
+      (opts && typeof opts.referer === 'string' && opts.referer.trim()) ||
+      'https://playerok.com/chats'
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -30,7 +33,7 @@ function createRequestChatById({ CHAT_PERSISTED_HASH }) {
           'content-type': 'application/json',
           cookie: `token=${token}`,
           origin: 'https://playerok.com',
-          referer: 'https://playerok.com/chats',
+          referer,
           'apollographql-client-name': 'web',
           'apollo-require-preflight': 'true',
           'user-agent':

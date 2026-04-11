@@ -1,5 +1,12 @@
 async function handleSyncSales({ payload, currentUserId, deps }) {
-  const { getTokenFromBodyOrStored, fetchAllDealsFromPlayerok, requestDealById, insertSale, toUnixTs } = deps
+  const {
+    getTokenFromBodyOrStored,
+    fetchAllDealsFromPlayerok,
+    requestDealById,
+    insertSale,
+    toUnixTs,
+    dealPurchaseUnixTs,
+  } = deps
 
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
   const userAgent = payload.userAgent
@@ -23,6 +30,10 @@ async function handleSyncSales({ payload, currentUserId, deps }) {
       if (!soldAt || !buyerName) {
         try {
           fullDeal = await requestDealById(token, userAgent, dealId)
+          if (fullDeal && typeof dealPurchaseUnixTs === 'function') {
+            const purchaseTs = dealPurchaseUnixTs(fullDeal, toUnixTs)
+            if (purchaseTs) soldAt = purchaseTs
+          }
           if (!soldAt) {
             soldAt = fullDeal ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0 : 0
           }

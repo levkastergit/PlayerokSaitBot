@@ -1,3 +1,5 @@
+const { isTokenCryptoConfigured } = require('../../infra/crypto/tokenCrypto')
+
 async function handleSetToken({ payload, currentUserId, deps }) {
   const { encryptToken, upsertStoredToken, deleteStoredToken } = deps
 
@@ -13,8 +15,15 @@ async function handleSetToken({ payload, currentUserId, deps }) {
       return { statusCode: 200, data: { ok: true, updated_at: null } }
     }
 
-    const tokenEnc = encryptToken(token)
-    // token сохраняем только для обратной совместимости (старые части кода), но фронту не отдаём
+    let tokenEnc = null
+    if (isTokenCryptoConfigured()) {
+      tokenEnc = encryptToken(token)
+    } else {
+      console.warn(
+        '[auth] TOKEN_SECRET/HEAD_CODE не заданы — токен Playerok сохраняется в БД без шифрования. Для продакшена задайте TOKEN_SECRET в .env'
+      )
+    }
+    // При шифровании token дублируем для legacy; без секрета только колонка token (как раньше).
     upsertStoredToken.run(currentUserId, token, tokenEnc, updatedAt)
     return { statusCode: 200, data: { ok: true, updated_at: updatedAt } }
   } catch (err) {

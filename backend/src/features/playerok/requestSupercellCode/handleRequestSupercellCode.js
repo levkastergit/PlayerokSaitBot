@@ -1,13 +1,20 @@
+const { pickSupercellCategoryFromDeal } = require('../../../functions/supercellHelpers')
+
 async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
-  const { getTokenFromBodyOrStored, getSupercellGameByCategory, requestSupercellCodeForChat, isSupercellModuleEnabled } =
-    deps
+  const {
+    getTokenFromBodyOrStored,
+    getSupercellGameByCategory,
+    requestSupercellCodeForChat,
+    isSupercellModuleEnabled,
+    requestDealById,
+  } = deps
 
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
   const userAgent = payload.userAgent
   const dealId = payload.dealId || null
   const chatId = payload.chatId || null
   const email = String(payload.email || '').trim()
-  const category = String(payload.category || '').trim()
+  let category = String(payload.category || '').trim()
 
   if (!token) {
     return { statusCode: 400, data: { error: 'token is required' } }
@@ -21,6 +28,17 @@ async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
   if (!email) {
     return { statusCode: 400, data: { error: 'email is required' } }
   }
+
+  if (!getSupercellGameByCategory(category) && dealId && typeof requestDealById === 'function') {
+    try {
+      const fullDeal = await requestDealById(token, userAgent, dealId)
+      const picked = pickSupercellCategoryFromDeal(fullDeal)
+      if (picked && getSupercellGameByCategory(picked)) category = picked
+    } catch (_) {
+      // оставляем category с клиента
+    }
+  }
+
   if (!getSupercellGameByCategory(category)) {
     return { statusCode: 400, data: { error: 'Категория не поддерживает запрос кода Supercell' } }
   }

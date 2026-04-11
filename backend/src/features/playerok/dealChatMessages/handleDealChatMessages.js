@@ -31,9 +31,25 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
       viewer = null
     }
 
+    const buyerUsername =
+      typeof payload.buyerName === 'string' && payload.buyerName.trim()
+        ? payload.buyerName.trim()
+        : typeof payload.buyerUsername === 'string' && payload.buyerUsername.trim()
+          ? payload.buyerUsername.trim()
+          : null
+
+    const categoryHint =
+      typeof payload.category === 'string' && payload.category.trim()
+        ? payload.category.trim()
+        : typeof payload.itemCategory === 'string' && payload.itemCategory.trim()
+          ? payload.itemCategory.trim()
+          : null
+
     const { messages, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory } =
       await fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatId, {
         viewerUsername: viewer?.username || null,
+        buyerUsername,
+        categoryHint,
       })
 
     // Немедленная обработка Supercell flow для этого чата, если он активен

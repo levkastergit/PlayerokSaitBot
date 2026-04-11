@@ -1,13 +1,19 @@
 async function handleGetToken({ currentUserId, deps }) {
-  const { loadStoredTokenPlain } = deps
-
   try {
-    const stored = loadStoredTokenPlain(currentUserId)
-    if (!stored.token && !stored.tokenKey) {
-      return { statusCode: 200, data: { token: null, updated_at: null } }
+    const loadStoredTokenPlain = deps && deps.loadStoredTokenPlain
+    if (typeof loadStoredTokenPlain !== 'function') {
+      return { statusCode: 500, data: { error: 'Server misconfiguration' } }
     }
 
-    return { statusCode: 200, data: { token: stored.token || null, updated_at: stored.updatedAt } }
+    const stored = loadStoredTokenPlain(currentUserId) || { token: '', updatedAt: null }
+    const token = stored.token && String(stored.token).trim() ? stored.token : null
+    return {
+      statusCode: 200,
+      data: {
+        token,
+        updated_at: stored.updatedAt != null ? stored.updatedAt : null,
+      },
+    }
   } catch (err) {
     return {
       statusCode: 500,

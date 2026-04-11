@@ -1,3 +1,8 @@
+const {
+  isSuperSellMarketplaceLabel,
+  pickSupercellCategoryFromDeal,
+} = require('../../../functions/supercellHelpers')
+
 async function handleChats({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -255,9 +260,16 @@ async function handleChats({ payload, currentUserId, deps }) {
         if (!saleChatId || !saleCategory) continue
 
         const saleTs = Number(sale.soldAt) || 0
+        const saleDealId = sale && sale.id != null ? String(sale.id) : null
+        const saleItemId = sale && sale.itemId != null ? String(sale.itemId) : null
         const prev = chatIdToLatestSale.get(saleChatId)
         if (!prev || saleTs >= prev.soldAt) {
-          chatIdToLatestSale.set(saleChatId, { soldAt: saleTs, category: saleCategory })
+          chatIdToLatestSale.set(saleChatId, {
+            soldAt: saleTs,
+            category: saleCategory,
+            dealId: saleDealId,
+            itemId: saleItemId,
+          })
         }
       }
     } catch (e) {
@@ -277,20 +289,7 @@ async function handleChats({ payload, currentUserId, deps }) {
             })
             if (!fullDeal) return
 
-            let category = (fullDeal.category && String(fullDeal.category).trim()) || null
-            const item = fullDeal.item || null
-            if (!category && item) {
-              const gameName = (item.game && (item.game.name || item.game.title)) || null
-              if (gameName) category = String(gameName).trim()
-            }
-            if (!category && typeof fullDeal.productKey === 'string') {
-              const pk = fullDeal.productKey
-              const sepIndex = pk.indexOf('::')
-              if (sepIndex > 0) {
-                const gameFromPk = pk.slice(0, sepIndex).trim()
-                if (gameFromPk) category = gameFromPk
-              }
-            }
+            const category = pickSupercellCategoryFromDeal(fullDeal)
             if (category) {
               dealIdToCategory.set(String(id), category)
             }
@@ -341,21 +340,7 @@ async function handleChats({ payload, currentUserId, deps }) {
                 shouldRetry: isPlayerokRateLimitError,
               })
               if (foundDeal) {
-                let dealCategory = (foundDeal.category && String(foundDeal.category).trim()) || null
-                const dealItem = foundDeal.item || null
-                if (!dealCategory && dealItem) {
-                  const gameName =
-                    (dealItem.game && (dealItem.game.name || dealItem.game.title)) || null
-                  if (gameName) dealCategory = String(gameName).trim()
-                }
-                if (!dealCategory && typeof foundDeal.productKey === 'string') {
-                  const pk = foundDeal.productKey
-                  const sepIndex = pk.indexOf('::')
-                  if (sepIndex > 0) {
-                    const gameFromPk = pk.slice(0, sepIndex).trim()
-                    if (gameFromPk) dealCategory = gameFromPk
-                  }
-                }
+                const dealCategory = pickSupercellCategoryFromDeal(foundDeal)
                 if (dealCategory) {
                   dealIdToCategory.set(dealId, dealCategory)
                 }
@@ -391,11 +376,20 @@ async function handleChats({ payload, currentUserId, deps }) {
                   const chatDeal = fullChat.deal || null
                   const chatItem = chatDeal?.item || null
 
-                  if (chatItem && chatItem.game) {
-                    category = (chatItem.game.name || chatItem.game.title || '').trim() || null
-                  }
-                  if (!category && chatItem && chatItem.category) {
-                    category = (chatItem.category.name || chatItem.category.title || '').trim() || null
+                  const chatItemGame =
+                    chatItem && chatItem.game
+                      ? String(chatItem.game.name || chatItem.game.title || '').trim() || null
+                      : null
+                  const chatItemCat =
+                    chatItem && chatItem.category
+                      ? String(chatItem.category.name || chatItem.category.title || '').trim() || null
+                      : null
+                  if (chatItemGame && !isSuperSellMarketplaceLabel(chatItemGame)) {
+                    category = chatItemGame
+                  } else if (chatItemCat) {
+                    category = chatItemCat
+                  } else if (chatItemGame) {
+                    category = chatItemGame
                   }
                   if (!category && chatDeal) {
                     if (typeof chatDeal.category === 'string') {
@@ -424,23 +418,7 @@ async function handleChats({ payload, currentUserId, deps }) {
                             }
                           )
                           if (foundDeal) {
-                            let dealCategory =
-                              (foundDeal.category && String(foundDeal.category).trim()) || null
-                            const dealItem = foundDeal.item || null
-                            if (!dealCategory && dealItem) {
-                              const gameName =
-                                (dealItem.game && (dealItem.game.name || dealItem.game.title)) ||
-                                null
-                              if (gameName) dealCategory = String(gameName).trim()
-                            }
-                            if (!dealCategory && typeof foundDeal.productKey === 'string') {
-                              const pk = foundDeal.productKey
-                              const sepIndex = pk.indexOf('::')
-                              if (sepIndex > 0) {
-                                const gameFromPk = pk.slice(0, sepIndex).trim()
-                                if (gameFromPk) dealCategory = gameFromPk
-                              }
-                            }
+                            const dealCategory = pickSupercellCategoryFromDeal(foundDeal)
                             if (dealCategory) {
                               dealIdToCategory.set(dealIdFromChat, dealCategory)
                               category = dealCategory
@@ -483,22 +461,7 @@ async function handleChats({ payload, currentUserId, deps }) {
                               shouldRetry: isPlayerokRateLimitError,
                             })
                             if (foundDeal) {
-                              let dealCategory =
-                                (foundDeal.category && String(foundDeal.category).trim()) || null
-                              const dealItem = foundDeal.item || null
-                              if (!dealCategory && dealItem) {
-                                const gameName =
-                                  (dealItem.game && (dealItem.game.name || dealItem.game.title)) || null
-                                if (gameName) dealCategory = String(gameName).trim()
-                              }
-                              if (!dealCategory && typeof foundDeal.productKey === 'string') {
-                                const pk = foundDeal.productKey
-                                const sepIndex = pk.indexOf('::')
-                                if (sepIndex > 0) {
-                                  const gameFromPk = pk.slice(0, sepIndex).trim()
-                                  if (gameFromPk) dealCategory = gameFromPk
-                                }
-                              }
+                              const dealCategory = pickSupercellCategoryFromDeal(foundDeal)
                               if (dealCategory) {
                                 dealIdToCategory.set(foundDealId, dealCategory)
                                 category = dealCategory
@@ -581,12 +544,36 @@ async function handleChats({ payload, currentUserId, deps }) {
           latestSaleSoldAt: latestSale?.soldAt || null,
         }
 
+        const itemGameLabel =
+          item && item.game && (item.game.name || item.game.title)
+            ? String(item.game.name || item.game.title).trim()
+            : ''
+        const itemCategoryLabel =
+          item && item.category && (item.category.name || item.category.title)
+            ? String(item.category.name || item.category.title).trim()
+            : ''
+        const nodeGameLabel =
+          node && node.game && (node.game.name || node.game.title)
+            ? String(node.game.name || node.game.title).trim()
+            : ''
+        const nodeCategoryLabel =
+          node && node.category && (node.category.name || node.category.title)
+            ? String(node.category.name || node.category.title).trim()
+            : ''
+
+        const pickItemOrNodeCategory = () => {
+          if (itemGameLabel && !isSuperSellMarketplaceLabel(itemGameLabel)) return itemGameLabel
+          if (itemCategoryLabel) return itemCategoryLabel
+          if (itemGameLabel) return itemGameLabel
+          if (nodeGameLabel && !isSuperSellMarketplaceLabel(nodeGameLabel)) return nodeGameLabel
+          if (nodeCategoryLabel) return nodeCategoryLabel
+          if (nodeGameLabel) return nodeGameLabel
+          return ''
+        }
+
         let category =
           (latestSale && latestSale.category) ||
-          (item && item.game && (item.game.name || item.game.title)) ||
-          (item && item.category && (item.category.name || item.category.title)) ||
-          (node && node.game && (node.game.name || node.game.title)) ||
-          (node && node.category && (node.category.name || node.category.title)) ||
+          pickItemOrNodeCategory() ||
           (deal && typeof deal.category === 'string' && deal.category) ||
           null
 
@@ -862,8 +849,8 @@ async function handleChats({ payload, currentUserId, deps }) {
           lastMessageId: lastMessage?.id || null,
           lastMessageText: lastMessage?.text || null,
           lastMessageCreatedAt: lastMessage?.createdAt || null,
-          dealId: deal?.id || null,
-          itemId: item?.id || null,
+          dealId: deal?.id || latestSale?.dealId || null,
+          itemId: item?.id || latestSale?.itemId || null,
           itemTitle,
           itemImageUrl,
           category,
@@ -875,11 +862,17 @@ async function handleChats({ payload, currentUserId, deps }) {
 
     const categoryFromItemNode = (itemNode) => {
       if (!itemNode || typeof itemNode !== 'object') return null
-      let cat =
-        (itemNode.game && (itemNode.game.name || itemNode.game.title)) ||
-        (itemNode.category && (itemNode.category.name || itemNode.category.title)) ||
-        null
-      if (cat && String(cat).trim()) return String(cat).trim()
+      const gameLabel =
+        itemNode.game && (itemNode.game.name || itemNode.game.title)
+          ? String(itemNode.game.name || itemNode.game.title).trim()
+          : ''
+      const catLabel =
+        itemNode.category && (itemNode.category.name || itemNode.category.title)
+          ? String(itemNode.category.name || itemNode.category.title).trim()
+          : ''
+      if (gameLabel && !isSuperSellMarketplaceLabel(gameLabel)) return gameLabel
+      if (catLabel) return catLabel
+      if (gameLabel) return gameLabel
       return null
     }
     const rememberItemCategory = (iid, itemNode) => {
@@ -899,19 +892,7 @@ async function handleChats({ payload, currentUserId, deps }) {
           shouldRetry: isPlayerokRateLimitError,
         })
         if (!fullDeal) return null
-        let dealCategory = (fullDeal.category && String(fullDeal.category).trim()) || null
-        const dealItem = fullDeal.item || null
-        if (!dealCategory && dealItem) {
-          const gameName = (dealItem.game && (dealItem.game.name || dealItem.game.title)) || null
-          if (gameName) dealCategory = String(gameName).trim()
-        }
-        if (!dealCategory && typeof fullDeal.productKey === 'string') {
-          const sepIndex = fullDeal.productKey.indexOf('::')
-          if (sepIndex > 0) {
-            const gameFromPk = fullDeal.productKey.slice(0, sepIndex).trim()
-            if (gameFromPk) dealCategory = gameFromPk
-          }
-        }
+        const dealCategory = pickSupercellCategoryFromDeal(fullDeal)
         if (dealCategory) {
           dealIdToCategory.set(did, dealCategory)
           return dealCategory

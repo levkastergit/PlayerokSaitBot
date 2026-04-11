@@ -45,6 +45,11 @@ function getTokenCryptoKey() {
   return crypto.createHash('sha256').update(secret).digest()
 }
 
+/** Без секрета токен в БД хранится только в колонке `token` (legacy); для продакшена задайте TOKEN_SECRET или HEAD_CODE. */
+function isTokenCryptoConfigured() {
+  return getTokenCryptoKey() !== null
+}
+
 function encryptToken(plainToken) {
   const key = getTokenCryptoKey()
   if (!key) throw new Error('TOKEN_SECRET (or HEAD_CODE) is required to encrypt token')
@@ -81,5 +86,6 @@ module.exports = {
   verifyPassword,
   encryptToken,
   decryptToken,
+  isTokenCryptoConfigured,
 }
 

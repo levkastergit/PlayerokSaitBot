@@ -22,29 +22,34 @@ function setupTokensRepo(db) {
   `)
 
   function loadStoredTokenPlain(userId) {
-    const row = getStoredToken.get(userId)
-    if (!row) return { token: '', updatedAt: null }
-
-    const updatedAt = row.updated_at != null ? row.updated_at : null
-    if (row.token_enc) {
-      try {
-        const t = decryptToken(row.token_enc)
-        return { token: t, updatedAt }
-      } catch (e) {
-        return { token: '', updatedAt }
-      }
-    }
-
-    // Legacy: если token_enc нет, токен мог храниться в поле token
-    const legacy = row.token ? String(row.token) : ''
-    if (!legacy) return { token: '', updatedAt }
-
     try {
-      const enc = encryptToken(legacy)
-      upsertStoredToken.run(userId, legacy, enc, updatedAt || Math.floor(Date.now() / 1000))
-      return { token: legacy, updatedAt }
-    } catch {
-      return { token: legacy, updatedAt }
+      const row = getStoredToken.get(userId)
+      if (!row) return { token: '', updatedAt: null }
+
+      const updatedAt = row.updated_at != null ? row.updated_at : null
+      if (row.token_enc) {
+        try {
+          const t = decryptToken(row.token_enc)
+          return { token: t, updatedAt }
+        } catch {
+          return { token: '', updatedAt }
+        }
+      }
+
+      // Legacy: если token_enc нет, токен мог храниться в поле token
+      const legacy = row.token ? String(row.token) : ''
+      if (!legacy) return { token: '', updatedAt }
+
+      try {
+        const enc = encryptToken(legacy)
+        upsertStoredToken.run(userId, legacy, enc, updatedAt || Math.floor(Date.now() / 1000))
+        return { token: legacy, updatedAt }
+      } catch {
+        return { token: legacy, updatedAt }
+      }
+    } catch (e) {
+      console.warn('[tokens] loadStoredTokenPlain', e && e.message ? e.message : e)
+      return { token: '', updatedAt: null }
     }
   }
 

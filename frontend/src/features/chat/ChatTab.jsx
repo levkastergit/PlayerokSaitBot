@@ -156,6 +156,21 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, ' ')
+      .replace(/ё/g, 'е')
+
+  const isSuperSellMarketplaceLabel = (name) => {
+    const n = normalizeCategoryName(name)
+    if (!n) return false
+    const markers = [
+      'super sell',
+      'supersell',
+      'super-sell',
+      'суперселл',
+      'супер селл',
+      'супер-селл',
+    ]
+    return markers.some((m) => n === m || n.includes(m))
+  }
 
   const isSupercellCategory = (name) =>
     SUPERCELL_EMAIL_GAMES.includes(normalizeCategoryName(name))
@@ -302,7 +317,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     const chatId = chat.id
     const extractedBuyerName = chat.buyerName || extractBuyerNameFromMessages(list)
     const currentCategory = String(chat.category || '').trim()
-    const shouldRecoverCategory = !currentCategory || currentCategory === 'Категория не определена'
+    const shouldRecoverCategory =
+      !currentCategory ||
+      currentCategory === 'Категория не определена' ||
+      isSuperSellMarketplaceLabel(currentCategory)
     const serverCategory =
       itemCategory && String(itemCategory).trim() ? String(itemCategory).trim() : null
     const recoveredCategory = shouldRecoverCategory
@@ -452,7 +470,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             chat: summarizeChatForLog(chat),
           })
           const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-            await fetchDealChatMessages(token, chat.dealId || null, chatId)
+            await fetchDealChatMessages(token, chat.dealId || null, chatId, {
+              buyerName: chat.buyerName || undefined,
+              category: chat.category || undefined,
+            })
           if (shouldCancel()) return
           applyLoadedChatData(
             chat,
@@ -756,7 +777,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         chat: summarizeChatForLog(chat),
       })
       const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-        await fetchDealChatMessages(token, chat.dealId || null, chatId)
+        await fetchDealChatMessages(token, chat.dealId || null, chatId, {
+          buyerName: chat.buyerName || undefined,
+          category: chat.category || undefined,
+        })
 
       applyLoadedChatData(
         chat,
@@ -844,7 +868,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     const refreshSelectedChat = async () => {
       try {
         const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-          await fetchDealChatMessages(token, selectedChat.dealId || null, selectedChat.id)
+          await fetchDealChatMessages(token, selectedChat.dealId || null, selectedChat.id, {
+            buyerName: selectedChat.buyerName || undefined,
+            category: selectedChat.category || undefined,
+          })
         if (cancelled) return
         applyLoadedChatData(
           selectedChat,

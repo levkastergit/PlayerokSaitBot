@@ -4,6 +4,7 @@ const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { normalizeKeyPart, buildProductKey } = require('./keyUtils')
+const { dealPurchaseUnixTs } = require('./dealPurchaseUnixTs')
 
 function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
@@ -115,23 +116,7 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
               const game = item.game?.name || ''
               const title = item.name || item.title || 'Товар'
               const price = node.transaction?.value ?? item.price ?? node.price ?? 0
-              const tx = node.transaction || {}
-              const soldAt =
-                toTs(node.completedAt) ||
-                toTs(node.createdAt) ||
-                toTs(node.updatedAt) ||
-                toTs(node.completed_at) ||
-                toTs(node.created_at) ||
-                toTs(node.updated_at) ||
-                toTs(tx.completedAt) ||
-                toTs(tx.createdAt) ||
-                toTs(tx.created_at) ||
-                toTs(item.updatedAt) ||
-                toTs(item.createdAt) ||
-                toTs(item.soldAt) ||
-                toTs(item.updated_at) ||
-                toTs(item.created_at) ||
-                0
+              const soldAt = dealPurchaseUnixTs(node, toTs) || 0
 
               // Определение категории с fallback
               let category = normalizeKeyPart(game)

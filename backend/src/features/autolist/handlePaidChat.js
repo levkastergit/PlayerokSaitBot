@@ -1,4 +1,6 @@
 const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
+const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
+const { toUnixTs } = require('../../functions/toUnixTs')
 
 async function handlePaidChat({
   currentUserId,
@@ -29,6 +31,7 @@ async function handlePaidChat({
   requestDealById,
   resolveEffectiveProductSettings,
   getSupercellGameByCategory,
+  pickSupercellCategoryFromItemHints,
   autolistGetSupercellFlowMap,
   extractSupercellEmailFromFields,
   upsertSettings,
@@ -50,6 +53,10 @@ async function handlePaidChat({
     typeof item?.game === 'string'
       ? item.game
       : (item?.game?.name && typeof item.game.name === 'string' ? item.game.name : '') || item?.game_name || ''
+  const itemCategoryName =
+    item?.category && typeof item.category === 'object'
+      ? String(item.category.name || item.category.title || '').trim()
+      : ''
 
   const title = normalizeKeyPart(rawTitle)
   const game = normalizeKeyPart(rawGame)
@@ -244,29 +251,38 @@ async function handlePaidChat({
           : 0
 
     let buyerName = null
+    let fullDealForSale = null
     try {
-      const fullDeal = await withRetry(
+      fullDealForSale = await withRetry(
         () => requestDealById(token, userAgent, dealId),
         { label: 'dealById(buyerName)', retries: 2, shouldRetry: isPlayerokRateLimitError }
       )
 
-      buyerName = (fullDeal && fullDeal.user && fullDeal.user.username) || null
+      buyerName = (fullDealForSale && fullDealForSale.user && fullDealForSale.user.username) || null
     } catch (_) {
       buyerName = null
     }
 
-    insertSale.run(
-      currentUserId,
-      productKey,
-      title || 'Товар',
-      dealTs || nowTs,
-      Number(salePrice) || 0,
-      dealStatus || null,
-      dealId || null,
-      dealItemId || null,
-      buyerName,
-      String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
-    )
+    const soldAtTs =
+      dealPurchaseUnixTs(fullDealForSale, toUnixTs) ||
+      dealPurchaseUnixTs(fullDealSnapshot, toUnixTs) ||
+      dealTs ||
+      0
+
+    if (soldAtTs && dealId) {
+      insertSale.run(
+        currentUserId,
+        productKey,
+        title || 'Товар',
+        soldAtTs,
+        Number(salePrice) || 0,
+        dealStatus || null,
+        dealId || null,
+        dealItemId || null,
+        buyerName,
+        String(dealStatus || '') === 'ROLLED_BACK' ? 1 : 0
+      )
+    }
   } catch (e) {
     // ignore sale record failure
   }
@@ -281,7 +297,24 @@ async function handlePaidChat({
       ? fullDealSnapshot.productKey.slice(0, fullDealSnapshot.productKey.indexOf('::')).trim()
       : fullDealSnapshot && typeof fullDealSnapshot.category === 'string' ? fullDealSnapshot.category.trim() : ''
 
-  const effectiveCategory = rawGame || game || dealCategory || ''
+  let productKeyGamePart = ''
+  if (fullDealSnapshot && typeof fullDealSnapshot.productKey === 'string') {
+    const sep = fullDealSnapshot.productKey.indexOf('::')
+    if (sep > 0) productKeyGamePart = fullDealSnapshot.productKey.slice(0, sep).trim()
+  }
+
+  const pickedSupercellCategory = pickSupercellCategoryFromItemHints({
+    gameName: rawGame,
+    categoryName: itemCategoryName,
+    productKeyGamePart,
+    itemTitle: rawTitle,
+  })
+  const effectiveCategory =
+    (pickedSupercellCategory && String(pickedSupercellCategory).trim()) ||
+    rawGame ||
+    game ||
+    dealCategory ||
+    ''
   const supercellGame = getSupercellGameByCategory(effectiveCategory)
 
   if (supercellModuleEnabled && supercellGame && lastChat?.id) {

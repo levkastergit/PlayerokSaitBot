@@ -57,6 +57,7 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
         requestDealById: deps.requestDealById,
         insertSale: deps.insertSale,
         toUnixTs: deps.toUnixTs,
+        dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
       },
     })
     sendJson(res, result.statusCode, result.data)
@@ -81,6 +82,7 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
         requestDealById: deps.requestDealById,
         insertSale: deps.insertSale,
         toUnixTs: deps.toUnixTs,
+        dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
       },
       res,
     })

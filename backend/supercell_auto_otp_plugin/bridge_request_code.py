@@ -21,6 +21,17 @@ import time
 import urllib.parse
 from contextlib import suppress
 
+
+def _configure_stdio_utf8():
+    """Windows cp1252 ломает JSON с кириллицей; Node ожидает UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream and getattr(stream, "buffer", None) is not None:
+            with suppress(AttributeError, OSError, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_stdio_utf8()
+
 try:
     import httpx
     from fake_useragent import UserAgent

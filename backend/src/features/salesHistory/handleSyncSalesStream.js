@@ -6,6 +6,7 @@ async function handleSyncSalesStream({ payload, currentUserId, deps, res }) {
     requestDealById,
     insertSale,
     toUnixTs,
+    dealPurchaseUnixTs,
   } = deps
 
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -49,6 +50,10 @@ async function handleSyncSalesStream({ payload, currentUserId, deps, res }) {
           try {
             const fullDeal = await requestDealById(token, userAgent, dealId)
 
+            if (fullDeal && typeof dealPurchaseUnixTs === 'function') {
+              const purchaseTs = dealPurchaseUnixTs(fullDeal, toUnixTs)
+              if (purchaseTs) soldAt = purchaseTs
+            }
             if (!soldAt) {
               soldAt = fullDeal ? toUnixTs(fullDeal.createdAt) || toUnixTs(fullDeal.completedAt) || 0 : 0
             }

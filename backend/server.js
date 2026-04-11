@@ -147,6 +147,7 @@ const {
   getLatestBuyerEmailFromMessages,
   hasSupercellCodeRequestedMessage,
   isEmailValid,
+  pickSupercellCategoryFromItemHints,
 } = require('./src/functions/supercellHelpers')
 
 const { createRequestSupercellCodeForChat } = require('./src/functions/supercellRequestCodeForChat')
@@ -404,6 +405,7 @@ const requestDealById = createRequestDealById({ DEAL_PERSISTED_HASH })
 const { extractItemImageUrl } = require('./src/functions/extractItemImageUrl')
 
 const { toUnixTs } = require('./src/functions/toUnixTs')
+const { dealPurchaseUnixTs } = require('./src/functions/dealPurchaseUnixTs')
 
 /** Продажи со страницы /profile/.../sales — ограничено для быстрой загрузки истории */
 const SALES_HISTORY_LIMIT = 72
@@ -434,9 +436,14 @@ const fetchCompletedDealsFromPlayerok = createFetchCompletedDealsFromPlayerok({
 
 /** Все сообщения чата по chatId или по dealId (если chatId не передан). Подгружаем все страницы. */
 const { createFetchDealChatMessagesFromPlayerok } = require('./src/functions/playerokFetchDealChatMessagesFromPlayerok')
+const { createRequestChatDealIdPost } = require('./src/functions/playerokRequestChatDealIdPost')
+
+const requestChatDealIdPost = createRequestChatDealIdPost()
 
 const fetchDealChatMessagesFromPlayerok = createFetchDealChatMessagesFromPlayerok({
   requestDealById,
+  requestChatById,
+  requestChatDealIdPost,
   requestChatMessagesPage,
   extractItemImageUrl,
   extractSupercellEmailFromFields,
@@ -624,6 +631,7 @@ const server = http.createServer(async (req, res) => {
         requestDealById,
         insertSale,
         toUnixTs,
+        dealPurchaseUnixTs,
         getViewer,
         requestDealsPage,
         getBumpHistory,
@@ -685,9 +693,11 @@ const server = http.createServer(async (req, res) => {
         handlePaidChat,
         requestDealById,
         toUnixTs,
+        dealPurchaseUnixTs,
         insertSale,
         resolveEffectiveProductSettings,
         getSupercellGameByCategory,
+        pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
