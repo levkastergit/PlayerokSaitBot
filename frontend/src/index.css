@@ -565,8 +565,11 @@ body {
 }
 
 @media (max-width: 900px) {
+  /* flex-колонка: иначе у .app-content height: auto и height: 100% у чата не работает —
+     список/сообщения с flex:1 и height:0 схлопываются в ноль */
   .app-main {
-    display: block;
+    display: flex;
+    flex-direction: column;
     padding: 1rem;
   }
 
@@ -615,8 +618,17 @@ body {
 
   .app-content {
     padding-left: 0;
-    height: auto;
     min-height: 0;
+  }
+
+  .app-content--chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* компенсируем часть padding .app-main — шире карточка чата */
+    margin-left: -0.35rem;
+    margin-right: -0.35rem;
   }
 
   .tab-grid {
@@ -629,19 +641,25 @@ body {
 
   .tab-page--chat {
     max-width: none;
+    flex: 1;
+    min-height: 0;
+    height: auto;
   }
 
   .tab-page--chat .tab-grid {
-    height: 100%;
+    flex: 1;
     min-height: 0;
-    display: block;
+    height: auto;
+    display: flex;
+    flex-direction: column;
     gap: 0;
   }
 
   .tab-page--chat .card {
-    height: 100%;
-    max-height: 100%;
+    flex: 1;
     min-height: 0;
+    height: auto;
+    max-height: none;
     border-radius: 12px;
     margin: 0;
   }
@@ -715,6 +733,160 @@ body {
     color: var(--text-main);
     border-color: var(--accent);
     background: var(--accent-soft);
+  }
+
+  /* Экран переписки: меньше «шапки», больше высоты под ленту сообщений */
+  .tab-page--chat .tab-grid--chat-mobile-chat > .card:nth-child(2) {
+    padding: 0.55rem 0.65rem 0.65rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .card-title {
+    margin: 0 0 0.3rem;
+    font-size: 0.92rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-mobile-back-btn {
+    margin-bottom: 0.35rem;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.72rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__info {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__text {
+    gap: 0.05rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__text strong {
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__buyer {
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__center {
+    flex: 1 1 100%;
+    order: 3;
+    text-align: left;
+    justify-content: flex-start;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__deal-btns {
+    justify-content: flex-start;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__deal-btn {
+    padding: 0.22rem 0.5rem;
+    font-size: 0.72rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__order-status {
+    font-size: 0.72rem;
+    padding: 0.22rem 0.55rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__actions {
+    flex: 0 0 auto;
+    margin-left: auto;
+    order: 2;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__hide-btn {
+    padding: 0.22rem 0.55rem;
+    font-size: 0.72rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card {
+    margin-bottom: 0.35rem;
+    padding: 0.35rem 0.45rem;
+    gap: 0.45rem;
+    align-items: flex-start;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card__image-wrap {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card__title {
+    font-size: 0.78rem;
+    line-height: 1.28;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Покупатель уже в шапке — не дублируем в карточке товара */
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card__buyer {
+    display: none;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card__email-box {
+    margin-top: 0.25rem;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.78rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-messages {
+    margin-top: 0.35rem;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-message--buyer {
+    padding-right: 0.35rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-message--seller {
+    padding-left: 0.35rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-message--buyer .chat-message__bubble,
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-message--seller .chat-message__bubble {
+    max-width: 96%;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-commands-buttons {
+    margin-bottom: 0.5rem !important;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-commands-buttons__label {
+    font-size: 0.78rem !important;
+    margin-bottom: 0.35rem !important;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .deal-chat-row__input {
+    margin-top: 0.5rem;
+    gap: 0.45rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .deal-chat-row__input-field {
+    padding: 0.5rem 0.65rem;
+    font-size: 0.88rem;
+  }
+
+  .tab-page--chat .tab-grid--chat-mobile-chat .deal-chat-row__input-btn {
+    padding: 0.5rem 0.85rem;
+    font-size: 0.85rem;
   }
 }
 
@@ -1380,9 +1552,9 @@ body {
 }
 
 .chat-header-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.5rem;
 }
@@ -1391,6 +1563,66 @@ body {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  justify-self: start;
+  min-width: 0;
+}
+
+.chat-header-row__center {
+  justify-self: center;
+  text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.65rem;
+  min-width: 0;
+}
+
+.chat-header-row__deal-btns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+.chat-header-row__deal-btn {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.chat-header-row__deal-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.chat-header-row__deal-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.chat-header-row__deal-btn--refund {
+  border-color: color-mix(in srgb, #dc2626 55%, var(--border-subtle));
+  color: #dc2626;
+  background: transparent;
+}
+
+.chat-header-row__deal-btn--refund:hover:not(:disabled) {
+  border-color: #dc2626;
+  color: #b91c1c;
+  background: color-mix(in srgb, #dc2626 10%, transparent);
+}
+
+.chat-header-row__deal-btn--confirm:hover:not(:disabled) {
+  border-color: var(--accent);
 }
 
 .chat-header-row__thumb {
@@ -1418,6 +1650,25 @@ body {
 .chat-header-row__buyer {
   font-size: 0.9rem;
   color: var(--text-muted);
+}
+
+.chat-header-row__actions {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  flex-shrink: 0;
+}
+
+.chat-header-row__order-status {
+  display: inline-block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .chat-header-row__hide-btn {

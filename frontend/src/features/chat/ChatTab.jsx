@@ -7,6 +7,8 @@ import {
   unhideChat,
   loadCategoryCommandsList,
   requestSupercellCode,
+  cancelDeal,
+  confirmDeal,
 } from '../../services/playerokApi'
 
 export function ChatTab({ token, moduleSupercellEnabled = false }) {
@@ -56,6 +58,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const [loadingCommands, setLoadingCommands] = useState(false)
   const [requestCodeModal, setRequestCodeModal] = useState({ open: false, chatId: null })
   const [requestCodeState, setRequestCodeState] = useState({ loading: false, error: null })
+  const [dealActionModal, setDealActionModal] = useState({ open: false, kind: null, chatId: null })
+  const [dealActionState, setDealActionState] = useState({ loading: false, error: null })
   const [isMobileChatLayout, setIsMobileChatLayout] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(max-width: 900px)').matches
@@ -990,12 +994,23 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     })
   }, [chats, visibleChats, selectedChatId, selectedChat, chatDebugLog, summarizeChatForLog])
 
+  const getOrderStatusLabel = (status) => {
+    const s = String(status || '').toUpperCase()
+    if (!s) return ''
+    if (s === 'PAID') return 'Выполните заказ'
+    if (s === 'SENT') return 'Ожидает подтверждения'
+    if (s === 'CONFIRMED') return 'Подтверждено'
+    if (s === 'ROLLED_BACK') return 'Возврат'
+    if (s === 'PENDING') return 'Ожидание'
+    return s.replace(/_/g, ' ')
+  }
+
   const getStatusIcon = (status) => {
     const s = String(status || '').toUpperCase()
     if (!s) return { icon: '—', label: '—', tone: 'muted' }
-    if (s === 'PAID') return { icon: '🛠️', label: 'Выполнение', tone: 'work' }
-    if (s === 'SENT') return { icon: '⏳', label: 'Отправлено', tone: 'sent' }
-    if (s === 'CONFIRMED') return { icon: '✓', label: 'Завершено', tone: 'success' }
+    if (s === 'PAID') return { icon: '🛠️', label: 'Выполните заказ', tone: 'work' }
+    if (s === 'SENT') return { icon: '⏳', label: 'Ожидает подтверждения', tone: 'sent' }
+    if (s === 'CONFIRMED') return { icon: '✓', label: 'Подтверждено', tone: 'success' }
     if (s === 'ROLLED_BACK') return { icon: '↩', label: 'Возврат', tone: 'rollback' }
     if (s === 'PENDING') return { icon: '⏳', label: 'Ожидание', tone: 'sent' }
     return { icon: '•', label: s, tone: 'muted' }
@@ -1151,6 +1166,67 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     } catch (err) { }
   }
 
+  const closeDealActionModal = () => {
+    setDealActionModal({ open: false, kind: null, chatId: null })
+    setDealActionState({ loading: false, error: null })
+  }
+
+  const openDealActionModal = (kind) => {
+    if (!token || !selectedChat) return
+    setDealActionState({ loading: false, error: null })
+    setDealActionModal({ open: true, kind, chatId: selectedChat.id })
+  }
+
+  const handleDealActionConfirm = async () => {
+    const { kind, chatId } = dealActionModal
+    const chat = chats.find((c) => c.id === chatId)
+    if (!token || !kind) return
+    if (!chat?.dealId) {
+      setDealActionState({
+        loading: false,
+        error: 'У этого чата нет ID сделки — запрос на Playerok отправить нельзя.',
+      })
+      return
+    }
+    setDealActionState({ loading: true, error: null })
+    try {
+      if (kind === 'refund') {
+        await cancelDeal(token, chat.dealId)
+      } else {
+        await confirmDeal(token, chat.dealId)
+      }
+      closeDealActionModal()
+      if (selectedChatId === chatId) {
+        void loadMessagesForChat(chat)
+      }
+      try {
+        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        setChats((prev) => {
+          const prevById = new Map((prev || []).map((c) => [c.id, c]))
+          return (list || []).map((incoming) => {
+            const prevChat = prevById.get(incoming.id) || null
+            return {
+              ...incoming,
+              unreadCount: resolveUnreadCount(prevChat, incoming, selectedChatIdRef.current),
+            }
+          })
+        })
+        setPageInfo(info || { hasNextPage: false, endCursor: null })
+      } catch (_e) {
+        // список обновится по таймеру
+      }
+    } catch (err) {
+      setDealActionState({
+        loading: false,
+        error: err instanceof Error ? err.message : 'Не удалось выполнить действие',
+      })
+    }
+  }
+
+  const selectedChatOrderStatusLabel = selectedChat
+    ? getOrderStatusLabel(getDerivedChatStatus(selectedChat))
+    : ''
+
   return (
     <div className="tab-page tab-page--chat">
       <div className={`tab-grid ${isMobileChatLayout ? `tab-grid--chat-mobile-${mobileChatView}` : ''}`}>
@@ -1201,10 +1277,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                       : 'chat-filter-toggle__btn'
                   }
                   onClick={() => setChatFilter('hide-completed')}
-                  aria-label="Скрыть выполненные чаты"
-                  title="Скрыть выполненные"
+                  aria-label="Только чаты в работе (без завершённых)"
+                  title="Только в работе"
                 >
-                  <span aria-hidden="true">✓</span>
+                  <span aria-hidden="true">🛠️</span>
                 </button>
               </div>
               <div
@@ -1344,13 +1420,40 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                     ) : null}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="chat-header-row__hide-btn"
-                  onClick={() => toggleHiddenForChat(selectedChat)}
-                >
-                  {selectedChat.isHidden ? 'Показать чат' : 'Скрыть чат'}
-                </button>
+                <div className="chat-header-row__center">
+                  <div className="chat-header-row__deal-btns" aria-label="Быстрые действия со сделкой">
+                    <button
+                      type="button"
+                      className="chat-header-row__deal-btn chat-header-row__deal-btn--refund"
+                      disabled={!token}
+                      title="Оформить возврат на Playerok"
+                      onClick={() => openDealActionModal('refund')}
+                    >
+                      Возврат
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-header-row__deal-btn chat-header-row__deal-btn--confirm"
+                      disabled={!token}
+                      title="Подтвердить сделку на Playerok"
+                      onClick={() => openDealActionModal('confirm')}
+                    >
+                      Подтвердить сделку
+                    </button>
+                  </div>
+                  {selectedChatOrderStatusLabel ? (
+                    <span className="chat-header-row__order-status">Статус: {selectedChatOrderStatusLabel}</span>
+                  ) : null}
+                </div>
+                <div className="chat-header-row__actions">
+                  <button
+                    type="button"
+                    className="chat-header-row__hide-btn"
+                    onClick={() => toggleHiddenForChat(selectedChat)}
+                  >
+                    {selectedChat.isHidden ? 'Показать чат' : 'Скрыть чат'}
+                  </button>
+                </div>
               </div>
               <div className="chat-item-card">
                 <div className="chat-item-card__image-wrap">
@@ -1730,6 +1833,93 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                   disabled={requestCodeState.loading || !selectedChatEmailDraftIsValid}
                 >
                   {requestCodeState.loading ? 'Запрашиваем код...' : 'Запросить код'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {dealActionModal.open && dealActionModal.kind && dealActionModal.chatId && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!dealActionState.loading) closeDealActionModal()
+          }}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              dealActionModal.kind === 'refund'
+                ? 'Подтверждение возврата'
+                : 'Подтверждение сделки'
+            }
+          >
+            <div className="modal__header">
+              <h3 className="modal__title">
+                {dealActionModal.kind === 'refund'
+                  ? 'Оформить возврат?'
+                  : 'Подтвердить сделку?'}
+              </h3>
+              <button
+                type="button"
+                className="modal__close"
+                onClick={closeDealActionModal}
+                disabled={dealActionState.loading}
+                aria-label="Закрыть"
+              >
+                x
+              </button>
+            </div>
+            <div className="modal__body">
+              <p className="card-text" style={{ marginTop: 0 }}>
+                {dealActionModal.kind === 'refund'
+                  ? 'Вы уверены, что хотите оформить возврат товара? Сделка на Playerok будет отменена.'
+                  : 'Вы уверены, что хотите подтвердить сделку? На Playerok будет зафиксировано, что товар отправлен покупателю.'}
+              </p>
+              {dealActionState.error && (
+                <p className="card-text card-text--error">{dealActionState.error}</p>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  justifyContent: 'flex-end',
+                  marginTop: 16,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  className="lot-settings-btn lot-settings-btn--secondary"
+                  onClick={closeDealActionModal}
+                  disabled={dealActionState.loading}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className={
+                    dealActionModal.kind === 'refund'
+                      ? 'lot-settings-btn'
+                      : 'deal-chat-row__command-btn'
+                  }
+                  style={
+                    dealActionModal.kind === 'refund'
+                      ? { backgroundColor: '#dc2626', borderColor: '#dc2626', color: '#fff' }
+                      : undefined
+                  }
+                  onClick={handleDealActionConfirm}
+                  disabled={dealActionState.loading}
+                >
+                  {dealActionState.loading
+                    ? 'Выполняем…'
+                    : dealActionModal.kind === 'refund'
+                      ? 'Да, оформить возврат'
+                      : 'Да, подтвердить'}
                 </button>
               </div>
             </div>
