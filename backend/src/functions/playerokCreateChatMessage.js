@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createCreateChatMessage() {
   return function createChatMessage(token, userAgent, chatId, text, opts = {}) {
@@ -59,7 +60,7 @@ function createCreateChatMessage() {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

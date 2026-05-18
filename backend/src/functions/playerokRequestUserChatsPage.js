@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PERSISTED_HASH }) {
   if (!AUTOLIST_MAX_CHATS_TO_SCAN) throw new Error('AUTOLIST_MAX_CHATS_TO_SCAN is required')
@@ -54,7 +55,7 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

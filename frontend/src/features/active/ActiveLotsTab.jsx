@@ -58,7 +58,12 @@ const FeatureFilterIcon = ({ id }) => {
   }
 }
 
-export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots = null }) {
+export function ActiveLotsTab({
+  token,
+  lots = [],
+  loadingLots = false,
+  errorLots = null,
+}) {
   const navigate = useNavigate()
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set())
   const [soloCategory, setSoloCategory] = useState(null)
@@ -67,6 +72,7 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
   const clickTimeoutRef = useRef(null)
 
   const hasToken = Boolean(token)
+  const hasDdosError = /ddos-guard|js-challenge/i.test(String(errorLots || ''))
   const featureFilters = [
     { id: 'all', label: 'Все', iconId: 'active', iconClass: 'tab-button__icon--active' },
     { id: 'autodelivery', label: 'Автовыдача', iconId: 'auto-delivery', iconClass: 'tab-button__icon--auto-delivery' },
@@ -186,9 +192,22 @@ export function ActiveLotsTab({ token, lots = [], loadingLots = false, errorLots
           )}
 
           {hasToken && !loadingLots && errorLots && (
-            <p className="card-text card-text--error">
-              Ошибка при загрузке лотов: {errorLots}
-            </p>
+            <>
+              <p className="card-text card-text--error">
+                Ошибка при загрузке лотов: {errorLots}
+              </p>
+              {hasDdosError && (
+                <div className="ddos-guard-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => navigate('/ddos')}
+                  >
+                    Открыть вкладку Ddos
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {hasToken && !loadingLots && !errorLots && lots.length === 0 && (

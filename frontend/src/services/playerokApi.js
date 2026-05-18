@@ -38,6 +38,8 @@ const BACKEND_TRANSACTIONS_URL = `${BACKEND_ORIGIN}/api/playerok/transactions`
 const BACKEND_VERIFIED_CARDS_URL = `${BACKEND_ORIGIN}/api/playerok/verified-cards`
 const BACKEND_REQUEST_WITHDRAWAL_URL = `${BACKEND_ORIGIN}/api/playerok/request-withdrawal`
 const BACKEND_REMOVE_TRANSACTION_URL = `${BACKEND_ORIGIN}/api/playerok/remove-transaction`
+const BACKEND_DDOS_COOKIE_URL = `${BACKEND_ORIGIN}/api/playerok/ddos-cookie`
+const BACKEND_DDOS_CHECK_URL = `${BACKEND_ORIGIN}/api/playerok/ddos-check`
 
 const FETCH_CREDENTIALS = { credentials: 'include' }
 
@@ -92,15 +94,21 @@ export async function fetchActiveLots(token) {
 
   if (!response.ok) {
     let message = `Ошибка загрузки лотов: ${response.status}`
+    let challengeHtml = null
     try {
       const errData = await response.json()
       if (errData && errData.error) {
         message = errData.error
       }
+      if (errData && typeof errData.challengeHtml === 'string' && errData.challengeHtml.trim()) {
+        challengeHtml = errData.challengeHtml
+      }
     } catch {
       // ignore
     }
-    throw new Error(message)
+    const err = new Error(message)
+    if (challengeHtml) err.challengeHtml = challengeHtml
+    throw err
   }
 
   const data = await response.json()
@@ -940,6 +948,44 @@ export async function removeTransaction(token, transactionId) {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка отмены транзакции: ${response.status}`)
+  return data
+}
+
+export async function setPlayerokDdosCookie(cookie) {
+  const response = await trackedFetch(BACKEND_DDOS_COOKIE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookie: String(cookie || '') }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка сохранения cookie: ${response.status}`)
+  return data
+}
+
+export async function getPlayerokDdosCookieStatus() {
+  const response = await trackedFetch(BACKEND_DDOS_COOKIE_URL, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка статуса cookie: ${response.status}`)
+  return data
+}
+
+export async function checkPlayerokDdosAccess(token) {
+  const response = await trackedFetch(BACKEND_DDOS_CHECK_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const err = new Error(data.error || `Ошибка проверки доступа: ${response.status}`)
+    err.isDdosGuard = Boolean(data && data.isDdosGuard)
+    throw err
+  }
   return data
 }
 

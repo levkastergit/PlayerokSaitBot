@@ -151,10 +151,10 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
     console.groupCollapsed(`${AUTOLOG} Завершённые лоты (${lots.length}) — разбор автовыставления`)
     console.info(
       `${AUTOLOG} На сервере фоновый autolist-tick каждые ~15 с вызывается только для пользователей с модулем Supercell. ` +
-        'Если модуля нет, автосрабатывание идёт через свежую оплату в чате, разовый запрос при открытии этой вкладки или вручную. ' +
-        'Периодический скан последних завершённых товаров на бэкенде — не чаще чем раз в ~2 мин. ' +
-        'В списке завершённых есть и SOLD, и EXPIRED: автовыставление обрабатывает только SOLD (до 15 последних продаж). ' +
-        'Смотрите поле playerokStatus у каждого лота.'
+      'Если модуля нет, автосрабатывание идёт через свежую оплату в чате, разовый запрос при открытии этой вкладки или вручную. ' +
+      'Периодический скан последних завершённых товаров на бэкенде — не чаще чем раз в ~2 мин. ' +
+      'В списке завершённых есть и SOLD, и EXPIRED: автовыставление обрабатывает только SOLD (до 15 последних продаж). ' +
+      'Смотрите поле playerokStatus у каждого лота.'
     )
     for (const lot of lots) {
       const s = resolveSettingsForLot(lot)
@@ -181,19 +181,19 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
   useEffect(() => {
     if (!token || lots.length === 0) return
     let alive = true
-    ;(async () => {
-      try {
-        console.log(`${AUTOLOG} Запуск autolist-tick при открытии вкладки «Завершённые» (чтобы сработало без фона Supercell)…`)
-        await autolistTick(token)
-      } catch (err) {
-        if (alive) {
-          console.warn(
-            `${AUTOLOG} autolist-tick при открытии вкладки не удался:`,
-            err instanceof Error ? err.message : err
-          )
+      ; (async () => {
+        try {
+          console.log(`${AUTOLOG} Запуск autolist-tick при открытии вкладки «Завершённые» (чтобы сработало без фона Supercell)…`)
+          await autolistTick(token)
+        } catch (err) {
+          if (alive) {
+            console.warn(
+              `${AUTOLOG} autolist-tick при открытии вкладки не удался:`,
+              err instanceof Error ? err.message : err
+            )
+          }
         }
-      }
-    })()
+      })()
     return () => {
       alive = false
     }

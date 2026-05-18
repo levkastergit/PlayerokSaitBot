@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
   if (!VIEWER_QUERY) throw new Error('VIEWER_QUERY is required')
@@ -38,18 +39,21 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
           if (resp.statusCode !== 200) {
-            const preview = String(data || '').replace(/\s+/g, ' ').slice(0, 400)
+            const responseBody = String(data || '')
+            const preview = responseBody.replace(/\s+/g, ' ').slice(0, 400)
             const err = new Error(
               `Playerok viewer: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')
             )
             err.statusCode = resp.statusCode
+            // Сохраняем тело ответа для UI-диагностики/рендера challenge-страниц.
+            err.responseBody = responseBody.slice(0, 200000)
             return reject(err)
           }
 

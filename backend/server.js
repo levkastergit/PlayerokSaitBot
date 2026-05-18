@@ -12,6 +12,85 @@ const { URLSearchParams } = require('url')
 const { execFile, spawnSync } = require('child_process')
 
 const PORT = parseInt(process.env.PORT, 10) || 3000
+let playerokDdosCookie = String(process.env.PLAYEROK_DDOS_COOKIE || '').trim()
+
+function getPlayerokDdosCookie() {
+  return playerokDdosCookie
+}
+
+function setPlayerokDdosCookie(nextValue) {
+  playerokDdosCookie = String(nextValue || '').trim()
+}
+
+;(function patchHttpsRequestForPlayerokCookie() {
+  const originalRequest = https.request.bind(https)
+
+  function appendCookie(headers) {
+    const extraCookie = getPlayerokDdosCookie()
+    if (!extraCookie) return String((headers && headers.cookie) || '').trim()
+    const current = String((headers && headers.cookie) || '').trim()
+    if (!current) return extraCookie
+    if (current.includes(extraCookie)) return current
+    return `${current}; ${extraCookie}`
+  }
+
+  function shouldPatchHost(hostname) {
+    const host = String(hostname || '').toLowerCase()
+    return host === 'playerok.com' || host.endsWith('.playerok.com')
+  }
+
+  function patchOptions(options) {
+    if (!options || typeof options !== 'object') return options
+    if (!shouldPatchHost(options.hostname || options.host)) return options
+    const headers = Object.assign({}, options.headers || {})
+    const mergedCookie = appendCookie(headers)
+    if (mergedCookie) headers.cookie = mergedCookie
+    return Object.assign({}, options, { headers })
+  }
+
+  https.request = function patchedHttpsRequest(input, options, callback) {
+    // signature: request(options[, cb])
+    if (input && typeof input === 'object' && !Array.isArray(input) && !(input instanceof URL)) {
+      const patchedInput = patchOptions(input)
+      return originalRequest(patchedInput, options)
+    }
+    // signature: request(url[, options][, cb])
+    if (typeof input === 'string' || input instanceof URL) {
+      const patchedOptions = patchOptions(options)
+      return originalRequest(input, patchedOptions, callback)
+    }
+    return originalRequest(input, options, callback)
+  }
+
+  if (getPlayerokDdosCookie()) {
+    console.log('[playerok] включён PLAYEROK_DDOS_COOKIE: доп. cookie будет добавлен к запросам playerok.com')
+  }
+})()
+
+;(function warnPlayerokOutboundIpIfUnavailable() {
+  const ip = String(process.env.PLAYEROK_OUTBOUND_IP || '').trim()
+  if (!ip) return
+  const { networkInterfaces } = require('os')
+  const v4 = (f) => f === 'IPv4' || f === 4
+  let found = false
+  for (const list of Object.values(networkInterfaces())) {
+    if (!list) continue
+    for (const a of list) {
+      if (a && !a.internal && v4(a.family) && a.address === ip) {
+        found = true
+        break
+      }
+    }
+    if (found) break
+  }
+  if (!found) {
+    console.warn(
+      `[playerok] PLAYEROK_OUTBOUND_IP=${ip}: этого IPv4 нет в сетевом стеке процесса (см. os.networkInterfaces). ` +
+        'Частый случай — Docker без network_mode: host. Запросы к Playerok дадут bind EADDRNOTAVAIL. ' +
+        'Либо включите host network для контейнера, либо уберите PLAYEROK_OUTBOUND_IP.'
+    )
+  }
+})()
 
 // Вход только через регистрацию на сайте (SQLite `users`). Учётные данные в .env не задаются.
 
@@ -612,6 +691,61 @@ const server = http.createServer(async (req, res) => {
       },
     })
     if (handled) return
+  }
+
+  if (pathname === '/api/playerok/ddos-cookie') {
+    if (req.method === 'GET') {
+      const value = getPlayerokDdosCookie()
+      return sendJson(res, 200, {
+        ok: true,
+        configured: Boolean(value),
+        length: value.length,
+      })
+    }
+    if (req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req, { fallback: {} })
+        const nextCookie = String(body && body.cookie ? body.cookie : '').trim()
+        setPlayerokDdosCookie(nextCookie)
+        return sendJson(res, 200, {
+          ok: true,
+          configured: Boolean(nextCookie),
+          length: nextCookie.length,
+        })
+      } catch (err) {
+        const code = Number(err && err.statusCode) || 400
+        return sendJson(res, code, { error: err && err.message ? err.message : 'Invalid request body' })
+      }
+    }
+  }
+  if (pathname === '/api/playerok/ddos-check' && req.method === 'POST') {
+    try {
+      const payload = await readJsonBody(req, { fallback: {} })
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
+      const userAgent = payload && payload.userAgent
+      if (!token) {
+        return sendJson(res, 400, { ok: false, error: 'Token is required' })
+      }
+      const viewer = await getViewer(token, userAgent)
+      return sendJson(res, 200, {
+        ok: true,
+        viewer: {
+          id: viewer.id,
+          username: viewer.username,
+          email: viewer.email || null,
+        },
+      })
+    } catch (err) {
+      const message = err && err.message ? String(err.message) : 'Playerok check failed'
+      const statusCode = Number(err && err.statusCode)
+      const httpCode = statusCode >= 400 && statusCode < 600 ? statusCode : 500
+      const isDdosGuard = /ddos-guard|js-challenge/i.test(message)
+      return sendJson(res, httpCode, {
+        ok: false,
+        error: message,
+        isDdosGuard,
+      })
+    }
   }
 
   // Finance endpoints dispatcher (sales/bump/logs/profit)

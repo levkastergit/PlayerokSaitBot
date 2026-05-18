@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
   if (!VERIFIED_CARDS_PERSISTED_HASH) throw new Error('VERIFIED_CARDS_PERSISTED_HASH is required')
@@ -47,6 +48,7 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
               userAgent ||
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
           },
+          ...playerokHttpsExtraOptions(),
         },
         (resp) => {
           let data = ''

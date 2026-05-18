@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createUpdateDealStatus() {
   return function updateDealStatus(token, userAgent, dealId, newStatus) {
@@ -51,7 +52,7 @@ function createUpdateDealStatus() {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH }) {
   if (!ITEM_PRIORITY_STATUSES_PERSISTED_HASH) {
@@ -50,7 +51,7 @@ function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

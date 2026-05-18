@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
   if (!TRANSACTIONS_PERSISTED_HASH) throw new Error('TRANSACTIONS_PERSISTED_HASH is required')
@@ -56,6 +57,7 @@ function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
               userAgent ||
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
           },
+          ...playerokHttpsExtraOptions(),
         },
         (resp) => {
           let data = ''

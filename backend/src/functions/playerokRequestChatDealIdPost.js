@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function postChatDealBootstrap(token, userAgent, chatId, idType) {
   const referer = 'https://playerok.com/chats'
@@ -43,7 +44,7 @@ function postChatDealBootstrap(token, userAgent, chatId, idType) {
       },
     }
 
-    const req = https.request(options, (resp) => {
+    const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
       let data = ''
       resp.on('data', (chunk) => {
         data += chunk

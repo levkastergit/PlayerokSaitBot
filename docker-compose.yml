@@ -1,14 +1,38 @@
+# app в network_mode: host — иначе PLAYEROK_OUTBOUND_IP недоступен для bind (EADDRNOTAVAIL).
+# nginx в bridge ходит на бэкенд через host.docker.internal (см. extra_hosts).
+
 services:
   app:
-    image: playeroksait:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
+    image: ${APP_IMAGE:-levkaster/saitplayerok}
+    # Локальная сборка: закомментируйте image и раскомментируйте build.
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    network_mode: host
     env_file:
       - ./backend/.env
     volumes:
       - ./backend/data:/app/backend/data
     restart: unless-stopped
 
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - app
+    env_file:
+      - ./.env
+    volumes:
+      - certbot-conf:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    restart: unless-stopped
+
+volumes:
+  certbot-conf:
+  certbot-www:

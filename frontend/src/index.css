@@ -387,6 +387,10 @@ body {
   color: #06b6d4;
 }
 
+.tab-button__icon--group {
+  color: #a855f7;
+}
+
 .tab-button__icon--chat {
   color: #ec4899;
 }
@@ -433,6 +437,10 @@ body {
 
 [data-theme="dark"] .tab-button__icon--auto-delivery {
   color: #22d3ee;
+}
+
+[data-theme="dark"] .tab-button__icon--group {
+  color: #c084fc;
 }
 
 [data-theme="dark"] .tab-button__icon--chat {
@@ -3640,6 +3648,45 @@ body {
   font-size: 0.95rem;
 }
 
+.group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.group-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: var(--bg-panel);
+}
+
+.group-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.group-card__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.group-card__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .commands-list {
   display: flex;
   flex-direction: column;
@@ -3684,4 +3731,38 @@ body {
 
 .commands-list__delete:hover {
   background: rgba(185, 28, 28, 0.1);
+}
+
+.ddos-guard-frame {
+  width: 100%;
+  min-height: 620px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  margin-top: 0.9rem;
+  background: #fff;
+}
+
+.ddos-guard-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.ddos-instructions {
+  margin: 0.4rem 0 0.8rem;
+  padding-left: 1.15rem;
+  color: var(--text-main);
+}
+
+.ddos-instructions li + li {
+  margin-top: 0.28rem;
+}
+
+.ddos-cookie-textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: 0.5rem;
 }

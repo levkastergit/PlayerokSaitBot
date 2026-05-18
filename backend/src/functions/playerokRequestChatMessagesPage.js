@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 const { extractItemImageUrl } = require('./extractItemImageUrl')
 
 function dealCategoryHintFromNode(deal) {
@@ -128,7 +129,7 @@ function createRequestChatMessagesPage() {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

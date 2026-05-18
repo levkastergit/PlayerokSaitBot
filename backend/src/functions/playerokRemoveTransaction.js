@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createRemoveTransaction() {
   return function removeTransaction(token, userAgent, transactionId) {
@@ -49,6 +50,7 @@ function createRemoveTransaction() {
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
             'Content-Length': Buffer.byteLength(body, 'utf8'),
           },
+          ...playerokHttpsExtraOptions(),
         },
         (resp) => {
           let data = ''

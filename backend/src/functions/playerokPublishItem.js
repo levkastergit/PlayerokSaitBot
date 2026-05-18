@@ -2,6 +2,7 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   if (!AUTOBUMP_PRIORITY_STATUS_ID) {
@@ -78,7 +79,7 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

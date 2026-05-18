@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
@@ -62,7 +63,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'user-agent': ua,
           },
         }
-        const req = https.request(options, (resp) => {
+        const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
           let data = ''
           resp.on('data', (chunk) => {
             data += chunk
@@ -106,7 +107,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'Content-Length': Buffer.byteLength(body, 'utf8'),
           },
         }
-        const req = https.request(options, (resp) => {
+        const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
           let data = ''
           resp.on('data', (chunk) => {
             data += chunk

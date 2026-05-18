@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createRequestItemById({ ITEM_PERSISTED_HASH }) {
   if (!ITEM_PERSISTED_HASH) throw new Error('ITEM_PERSISTED_HASH is required')
@@ -47,7 +48,7 @@ function createRequestItemById({ ITEM_PERSISTED_HASH }) {
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

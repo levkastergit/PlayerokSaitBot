@@ -18,11 +18,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [toast, setToast] = useState(null)
   const [codesModalOpen, setCodesModalOpen] = useState(false)
   const [newCodeInput, setNewCodeInput] = useState('')
-  const [settingsLabelInput, setSettingsLabelInput] = useState('')
   const [settingsLabel, setSettingsLabel] = useState('')
   const [priorityStatuses, setPriorityStatuses] = useState([])
   const [loadingPriorityStatuses, setLoadingPriorityStatuses] = useState(false)
   const [priorityStatusesError, setPriorityStatusesError] = useState(null)
+  const [groupSuggestions, setGroupSuggestions] = useState([])
   const [bumpInFlight, setBumpInFlight] = useState(false)
   const [bumpCooldownUntil, setBumpCooldownUntil] = useState(0)
   const [nowTs, setNowTs] = useState(() => Date.now())
@@ -35,7 +35,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const splitSettingsForSave = (allSettings, label) => {
     const full = allSettings && typeof allSettings === 'object' ? allSettings : {}
     const trimmedLabel = String(label || '').trim()
-    
+
     // Убираем priorityStatusId из autobump и autolist перед сохранением - всегда используем актуальные данные
     const cleaned = { ...full }
     if (cleaned.autobump && typeof cleaned.autobump === 'object') {
@@ -46,7 +46,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       const { priorityStatusId, ...autolistWithoutPriority } = cleaned.autolist
       cleaned.autolist = autolistWithoutPriority
     }
-    
+
     const groupSettings = trimmedLabel
       ? { ...cleaned, settingsLabel: trimmedLabel }
       : { ...cleaned, settingsLabel: '' }
@@ -55,7 +55,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     delete groupSettings.autobump
 
     const itemSettings = trimmedLabel
-      ? { settingsLabel: trimmedLabel, autobump: cleaned.autobump || { enabled: false, schedule: [] } }
+      ? {
+          settingsLabel: trimmedLabel,
+          groupName: typeof cleaned.groupName === 'string' ? cleaned.groupName : '',
+          autobump: cleaned.autobump || { enabled: false, schedule: [] },
+        }
       : { ...cleaned, settingsLabel: '' }
 
     return { groupSettings, itemSettings, trimmedLabel }
@@ -72,6 +76,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const defaultProductSettings = () => ({
     cost: 0,
     settingsLabel: '',
+    groupName: '',
     autodelivery: {
       enabled: false,
       codes: [],
@@ -93,6 +98,27 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       priorityStatusId: null,
     },
   })
+
+  useEffect(() => {
+    if (!token) {
+      setGroupSuggestions([])
+      return
+    }
+    let cancelled = false
+    loadProductSettingsList(token)
+      .then((data) => {
+        if (cancelled) return
+        const list = Array.isArray(data?.list) ? data.list : []
+        const groups = new Set()
+        list.forEach((entry) => {
+          const groupFromSettings = String(entry?.settings?.groupName || '').trim()
+          if (groupFromSettings) groups.add(groupFromSettings)
+        })
+        setGroupSuggestions([...groups].sort((a, b) => a.localeCompare(b, 'ru')))
+      })
+      .catch(() => { })
+    return () => { cancelled = true }
+  }, [token])
 
   useEffect(() => {
     if (!token || !lot?.id) {
@@ -152,6 +178,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         ...base,
         ...loaded,
         cost: typeof loaded.cost === 'number' ? loaded.cost : (parseFloat(loaded.cost) || 0),
+        groupName: typeof loaded.groupName === 'string' ? loaded.groupName : '',
         autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
@@ -182,152 +209,51 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       }
     }
 
-    ;(async () => {
-      try {
-        // 1) Сначала читаем настройки привязки для конкретного лота (по game::title)
-        const baseData = await loadProductSettings(token, baseProductKey)
-        if (cancelled) return
-
-        const baseLoaded = baseData?.settings && typeof baseData.settings === 'object' ? baseData.settings : null
-        const baseLinkedLabel = (baseLoaded && typeof baseLoaded.settingsLabel === 'string' ? baseLoaded.settingsLabel : '') || ''
-        const trimmedLinked = baseLinkedLabel.trim()
-
-        // Если товар уже привязан к метке — всегда работаем по метке.
-        if (trimmedLinked) {
-          const gk = getGroupSettingsKey(trimmedLinked)
-          const groupData = await loadProductSettings(token, gk)
+      ; (async () => {
+        try {
+          // 1) Сначала читаем настройки привязки для конкретного лота (по game::title)
+          const baseData = await loadProductSettings(token, baseProductKey)
           if (cancelled) return
-          const groupLoaded = groupData?.settings && typeof groupData.settings === 'object' ? groupData.settings : null
-          // ВАЖНО: автоподнятие всегда индивидуальное для товара (из baseLoaded), даже если есть метка.
-          const merged = {
-            ...(groupLoaded || {}),
-            settingsLabel: trimmedLinked,
-            autobump: baseLoaded?.autobump || null,
-          }
-          setSettingsLabel(trimmedLinked)
-          setSettingsLabelInput(trimmedLinked)
-          setProductSettings(
-            normalizeLoadedSettings(merged)
-          )
-          setLoadingSettings(false)
-          return
-        }
 
-        // Метки нет — используем собственные настройки товара.
-        setProductSettings(normalizeLoadedSettings(baseLoaded))
-        setLoadingSettings(false)
-      } catch (err) {
-        if (cancelled) return
-        setSettingsError(err instanceof Error ? err.message : 'Ошибка загрузки')
-        setProductSettings(defaultProductSettings())
-        setLoadingSettings(false)
-      }
-    })()
+          const baseLoaded = baseData?.settings && typeof baseData.settings === 'object' ? baseData.settings : null
+          const baseLinkedLabel = (baseLoaded && typeof baseLoaded.settingsLabel === 'string' ? baseLoaded.settingsLabel : '') || ''
+          const trimmedLinked = baseLinkedLabel.trim()
+
+          // Если товар уже привязан к метке — всегда работаем по метке.
+          if (trimmedLinked) {
+            const gk = getGroupSettingsKey(trimmedLinked)
+            const groupData = await loadProductSettings(token, gk)
+            if (cancelled) return
+            const groupLoaded = groupData?.settings && typeof groupData.settings === 'object' ? groupData.settings : null
+            // ВАЖНО: автоподнятие всегда индивидуальное для товара (из baseLoaded), даже если есть метка.
+            const merged = {
+              ...(groupLoaded || {}),
+              settingsLabel: trimmedLinked,
+              groupName: typeof baseLoaded?.groupName === 'string'
+                ? baseLoaded.groupName
+                : (typeof groupLoaded?.groupName === 'string' ? groupLoaded.groupName : ''),
+              autobump: baseLoaded?.autobump || null,
+            }
+            setSettingsLabel(trimmedLinked)
+            setProductSettings(
+              normalizeLoadedSettings(merged)
+            )
+            setLoadingSettings(false)
+            return
+          }
+
+          // Метки нет — используем собственные настройки товара.
+          setProductSettings(normalizeLoadedSettings(baseLoaded))
+          setLoadingSettings(false)
+        } catch (err) {
+          if (cancelled) return
+          setSettingsError(err instanceof Error ? err.message : 'Ошибка загрузки')
+          setProductSettings(defaultProductSettings())
+          setLoadingSettings(false)
+        }
+      })()
     return () => { cancelled = true }
   }, [token, baseProductKey, settingsLabel])
-
-  const handleApplyLabel = () => {
-    const nextLabel = (settingsLabelInput || '').trim()
-    setSettingsLabel(nextLabel)
-
-    if (!token || !baseProductKey) return
-
-    // 1) Если метка очищена — возвращаемся к индивидуальным настройкам товара.
-    if (!nextLabel) {
-      // Сбрасываем ссылку на метку у товара, но не трогаем существующую групповую запись.
-      saveProductSettings(token, baseProductKey, {
-        ...(productSettings && typeof productSettings === 'object' ? productSettings : {}),
-        settingsLabel: '',
-      }).catch(() => { })
-      return
-    }
-
-    // 2) Если метка указана — сначала пробуем загрузить уже существующие настройки метки.
-    const gk = getGroupSettingsKey(nextLabel)
-    ;(async () => {
-      try {
-        const groupData = await loadProductSettings(token, gk)
-        const existing =
-          groupData && groupData.settings && typeof groupData.settings === 'object'
-            ? groupData.settings
-            : null
-
-        let effective
-        if (existing) {
-          // Метка уже существует — просто подхватываем её настройки.
-          effective = { ...existing, settingsLabel: nextLabel }
-        } else {
-          // Метка новая — создаём её на основе текущих настроек товара (или дефолтных).
-          const base =
-            productSettings && typeof productSettings === 'object'
-              ? productSettings
-              : defaultProductSettings()
-          effective = { ...base, settingsLabel: nextLabel }
-          // В метку не пишем autobump — он индивидуальный.
-          const { groupSettings } = splitSettingsForSave(effective, nextLabel)
-          await saveProductSettings(token, gk, groupSettings)
-        }
-
-        // У товара сохраняем ссылку на метку + его индивидуальный autobump.
-        const { itemSettings } = splitSettingsForSave(productSettings || defaultProductSettings(), nextLabel)
-        await saveProductSettings(token, baseProductKey, itemSettings).catch(() => {})
-
-        // Переключаем UI на настройки метки.
-        setProductSettings(
-          // Используем тот же нормализатор, что и при обычной загрузке.
-          ((loadedRaw) => {
-            const base = defaultProductSettings()
-            const loaded = loadedRaw && typeof loadedRaw === 'object' ? loadedRaw : {}
-            const loadedAutobump = loaded.autobump || {}
-            const loadedEmailValidation = loaded.emailValidation || {}
-            return {
-              ...base,
-              ...loaded,
-              cost:
-                typeof loaded.cost === 'number'
-                  ? loaded.cost
-                  : (parseFloat(loaded.cost) || 0),
-              autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
-              autolist: { ...base.autolist, ...(loaded.autolist || {}) },
-              automessage: (() => {
-                const loadedAm = loaded.automessage || {}
-                const raw = loadedAm.messages
-                const messages = Array.isArray(raw)
-                  ? raw.filter((m) => typeof m === 'string')
-                  : typeof raw === 'string' && raw.trim()
-                    ? raw.split('\n').map((s) => s.trim()).filter(Boolean)
-                    : []
-                return { ...base.automessage, ...loadedAm, messages }
-              })(),
-              emailValidation: {
-                ...base.emailValidation,
-                ...loadedEmailValidation,
-                enabled: Boolean(loadedEmailValidation.enabled),
-                invalidEmailMessage:
-                  typeof loadedEmailValidation.invalidEmailMessage === 'string'
-                    ? loadedEmailValidation.invalidEmailMessage
-                    : '',
-              },
-              autobump: {
-                ...base.autobump,
-                ...loadedAutobump,
-                schedule: Array.isArray(loadedAutobump.schedule)
-                  ? loadedAutobump.schedule
-                  : [],
-                priorityStatusId: loadedAutobump.priorityStatusId || null,
-              },
-            }
-          })({
-            ...effective,
-            // автоподнятие оставляем индивидуальным (из текущих настроек товара)
-            autobump: (productSettings && productSettings.autobump) ? productSettings.autobump : undefined,
-          })
-        )
-      } catch {
-        // В случае ошибки просто оставляем текущие настройки и метку в UI.
-      }
-    })()
-  }
 
   useEffect(() => {
     if (!toast) return
@@ -353,7 +279,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     const savePromise = trimmedLabel && groupKeyToSave
       ? Promise.all([
         saveProductSettings(token, groupKeyToSave, groupSettings),
-        saveProductSettings(token, baseProductKey, itemSettings).catch(() => {}),
+        saveProductSettings(token, baseProductKey, itemSettings).catch(() => { }),
       ])
       : saveProductSettings(token, baseProductKey, itemSettings)
 
@@ -426,7 +352,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       if (trimmedLabel && groupKeyToSave) {
         await Promise.all([
           saveProductSettings(token, groupKeyToSave, groupSettings),
-          saveProductSettings(token, baseProductKey, itemSettings).catch(() => {}),
+          saveProductSettings(token, baseProductKey, itemSettings).catch(() => { }),
         ])
       } else {
         await saveProductSettings(token, baseProductKey, itemSettings)
@@ -698,25 +624,24 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             {!loadingSettings && productSettings != null && (
               <>
                 <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Общие настройки для нескольких лотов</h3>
+                  <h3 className="lot-settings-block__title">Группа товара</h3>
                   <div className="lot-settings-row" style={{ alignItems: 'flex-end', gap: 8 }}>
                     <label className="lot-settings-field" style={{ flex: 1 }}>
-                      <span className="lot-settings-field__label">Метка</span>
+                      <span className="lot-settings-field__label">Группа</span>
                       <input
                         type="text"
                         className="lot-settings-input"
-                        value={settingsLabelInput}
-                        onChange={(e) => setSettingsLabelInput(e.target.value)}
-                        placeholder="Без метки — настройки только для этого товара"
+                        value={productSettings?.groupName ?? ''}
+                        onChange={(e) => setProductSettings((prev) => ({ ...prev, groupName: e.target.value }))}
+                        list="lot-group-suggestions"
+                        placeholder="Новая или существующая группа"
                       />
+                      <datalist id="lot-group-suggestions">
+                        {groupSuggestions.map((groupName) => (
+                          <option key={groupName} value={groupName} />
+                        ))}
+                      </datalist>
                     </label>
-                    <button
-                      type="button"
-                      className="lot-settings-btn lot-settings-btn--secondary"
-                      onClick={handleApplyLabel}
-                    >
-                      Применить
-                    </button>
                   </div>
                 </section>
                 <section className="lot-settings-block">

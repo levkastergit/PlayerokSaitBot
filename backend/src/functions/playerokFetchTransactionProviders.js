@@ -3,6 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
+const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
 
 function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH }) {
   if (!TRANSACTION_PROVIDERS_PERSISTED_HASH) {
@@ -47,7 +48,7 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
         },
       }
 
-      const req = https.request(options, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => { data += chunk })
         resp.on('end', () => {

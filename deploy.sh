@@ -37,9 +37,14 @@ docker rm -f "${LEGACY_CONTAINER_NAME}" >/dev/null 2>&1 || true
 echo "=== Start via docker compose ==="
 cd "${SAIT_DIR}"
 docker compose pull app || true
-docker compose up -d --build
+# --force-recreate: network_mode: host у app, extra_hosts у nginx и т.д.
+docker compose up -d --build --force-recreate
 echo ""
 docker compose ps
+if cid="$(docker compose ps -q app 2>/dev/null)" && [ -n "${cid}" ]; then
+  echo "app NetworkMode: $(docker inspect "${cid}" --format '{{.HostConfig.NetworkMode}}')"
+  echo "(При PLAYEROK_OUTBOUND_IP нужен host; иначе bind EADDRNOTAVAIL.)"
+fi
 echo ""
 echo "Open: https://playerokbot.com"
 echo "Logs: cd ${SAIT_DIR} && docker compose logs -f nginx"

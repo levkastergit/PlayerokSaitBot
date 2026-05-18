@@ -14,6 +14,7 @@ import { RegisterPage } from './features/auth/RegisterPage.jsx'
 import { AutoListingTab } from './features/auto-listing/AutoListingTab.jsx'
 import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
+import { GroupTab } from './features/group/GroupTab.jsx'
 import { ActiveLotsTab } from './features/active/ActiveLotsTab.jsx'
 import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
 import { LotSettingsPage } from './features/lot/LotSettingsPage.jsx'
@@ -21,6 +22,7 @@ import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { ChatTab } from './features/chat/ChatTab.jsx'
 import { PartnersTab } from './features/partners/PartnersTab.jsx'
 import { SettingsTab } from './features/settings/SettingsTab.jsx'
+import { DdosTab } from './features/ddos/DdosTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
 import { ActionsTab } from './features/actions/ActionsTab.jsx'
 import { BalanceTab } from './features/balance/BalanceTab.jsx'
@@ -94,6 +96,16 @@ const TabIcon = ({ id }) => {
           <path d="M8.1 12.9h5.4" />
         </svg>
       )
+    case 'group':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="7.2" width="15" height="12.3" rx="2.8" opacity="0.16" fill="currentColor" stroke="none" />
+          <path d="M7.6 10.3h8.8" />
+          <path d="M7.6 13h6.2" />
+          <path d="M7.6 15.7h4.1" />
+          <path d="M11.8 4.8l1.7 1.7h-3.4l1.7-1.7z" />
+        </svg>
+      )
     case 'partners':
       return (
         <svg {...common}>
@@ -127,6 +139,14 @@ const TabIcon = ({ id }) => {
           <path d="M8.6 15.4l-1 1" />
           <path d="M16.4 16.4l-1-1" />
           <path d="M8.6 8.6l-1-1" />
+        </svg>
+      )
+    case 'ddos':
+      return (
+        <svg {...common}>
+          <path d="M12 3.8l7.1 3.2v4.8c0 4.1-2.8 7.4-7.1 8.7-4.3-1.3-7.1-4.6-7.1-8.7V7l7.1-3.2z" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M12 7.4v5.2" />
+          <circle cx="12" cy="15.6" r="0.9" fill="currentColor" stroke="none" />
         </svg>
       )
     case 'balance':
@@ -169,10 +189,12 @@ const TABS = [
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
+  { id: 'group', label: 'Группа' },
   { id: 'chat', label: 'Чаты' },
   { id: 'partners', label: 'Напарники' },
   { id: 'commands', label: 'Команды' },
   { id: 'settings', label: 'Настройки' },
+  { id: 'ddos', label: 'Ddos' },
   { id: 'balance', label: 'Баланс' },
   { id: 'profit', label: 'Статистика' },
   { id: 'actions', label: 'Действия' },
@@ -252,6 +274,8 @@ function App() {
   /** На странице чатов по умолчанию боковое меню скрыто, чтобы область чата была шире; ⋯ в шапке переключает меню */
   const [sidebarNavCompact, setSidebarNavCompact] = useState(false)
   const [token, setToken] = useState('')
+  const appRootRef = useRef(null)
+  const appContentRef = useRef(null)
 
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
@@ -381,6 +405,51 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isMobileMenuOpen])
 
+  useEffect(() => {
+    const rootEl = appRootRef.current
+    const appContentEl = appContentRef.current
+    if (!rootEl || !appContentEl) return undefined
+
+    const canScroll = (el, deltaY) => {
+      if (!el || el.scrollHeight <= el.clientHeight) return false
+      if (deltaY > 0) return el.scrollTop + el.clientHeight < el.scrollHeight
+      if (deltaY < 0) return el.scrollTop > 0
+      return false
+    }
+
+    const findScrollableParent = (startNode, deltaY) => {
+      let node = startNode
+      while (node && node !== rootEl) {
+        if (!(node instanceof HTMLElement)) {
+          node = node.parentElement
+          continue
+        }
+        const style = window.getComputedStyle(node)
+        const overflowY = style.overflowY
+        const scrollableOverflow =
+          overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
+        if (scrollableOverflow && canScroll(node, deltaY)) return node
+        node = node.parentElement
+      }
+      return null
+    }
+
+    const onWheel = (event) => {
+      if (event.defaultPrevented || event.deltaY === 0) return
+      const target = event.target instanceof Node ? event.target : null
+      if (!target) return
+      if (!rootEl.contains(target)) return
+      const scrollableParent = findScrollableParent(target, event.deltaY)
+      if (scrollableParent) return
+      if (!canScroll(appContentEl, event.deltaY)) return
+      appContentEl.scrollTop += event.deltaY
+      event.preventDefault()
+    }
+
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => window.removeEventListener('wheel', onWheel, { capture: true })
+  }, [])
+
   // Загружаем токен с сервера только после входа — иначе с другого устройства/браузера запрос идёт без сессии и токен не подставляется
   useEffect(() => {
     if (!authChecked || !isAuthenticated) return
@@ -416,7 +485,7 @@ function App() {
   }
 
   return (
-    <div className={`app-root${isMobileMenuOpen ? ' app-root--menu-open' : ''}`}>
+    <div className={`app-root${isMobileMenuOpen ? ' app-root--menu-open' : ''}`} ref={appRootRef}>
       <header className="app-header">
         <div className="app-header-left">
           <button
@@ -500,7 +569,7 @@ function App() {
           </nav>
         </aside>
 
-        <section className={`app-content${activeTab === 'chat' ? ' app-content--chat' : ''}`}>
+        <section className={`app-content${activeTab === 'chat' ? ' app-content--chat' : ''}`} ref={appContentRef}>
           {activeTab === 'lot' && (
             <LotSettingsPage
               key={lotIdFromUrl || 'lot'}
@@ -541,6 +610,15 @@ function App() {
               errorLots={errorLots || errorCompletedLots}
             />
           )}
+          {activeTab === 'group' && (
+            <GroupTab
+              token={token}
+              lots={lots}
+              completedLots={completedLots}
+              loadingLots={loadingLots || loadingCompletedLots}
+              errorLots={errorLots || errorCompletedLots}
+            />
+          )}
           {activeTab === 'active' && (
             <ActiveLotsTab
               token={token}
@@ -570,6 +648,7 @@ function App() {
           {activeTab === 'settings' && (
             <SettingsTab token={token} onTokenChange={handleTokenChange} onLogout={handleLogout} />
           )}
+          {activeTab === 'ddos' && <DdosTab />}
           {activeTab === 'balance' && <BalanceTab token={token} />}
           {activeTab === 'profit' && <ProfitTab token={token} />}
           {activeTab === 'actions' && <ActionsTab token={token} />}
