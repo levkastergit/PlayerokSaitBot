@@ -287,7 +287,6 @@ body {
   overflow: auto;
   scroll-behavior: smooth;
   overflow-anchor: none;
-  overscroll-behavior: contain;
 }
 
 .app-content--chat {
@@ -479,7 +478,6 @@ body {
   min-height: fit-content;
   display: flex;
   flex-direction: column;
-  height: 100%;
 }
 
 /* Для страницы чатов - убираем прокрутку страницы, прокрутка только внутри чатов */
@@ -549,8 +547,6 @@ body {
   display: flex;
   flex-direction: column;
   height: fit-content;
-  max-height: calc(100vh - 200px);
-  overflow: hidden;
 }
 
 /* Для страницы чатов - карточки занимают всю высоту */
@@ -996,7 +992,10 @@ body {
 }
 
 .history-table-wrap {
+  /* Только горизонтальный скролл: иначе overflow-x:auto делает блок scroll-container
+     и вертикальное колёсико не доходит до .app-content */
   overflow-x: auto;
+  overflow-y: hidden;
   margin-top: 0.5rem;
 }
 
@@ -3259,6 +3258,7 @@ body {
   gap: 0.5rem;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
   padding: 0.15rem 0;
 }

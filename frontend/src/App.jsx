@@ -274,9 +274,6 @@ function App() {
   /** На странице чатов по умолчанию боковое меню скрыто, чтобы область чата была шире; ⋯ в шапке переключает меню */
   const [sidebarNavCompact, setSidebarNavCompact] = useState(false)
   const [token, setToken] = useState('')
-  const appRootRef = useRef(null)
-  const appContentRef = useRef(null)
-
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
   const [errorLots, setErrorLots] = useState(null)
@@ -405,51 +402,6 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isMobileMenuOpen])
 
-  useEffect(() => {
-    const rootEl = appRootRef.current
-    const appContentEl = appContentRef.current
-    if (!rootEl || !appContentEl) return undefined
-
-    const canScroll = (el, deltaY) => {
-      if (!el || el.scrollHeight <= el.clientHeight) return false
-      if (deltaY > 0) return el.scrollTop + el.clientHeight < el.scrollHeight
-      if (deltaY < 0) return el.scrollTop > 0
-      return false
-    }
-
-    const findScrollableParent = (startNode, deltaY) => {
-      let node = startNode
-      while (node && node !== rootEl) {
-        if (!(node instanceof HTMLElement)) {
-          node = node.parentElement
-          continue
-        }
-        const style = window.getComputedStyle(node)
-        const overflowY = style.overflowY
-        const scrollableOverflow =
-          overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
-        if (scrollableOverflow && canScroll(node, deltaY)) return node
-        node = node.parentElement
-      }
-      return null
-    }
-
-    const onWheel = (event) => {
-      if (event.defaultPrevented || event.deltaY === 0) return
-      const target = event.target instanceof Node ? event.target : null
-      if (!target) return
-      if (!rootEl.contains(target)) return
-      const scrollableParent = findScrollableParent(target, event.deltaY)
-      if (scrollableParent) return
-      if (!canScroll(appContentEl, event.deltaY)) return
-      appContentEl.scrollTop += event.deltaY
-      event.preventDefault()
-    }
-
-    window.addEventListener('wheel', onWheel, { passive: false, capture: true })
-    return () => window.removeEventListener('wheel', onWheel, { capture: true })
-  }, [])
-
   // Загружаем токен с сервера только после входа — иначе с другого устройства/браузера запрос идёт без сессии и токен не подставляется
   useEffect(() => {
     if (!authChecked || !isAuthenticated) return
@@ -485,7 +437,7 @@ function App() {
   }
 
   return (
-    <div className={`app-root${isMobileMenuOpen ? ' app-root--menu-open' : ''}`} ref={appRootRef}>
+    <div className={`app-root${isMobileMenuOpen ? ' app-root--menu-open' : ''}`}>
       <header className="app-header">
         <div className="app-header-left">
           <button
@@ -569,7 +521,7 @@ function App() {
           </nav>
         </aside>
 
-        <section className={`app-content${activeTab === 'chat' ? ' app-content--chat' : ''}`} ref={appContentRef}>
+        <section className={`app-content${activeTab === 'chat' ? ' app-content--chat' : ''}`}>
           {activeTab === 'lot' && (
             <LotSettingsPage
               key={lotIdFromUrl || 'lot'}
