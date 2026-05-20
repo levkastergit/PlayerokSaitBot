@@ -60,7 +60,7 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

@@ -1,29 +1,14 @@
 'use strict'
 
-const os = require('os')
 const { parse: parseUrl } = require('url')
 const { HttpsProxyAgent } = require('https-proxy-agent')
+const { resolveOutboundLocalAddress, assertPlayerokChannelEnabled } = require('./playerokOutboundIp')
 
-let cachedAgent = null
-let cachedKey = null
-let warnedOutboundIpUnavailable = false
-
-function isIpv4BoundLocally(addr) {
-  const ifs = os.networkInterfaces()
-  for (const list of Object.values(ifs)) {
-    if (!list) continue
-    for (const info of list) {
-      if (info.internal) continue
-      if (String(info.address) === addr && info.family === 'IPv4') return true
-    }
-  }
-  return false
-}
+const agentCache = new Map()
 
 /**
  * URL исходящего прокси для HTTPS-запросов к playerok.com.
  * Приоритет: PLAYEROK_PROXY → HTTPS_PROXY → HTTP_PROXY (как у большинства CLI).
- * Пример: http://user:pass@host:8080 или http://host:8080
  */
 function resolvePlayerokProxyUrl() {
   const u = String(
@@ -32,58 +17,45 @@ function resolvePlayerokProxyUrl() {
   return u || null
 }
 
-/**
- * PLAYEROK_OUTBOUND_IP: bind только если адрес есть у этого процесса.
- * Иначе EADDRNOTAVAIL (типично: bridge Docker без network_mode: host).
- */
-function resolvePlayerokOutboundLocalAddress() {
-  const a = String(process.env.PLAYEROK_OUTBOUND_IP || '').trim()
-  if (!a) return null
-  if (isIpv4BoundLocally(a)) return a
-  if (!warnedOutboundIpUnavailable) {
-    warnedOutboundIpUnavailable = true
-    console.warn(
-      '[playerok] PLAYEROK_OUTBOUND_IP=' +
-        a +
-        ' не на интерфейсах процесса; исходящие без привязки. Для bind в Docker: network_mode: host.'
-    )
+function getCachedAgent(proxyUrl, localAddress) {
+  const key = `${proxyUrl || ''}\0${localAddress || ''}`
+  if (agentCache.has(key)) return agentCache.get(key)
+  let agent
+  if (localAddress) {
+    agent = new HttpsProxyAgent(Object.assign(parseUrl(proxyUrl), { localAddress }))
+  } else {
+    agent = new HttpsProxyAgent(proxyUrl)
   }
-  return null
+  agentCache.set(key, agent)
+  return agent
 }
 
-function getPlayerokHttpsAgent() {
+function clearPlayerokHttpsAgentCache() {
+  agentCache.clear()
+}
+
+function getPlayerokHttpsAgent(channel) {
   const url = resolvePlayerokProxyUrl()
-  const localAddress = resolvePlayerokOutboundLocalAddress()
-  const key = `${url}\0${localAddress || ''}`
-
-  if (!url) {
-    cachedAgent = null
-    cachedKey = null
-    return undefined
-  }
-  if (cachedAgent && cachedKey === key) return cachedAgent
-
-  cachedKey = key
-  if (localAddress) {
-    cachedAgent = new HttpsProxyAgent(Object.assign(parseUrl(url), { localAddress }))
-  } else {
-    cachedAgent = new HttpsProxyAgent(url)
-  }
-  return cachedAgent
+  const localAddress = resolveOutboundLocalAddress(channel)
+  if (!url) return undefined
+  return getCachedAgent(url, localAddress)
 }
 
 /** Фрагмент опций для https.request: { agent }, { localAddress } или оба по необходимости */
-function playerokHttpsExtraOptions() {
-  const agent = getPlayerokHttpsAgent()
-  const localAddress = resolvePlayerokOutboundLocalAddress()
-  if (agent) return { agent }
+function playerokHttpsExtraOptions(channel) {
+  assertPlayerokChannelEnabled(channel)
+  const proxyUrl = resolvePlayerokProxyUrl()
+  const localAddress = resolveOutboundLocalAddress(channel)
+  if (proxyUrl) {
+    return { agent: getCachedAgent(proxyUrl, localAddress) }
+  }
   if (localAddress) return { localAddress }
   return {}
 }
 
 module.exports = {
   resolvePlayerokProxyUrl,
-  resolvePlayerokOutboundLocalAddress,
   getPlayerokHttpsAgent,
   playerokHttpsExtraOptions,
+  clearPlayerokHttpsAgentCache,
 }

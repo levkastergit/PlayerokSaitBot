@@ -1,3 +1,13 @@
+const {
+  ITEM_SENT_MARKER,
+  DEAL_CONFIRMED_MARKERS,
+  lastMessageHasAnyMarker,
+} = require('./handleChatAutomessage')
+const {
+  buildPostPurchaseAutomessageEventKey,
+  buildDealConfirmedAutomessageEventKey,
+} = require('./autolistState')
+
 async function handleAutolistTick({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -46,6 +56,9 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     processActiveSupercellFlows,
     processSingleSupercellFlow,
     isSupercellModuleEnabled,
+    handlePostPurchaseAutomessage,
+    handleDealConfirmedAutomessage,
+    fetchDealChatMessagesFromPlayerok,
   } = deps
 
   const nowTs = Math.floor(Date.now() / 1000)
@@ -278,6 +291,81 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     }
     if (currentLastMessageId) {
       lastChatMeta.lastMessageId = currentLastMessageId
+    }
+
+    const chatAutomessageScans = [
+      {
+        handler: handlePostPurchaseAutomessage,
+        markers: [ITEM_SENT_MARKER],
+        buildEventKey: buildPostPurchaseAutomessageEventKey,
+        logLabel: 'post-purchase-automessage',
+      },
+      {
+        handler: handleDealConfirmedAutomessage,
+        markers: DEAL_CONFIRMED_MARKERS,
+        buildEventKey: buildDealConfirmedAutomessageEventKey,
+        logLabel: 'deal-confirmed-automessage',
+      },
+    ]
+
+    for (const scan of chatAutomessageScans) {
+      if (!scan.handler) continue
+      for (const chatNode of chatsSlice) {
+        const chatId = chatNode?.id != null ? String(chatNode.id) : null
+        const lm = chatNode?.lastMessage || null
+        const currMsgId = lm?.id != null ? String(lm.id) : null
+        if (!chatId || !currMsgId) continue
+        const lmText = String(lm?.text || '')
+        if (!lastMessageHasAnyMarker(lmText, scan.markers)) continue
+
+        const d = lm?.deal || null
+        const candidateDealId = d?.id || null
+        const dItemId = d?.item?.id || null
+        const eventKey = scan.buildEventKey(chatId, candidateDealId)
+        if (!eventKey || autolistWasProcessed(tokenHash, eventKey)) continue
+
+        try {
+          const { messages, itemTitle, itemCategory } = await withRetry(
+            () =>
+              fetchDealChatMessagesFromPlayerok(token, userAgent, candidateDealId, chatId, {
+                viewerUsername: viewer?.username || null,
+              }),
+            {
+              label: `dealChatMessages(${scan.logLabel})`,
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            }
+          )
+          await scan.handler({
+            currentUserId,
+            tokenHash,
+            token,
+            userAgent,
+            nowTs,
+            chatId,
+            dealId: candidateDealId,
+            dealItemId: dItemId,
+            messages,
+            itemTitle,
+            itemCategory,
+            viewerUsername: viewer?.username || null,
+            withRetry,
+            isPlayerokRateLimitError,
+            requestDealById,
+            requestItemById,
+            resolveEffectiveProductSettings,
+            createChatMessage,
+            normalizeKeyPart,
+            buildProductKey,
+          })
+        } catch (err) {
+          console.warn(`[autolist-tick] ${scan.logLabel} scan failed`, {
+            chatId,
+            dealId: candidateDealId || null,
+            error: err?.message || String(err),
+          })
+        }
+      }
     }
 
     if (supercellModuleEnabled) {

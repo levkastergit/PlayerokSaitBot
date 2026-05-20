@@ -137,6 +137,59 @@ function autolistPruneSupercellFlowMap(tokenHash, nowTs) {
   }
 }
 
+function buildChatAutomessageEventKey(prefix, chatId, dealId) {
+  const c = String(chatId || '').trim()
+  const d = String(dealId || '').trim()
+  if (c && d) return `${prefix}:${c}:${d}`
+  if (c) return `${prefix}:chat:${c}`
+  if (d) return `${prefix}:deal:${d}`
+  return ''
+}
+
+function buildPostPurchaseAutomessageEventKey(chatId, dealId) {
+  return buildChatAutomessageEventKey('post_purchase_auto_msg', chatId, dealId)
+}
+
+function buildDealConfirmedAutomessageEventKey(chatId, dealId) {
+  return buildChatAutomessageEventKey('deal_confirmed_auto_msg', chatId, dealId)
+}
+
+function chatAutomessageLockKey(tokenHash, eventKey) {
+  return `${String(tokenHash)}::${String(eventKey)}`
+}
+
+/** Синхронная «захват» отправки — защита от гонок при параллельных poll deal-chat-messages. */
+function tryBeginChatAutomessageSend(tokenHash, eventKey) {
+  if (!eventKey) return false
+  if (autolistWasProcessed(tokenHash, eventKey)) return false
+
+  global.__chatAutomessageInFlight = global.__chatAutomessageInFlight || {}
+  const lockKey = chatAutomessageLockKey(tokenHash, eventKey)
+  if (global.__chatAutomessageInFlight[lockKey]) return false
+  global.__chatAutomessageInFlight[lockKey] = true
+  return true
+}
+
+function finishChatAutomessageSend(tokenHash, eventKey, { success = false, nowTs = 0 } = {}) {
+  if (!eventKey) return
+  global.__chatAutomessageInFlight = global.__chatAutomessageInFlight || {}
+  const lockKey = chatAutomessageLockKey(tokenHash, eventKey)
+  delete global.__chatAutomessageInFlight[lockKey]
+
+  if (success) {
+    autolistMarkProcessed(tokenHash, eventKey, nowTs || Math.floor(Date.now() / 1000))
+    return
+  }
+
+  const map = autolistGetProcessedMap(tokenHash)
+  delete map[eventKey]
+}
+
+/** @deprecated используйте tryBeginChatAutomessageSend */
+const tryBeginPostPurchaseAutomessageSend = tryBeginChatAutomessageSend
+/** @deprecated используйте finishChatAutomessageSend */
+const finishPostPurchaseAutomessageSend = finishChatAutomessageSend
+
 module.exports = {
   AUTOLIST_LAST_CHAT_FRESH_SEC,
   AUTOLIST_MAX_CHATS_TO_SCAN,
@@ -160,5 +213,11 @@ module.exports = {
   autolistGetLastChatMeta,
   autolistGetSupercellFlowMap,
   autolistPruneSupercellFlowMap,
+  buildPostPurchaseAutomessageEventKey,
+  buildDealConfirmedAutomessageEventKey,
+  tryBeginChatAutomessageSend,
+  finishChatAutomessageSend,
+  tryBeginPostPurchaseAutomessageSend,
+  finishPostPurchaseAutomessageSend,
 }
 

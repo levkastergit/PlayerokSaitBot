@@ -1,6 +1,9 @@
 const {
   isSuperSellMarketplaceLabel,
   pickSupercellCategoryFromDeal,
+  getSupercellGameByCategory,
+  pickLatestDealIdFromMessages,
+  logSupercellDebug,
 } = require('../../../functions/supercellHelpers')
 
 async function handleChats({ payload, currentUserId, deps }) {
@@ -118,6 +121,21 @@ async function handleChats({ payload, currentUserId, deps }) {
     return normalizeCategory(productKey.slice(0, sepIndex))
   }
 
+  const resolveSupercellAwareCategory = (rawCategory, dealIdHint = null) => {
+    const raw = typeof rawCategory === 'string' ? rawCategory.trim() : ''
+    if (dealIdHint != null) {
+      const fromDealMap = dealIdToCategory.get(String(dealIdHint))
+      if (fromDealMap && getSupercellGameByCategory(fromDealMap)) return fromDealMap
+    }
+    if (raw && getSupercellGameByCategory(raw)) return raw
+    if (raw && !isSuperSellMarketplaceLabel(raw)) return raw
+    if (dealIdHint != null) {
+      const fromDealMap = dealIdToCategory.get(String(dealIdHint))
+      if (fromDealMap) return fromDealMap
+    }
+    return raw || null
+  }
+
   const categoryFromTextHints = (value) => {
     if (typeof value !== 'string') return null
     const text = value.trim().toLowerCase()
@@ -200,18 +218,15 @@ async function handleChats({ payload, currentUserId, deps }) {
     )
     const edges = Array.isArray(chatsData?.edges) ? chatsData.edges : []
 
-    const runPlayerokBatches = async (ids, batchSize, gapMs, worker) => {
+    const runPlayerokBatches = async (ids, batchSize, worker) => {
       const list = Array.isArray(ids) ? ids : Array.from(ids)
-      for (let i = 0; i < list.length; i += batchSize) {
-        const batch = list.slice(i, i + batchSize)
+      const size = Math.max(1, Number(batchSize) || 8)
+      for (let i = 0; i < list.length; i += size) {
+        const batch = list.slice(i, i + size)
         await Promise.all(batch.map((id) => worker(id)))
-        if (i + batchSize < list.length && gapMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, gapMs))
-        }
       }
     }
-    const PLAYEROK_DEAL_BATCH = 2
-    const PLAYEROK_DEAL_GAP_MS = 450
+    const PLAYEROK_DEAL_BATCH = 8
 
     const itemIdSet = new Set()
     const dealIdSet = new Set()
@@ -271,6 +286,7 @@ async function handleChats({ payload, currentUserId, deps }) {
             itemId: saleItemId,
           })
         }
+        if (saleDealId) dealIdSet.add(saleDealId)
       }
     } catch (e) {
       // ignore batch errors
@@ -280,7 +296,7 @@ async function handleChats({ payload, currentUserId, deps }) {
     if (dealIdSet.size > 0) {
       const dealIds = Array.from(dealIdSet)
       try {
-        await runPlayerokBatches(dealIds, PLAYEROK_DEAL_BATCH, PLAYEROK_DEAL_GAP_MS, async (id) => {
+        await runPlayerokBatches(dealIds, PLAYEROK_DEAL_BATCH, async (id) => {
           try {
             const fullDeal = await withRetry(() => requestDealById(token, userAgent, id), {
               label: 'dealById(userChats)',
@@ -325,11 +341,7 @@ async function handleChats({ payload, currentUserId, deps }) {
 
     if (dealIdsToLoad.size > 0) {
       try {
-        await runPlayerokBatches(
-          Array.from(dealIdsToLoad),
-          PLAYEROK_DEAL_BATCH,
-          PLAYEROK_DEAL_GAP_MS,
-          async (dealId) => {
+        await runPlayerokBatches(Array.from(dealIdsToLoad), PLAYEROK_DEAL_BATCH, async (dealId) => {
             try {
               if (dealIdToCategory.has(dealId)) {
                 return
@@ -358,9 +370,9 @@ async function handleChats({ payload, currentUserId, deps }) {
     const chatsNeedingFullInfo = chatsNeedingDealId.filter((c) => !c.dealId).map((c) => c.chatId)
     if (chatsNeedingFullInfo.length > 0) {
       try {
-        const BATCH_SIZE = 2
-        for (let i = 0; i < chatsNeedingFullInfo.length; i += BATCH_SIZE) {
-          const batch = chatsNeedingFullInfo.slice(i, i + BATCH_SIZE)
+        const CHAT_FULL_INFO_BATCH = 8
+        for (let i = 0; i < chatsNeedingFullInfo.length; i += CHAT_FULL_INFO_BATCH) {
+          const batch = chatsNeedingFullInfo.slice(i, i + CHAT_FULL_INFO_BATCH)
           await Promise.all(
             batch.map(async (chatId) => {
               try {
@@ -450,30 +462,30 @@ async function handleChats({ payload, currentUserId, deps }) {
                       chatIdToBuyerName.set(String(chatId), buyerNameFromMessages)
                     }
                     if (messages.length > 0) {
-                      for (const msg of messages) {
-                        const foundDealId = msg?.dealId ? String(msg.dealId) : null
-                        if (!foundDealId) continue
-                        if (!dealIdToCategory.has(foundDealId)) {
+                      const latestDealId = pickLatestDealIdFromMessages(messages)
+                      if (latestDealId) {
+                        if (!dealIdToCategory.has(latestDealId)) {
                           try {
-                            const foundDeal = await withRetry(() => requestDealById(token, userAgent, foundDealId), {
-                              label: 'dealById(userChats-fromMsg)',
-                              retries: 1,
-                              shouldRetry: isPlayerokRateLimitError,
-                            })
+                            const foundDeal = await withRetry(
+                              () => requestDealById(token, userAgent, latestDealId),
+                              {
+                                label: 'dealById(userChats-fromMsg)',
+                                retries: 1,
+                                shouldRetry: isPlayerokRateLimitError,
+                              }
+                            )
                             if (foundDeal) {
                               const dealCategory = pickSupercellCategoryFromDeal(foundDeal)
                               if (dealCategory) {
-                                dealIdToCategory.set(foundDealId, dealCategory)
+                                dealIdToCategory.set(latestDealId, dealCategory)
                                 category = dealCategory
-                                break
                               }
                             }
                           } catch (e) {
                             // ignore found deal errors
                           }
                         } else {
-                          category = dealIdToCategory.get(foundDealId)
-                          if (category) break
+                          category = dealIdToCategory.get(latestDealId) || category
                         }
                       }
                     }
@@ -490,10 +502,6 @@ async function handleChats({ payload, currentUserId, deps }) {
               }
             })
           )
-
-          if (i + BATCH_SIZE < chatsNeedingFullInfo.length) {
-            await new Promise((resolve) => setTimeout(resolve, 450))
-          }
         }
       } catch (e) {
         // ignore batch errors
@@ -571,15 +579,31 @@ async function handleChats({ payload, currentUserId, deps }) {
           return ''
         }
 
+        const latestSaleDealId = latestSale?.dealId != null ? String(latestSale.dealId) : null
+        const fromItemOrNode = pickItemOrNodeCategory()
+        const fromLatestSaleRaw = latestSale?.category || null
+        const fromLatestSaleResolved = resolveSupercellAwareCategory(fromLatestSaleRaw, latestSaleDealId)
+
         let category =
-          (latestSale && latestSale.category) ||
-          pickItemOrNodeCategory() ||
+          fromLatestSaleResolved ||
+          fromItemOrNode ||
           (deal && typeof deal.category === 'string' && deal.category) ||
           null
 
+        if (category && isSuperSellMarketplaceLabel(category)) {
+          const fromDealMap =
+            (deal && deal.id != null && dealIdToCategory.get(String(deal.id))) ||
+            (latestSaleDealId && dealIdToCategory.get(latestSaleDealId)) ||
+            null
+          if (fromDealMap) category = fromDealMap
+          else if (fromItemOrNode && !isSuperSellMarketplaceLabel(fromItemOrNode)) category = fromItemOrNode
+        }
+
         let categorySource = null
         if (category) {
-          categorySource = latestSale?.category ? 'latest sale by chatId' : 'item.game или node.game или deal.category'
+          if (fromLatestSaleResolved) categorySource = 'latest sale (supercell-aware)'
+          else if (fromItemOrNode) categorySource = 'item.game или node.game'
+          else categorySource = 'deal.category'
         }
 
         if (!category && deal && typeof deal.productKey === 'string') {
@@ -690,6 +714,25 @@ async function handleChats({ payload, currentUserId, deps }) {
 
         categoryDebugInfo.finalCategory = category
         categoryDebugInfo.categorySource = categorySource
+
+        if (
+          category &&
+          (isSuperSellMarketplaceLabel(category) || !getSupercellGameByCategory(category)) &&
+          latestSaleDealId &&
+          dealIdToCategory.has(latestSaleDealId)
+        ) {
+          const mapped = dealIdToCategory.get(latestSaleDealId)
+          if (mapped && getSupercellGameByCategory(mapped)) {
+            logSupercellDebug('userChats:categoryRemappedFromDeal', {
+              chatId,
+              before: category,
+              after: mapped,
+              dealId: latestSaleDealId,
+            })
+            category = mapped
+            categorySource = 'dealIdToCategory (latest sale)'
+          }
+        }
 
         if (!category || (typeof category === 'string' && !category.trim())) {
           let fallbackCategory = null
@@ -849,7 +892,7 @@ async function handleChats({ payload, currentUserId, deps }) {
           lastMessageId: lastMessage?.id || null,
           lastMessageText: lastMessage?.text || null,
           lastMessageCreatedAt: lastMessage?.createdAt || null,
-          dealId: deal?.id || latestSale?.dealId || null,
+          dealId: latestSale?.dealId || deal?.id || null,
           itemId: item?.id || latestSale?.itemId || null,
           itemTitle,
           itemImageUrl,
@@ -951,13 +994,13 @@ async function handleChats({ payload, currentUserId, deps }) {
         }
 
         const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : []
-        for (const msg of messages) {
-          const dealIdFromMsg = msg?.dealId != null ? String(msg.dealId) : null
-          if (dealIdFromMsg) {
-            const fromDeal = await resolveCategoryFromDeal(dealIdFromMsg)
-            if (fromDeal) return fromDeal
-          }
-          const fromText = categoryFromTextHints(msg?.text || '')
+        const latestDealId = pickLatestDealIdFromMessages(messages)
+        if (latestDealId) {
+          const fromDeal = await resolveCategoryFromDeal(latestDealId)
+          if (fromDeal) return fromDeal
+        }
+        for (let mi = messages.length - 1; mi >= 0; mi -= 1) {
+          const fromText = categoryFromTextHints(messages[mi]?.text || '')
           if (fromText) return fromText
         }
 
@@ -1031,8 +1074,8 @@ async function handleChats({ payload, currentUserId, deps }) {
       return !category || category === 'Категория не определена'
     })
     if (chatsNeedingDeepResolve.length > 0) {
-      const ITEM_PREFETCH_GAP_MS = 520
       const MAX_ITEM_PREFETCH_PER_REQUEST = 36
+      const ITEM_PREFETCH_BATCH = 8
       if (requestItemById) {
         const prefetchIds = []
         const seenPrefetch = new Set()
@@ -1043,28 +1086,28 @@ async function handleChats({ payload, currentUserId, deps }) {
           prefetchIds.push(iid)
         }
         const toPrefetch = prefetchIds.slice(0, MAX_ITEM_PREFETCH_PER_REQUEST)
-        for (let pi = 0; pi < toPrefetch.length; pi += 1) {
-          const iid = toPrefetch[pi]
-          try {
-            const itemNode = await withRetry(() => requestItemById(token, userAgent, iid), {
-              label: 'itemById(userChats-deepPrefetch)',
-              retries: 1,
-              shouldRetry: isPlayerokRateLimitError,
+        for (let pi = 0; pi < toPrefetch.length; pi += ITEM_PREFETCH_BATCH) {
+          const batch = toPrefetch.slice(pi, pi + ITEM_PREFETCH_BATCH)
+          await Promise.all(
+            batch.map(async (iid) => {
+              try {
+                const itemNode = await withRetry(() => requestItemById(token, userAgent, iid), {
+                  label: 'itemById(userChats-deepPrefetch)',
+                  retries: 1,
+                  shouldRetry: isPlayerokRateLimitError,
+                })
+                rememberItemCategory(iid, itemNode)
+              } catch (_) {
+                // ignore prefetch errors
+              }
             })
-            rememberItemCategory(iid, itemNode)
-          } catch (_) {
-            // ignore prefetch errors
-          }
-          if (pi + 1 < toPrefetch.length) {
-            await new Promise((resolve) => setTimeout(resolve, ITEM_PREFETCH_GAP_MS))
-          }
+          )
         }
       }
 
-      const BATCH_SIZE = 1
-      const DEEP_RESOLVE_CHAT_GAP_MS = 650
-      for (let i = 0; i < chatsNeedingDeepResolve.length; i += BATCH_SIZE) {
-        const batch = chatsNeedingDeepResolve.slice(i, i + BATCH_SIZE)
+      const DEEP_RESOLVE_BATCH = 6
+      for (let i = 0; i < chatsNeedingDeepResolve.length; i += DEEP_RESOLVE_BATCH) {
+        const batch = chatsNeedingDeepResolve.slice(i, i + DEEP_RESOLVE_BATCH)
         await Promise.all(
           batch.map(async (chat) => {
             const resolvedCategory = await resolveCategoryByDeepChatLookup(chat)
@@ -1075,18 +1118,15 @@ async function handleChats({ payload, currentUserId, deps }) {
             }
           })
         )
-        if (i + BATCH_SIZE < chatsNeedingDeepResolve.length) {
-          await new Promise((resolve) => setTimeout(resolve, DEEP_RESOLVE_CHAT_GAP_MS))
-        }
       }
     }
 
     const chatsNeedingBuyerName = list.filter((chat) => !chat.buyerName && chat.id != null)
     if (chatsNeedingBuyerName.length > 0) {
       try {
-        const BATCH_SIZE = 2
-        for (let i = 0; i < chatsNeedingBuyerName.length; i += BATCH_SIZE) {
-          const batch = chatsNeedingBuyerName.slice(i, i + BATCH_SIZE)
+        const BUYER_NAME_BATCH = 8
+        for (let i = 0; i < chatsNeedingBuyerName.length; i += BUYER_NAME_BATCH) {
+          const batch = chatsNeedingBuyerName.slice(i, i + BUYER_NAME_BATCH)
           await Promise.all(
             batch.map(async (chat) => {
               try {
@@ -1108,9 +1148,6 @@ async function handleChats({ payload, currentUserId, deps }) {
               }
             })
           )
-          if (i + BATCH_SIZE < chatsNeedingBuyerName.length) {
-            await new Promise((resolve) => setTimeout(resolve, 400))
-          }
         }
 
         for (const chat of chatsNeedingBuyerName) {
@@ -1198,18 +1235,10 @@ async function handleChats({ payload, currentUserId, deps }) {
                         { label: 'dealById(userChats-retryCategory)', retries: 1, shouldRetry: isPlayerokRateLimitError }
                       )
                       if (fullDeal) {
-                        category =
-                          (fullDeal.category && String(fullDeal.category).trim()) ||
-                          (fullDeal.item?.game && (fullDeal.item.game.name || fullDeal.item.game.title)) ||
-                          null
-                        if (!category && typeof fullDeal.productKey === 'string') {
-                          const sepIndex = fullDeal.productKey.indexOf('::')
-                          if (sepIndex > 0) {
-                            category = fullDeal.productKey.slice(0, sepIndex).trim() || null
-                          }
-                        }
-                        if (category) {
-                          dealIdToCategory.set(retryDealId, category)
+                        const dealCategory = pickSupercellCategoryFromDeal(fullDeal)
+                        if (dealCategory) {
+                          category = dealCategory
+                          dealIdToCategory.set(retryDealId, dealCategory)
                         }
                       }
                     } catch (e) {
@@ -1230,42 +1259,31 @@ async function handleChats({ payload, currentUserId, deps }) {
                     { label: 'chatMessages(userChats-retryCategory)', retries: 1, shouldRetry: isPlayerokRateLimitError }
                   )
                   const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : []
-                  for (const msg of messages) {
-                    const retryDealId =
-                      (msg?.dealId != null ? String(msg.dealId) : null) || (msg?.deal?.id != null ? String(msg.deal.id) : null)
-                    if (!retryDealId) continue
-
+                  const retryDealId = pickLatestDealIdFromMessages(messages)
+                  if (retryDealId) {
                     if (dealIdToCategory.has(retryDealId)) {
                       category = dealIdToCategory.get(retryDealId) || null
-                      if (category) break
-                    }
-
-                    try {
-                      const fullDeal = await withRetry(
-                        () => requestDealById(token, userAgent, retryDealId),
-                        { label: 'dealById(userChats-retryCategoryFromMsg)', retries: 1, shouldRetry: isPlayerokRateLimitError }
-                      )
-                      if (!fullDeal) continue
-
-                      category =
-                        (fullDeal.category && String(fullDeal.category).trim()) ||
-                        (fullDeal.item?.game && (fullDeal.item.game.name || fullDeal.item.game.title)) ||
-                        null
-
-                      if (!category && typeof fullDeal.productKey === 'string') {
-                        const sepIndex = fullDeal.productKey.indexOf('::')
-                        if (sepIndex > 0) {
-                          category = fullDeal.productKey.slice(0, sepIndex).trim() || null
+                    } else {
+                      try {
+                        const fullDeal = await withRetry(
+                          () => requestDealById(token, userAgent, retryDealId),
+                          {
+                            label: 'dealById(userChats-retryCategoryFromMsg)',
+                            retries: 1,
+                            shouldRetry: isPlayerokRateLimitError,
+                          }
+                        )
+                        if (fullDeal) {
+                          const dealCategory = pickSupercellCategoryFromDeal(fullDeal)
+                          if (dealCategory) {
+                            dealIdToCategory.set(retryDealId, dealCategory)
+                            chatIdToCategory.set(retryChatId, dealCategory)
+                            category = dealCategory
+                          }
                         }
+                      } catch (e) {
+                        // ignore retryDeal from message errors
                       }
-
-                      if (category) {
-                        dealIdToCategory.set(retryDealId, category)
-                        chatIdToCategory.set(retryChatId, category)
-                        break
-                      }
-                    } catch (e) {
-                      // ignore retryDeal from message errors
                     }
                   }
                 } catch (e) {
@@ -1392,7 +1410,9 @@ async function handleChats({ payload, currentUserId, deps }) {
             retries: 2,
             shouldRetry: isPlayerokRateLimitError,
           })
+          const picked = pickSupercellCategoryFromDeal(fullDeal)
           category =
+            normalizeCategory(picked) ||
             normalizeCategory(fullDeal?.category) ||
             normalizeCategory(fullDeal?.item?.game?.name || fullDeal?.item?.game?.title || null) ||
             normalizeCategory(fullDeal?.item?.category?.name || fullDeal?.item?.category?.title || null) ||
@@ -1402,7 +1422,26 @@ async function handleChats({ payload, currentUserId, deps }) {
         }
       }
 
-      chat.category = category || DEFAULT_CATEGORY
+      if (category && isSuperSellMarketplaceLabel(category) && chat.dealId != null) {
+        const mapped = dealIdToCategory.get(String(chat.dealId))
+        if (mapped && getSupercellGameByCategory(mapped)) category = mapped
+      }
+
+      const finalCategory = category || DEFAULT_CATEGORY
+      if (
+        isSuperSellMarketplaceLabel(finalCategory) ||
+        finalCategory === DEFAULT_CATEGORY ||
+        !getSupercellGameByCategory(finalCategory)
+      ) {
+        logSupercellDebug('userChats:finalCategoryUnresolved', {
+          chatId: chat.id,
+          dealId: chat.dealId,
+          itemTitle: chat.itemTitle,
+          category: finalCategory,
+        })
+      }
+
+      chat.category = finalCategory
     }
 
     const pageInfo = (chatsData && chatsData.pageInfo) || {}

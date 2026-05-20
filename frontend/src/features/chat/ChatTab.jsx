@@ -81,6 +81,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const loadingMoreRef = useRef(false)
   const chatStateByIdRef = useRef({})
   const selectedChatIdRef = useRef(null)
+  const preloadSessionRef = useRef(0)
+  const MAX_BACKGROUND_PRELOAD = 16
 
   const hasToken = Boolean(token)
   const OUR_USERNAME = 'Levkaster'
@@ -176,8 +178,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return markers.some((m) => n === m || n.includes(m))
   }
 
-  const isSupercellCategory = (name) =>
-    SUPERCELL_EMAIL_GAMES.includes(normalizeCategoryName(name))
+  const isSupercellCategory = (name) => {
+    const n = normalizeCategoryName(name)
+    if (!n) return false
+    if (SUPERCELL_EMAIL_GAMES.includes(n)) return true
+    if (isSuperSellMarketplaceLabel(name)) return true
+    return false
+  }
 
   const deriveCategoryFromText = useCallback((value) => {
     const text = String(value || '').trim()
@@ -422,22 +429,22 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return prevUnread
   }
 
+  const PRELOAD_CONCURRENCY = 12
+
   const preloadChatsData = useCallback(async (targetChats, options = {}) => {
     if (!token || !Array.isArray(targetChats) || targetChats.length === 0) return
-    const delayMs = Number(options.delayMs) > 0 ? Number(options.delayMs) : 0
     const shouldCancel = typeof options.shouldCancel === 'function'
       ? options.shouldCancel
       : () => false
+    const selectedId = selectedChatIdRef.current
 
-    if (delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
-      if (shouldCancel()) return
-    }
-
-    const chatsToPreload = targetChats.filter((chat) => {
-      const state = chatStateByIdRef.current[chat.id]
-      return !(state && (state.loading || state.loaded))
-    })
+    const chatsToPreload = targetChats
+      .filter((chat) => {
+        if (chat.id === selectedId) return false
+        const state = chatStateByIdRef.current[chat.id]
+        return !(state && (state.loading || state.loaded))
+      })
+      .slice(0, MAX_BACKGROUND_PRELOAD)
     if (chatsToPreload.length === 0) return
     chatDebugLog('preloadChatsData:start', {
       targetChats: targetChats.length,
@@ -445,12 +452,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       chatIds: chatsToPreload.map((chat) => chat.id),
     })
 
-    const BATCH_SIZE = 4
-    const BATCH_DELAY_MS = 400
-
-    for (let i = 0; i < chatsToPreload.length; i += BATCH_SIZE) {
+    for (let i = 0; i < chatsToPreload.length; i += PRELOAD_CONCURRENCY) {
       if (shouldCancel()) return
-      const batch = chatsToPreload.slice(i, i + BATCH_SIZE)
+      const batch = chatsToPreload.slice(i, i + PRELOAD_CONCURRENCY)
 
       await Promise.all(batch.map(async (chat) => {
         if (shouldCancel()) return
@@ -504,12 +508,17 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
           }))
         }
       }))
-
-      if (i + BATCH_SIZE < chatsToPreload.length && !shouldCancel()) {
-        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS))
-      }
     }
-  }, [token])
+  }, [token, chatDebugLog, summarizeChatForLog])
+
+  const triggerBackgroundPreload = useCallback((targetChats) => {
+    if (!Array.isArray(targetChats) || targetChats.length === 0) return
+    const session = preloadSessionRef.current + 1
+    preloadSessionRef.current = session
+    void preloadChatsData(targetChats, {
+      shouldCancel: () => preloadSessionRef.current !== session,
+    })
+  }, [preloadChatsData])
 
   const isChatCompleted = (chat) => {
     if (!chat) return false
@@ -593,14 +602,20 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         })
         setPageInfo(info || { hasNextPage: false, endCursor: null })
         if (list.length > 0) {
-          setSelectedChatId((prev) => {
-            if (prev && list.some((c) => c.id === prev)) return prev
+          const prevSelected = selectedChatIdRef.current
+          let nextSelectedId =
+            prevSelected && list.some((c) => c.id === prevSelected) ? prevSelected : null
+          if (!nextSelectedId) {
             const firstVisible = list.find((c) =>
               chatFilter === 'hide-completed' ? !isChatCompleted(c) : true
             )
-            return firstVisible ? firstVisible.id : null
-          })
+            nextSelectedId = firstVisible ? firstVisible.id : null
+          }
+          selectedChatIdRef.current = nextSelectedId
+          setSelectedChatId(nextSelectedId)
+          triggerBackgroundPreload(list)
         } else {
+          selectedChatIdRef.current = null
           setSelectedChatId(null)
         }
       } catch (err) {
@@ -619,8 +634,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     load()
     return () => {
       cancelled = true
+      preloadSessionRef.current += 1
     }
-  }, [token])
+  }, [token, triggerBackgroundPreload])
 
   // Загрузка команд по категориям
   useEffect(() => {
@@ -694,7 +710,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         const updated = [...prev, ...list]
         return updated
       })
-      void preloadChatsData(list, { delayMs: 150 })
+      triggerBackgroundPreload(list)
 
       const newPageInfo = info || { hasNextPage: false, endCursor: null }
       setPageInfo(newPageInfo)
@@ -706,7 +722,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       setLoadingMore(false)
       loadingMoreRef.current = false
     }
-  }, [token, pageInfo.hasNextPage, pageInfo.endCursor, chats.length, preloadChatsData])
+  }, [token, pageInfo.hasNextPage, pageInfo.endCursor, chats.length, triggerBackgroundPreload])
 
   useEffect(() => {
     const el = listRef.current
@@ -744,22 +760,6 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       setSelectedChatId(visibleChats.length > 0 ? visibleChats[0].id : null)
     }
   }, [chatFilter, visibleChats, selectedChatId])
-
-  // Фоновая предзагрузка сообщений для списка чатов:
-  // нужна, чтобы статус и buyerName определялись ещё до открытия конкретного чата.
-  useEffect(() => {
-    if (!token || chats.length === 0) return
-    let cancelled = false
-    void preloadChatsData(chats, {
-      delayMs: 500,
-      shouldCancel: () => cancelled,
-    })
-
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, chats])
 
   const loadMessagesForChat = async (chat) => {
     if (!token || !chat?.id) return
@@ -894,7 +894,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       }
     }
 
-    timerId = setTimeout(refreshSelectedChat, 3000)
+    void refreshSelectedChat()
     return () => {
       cancelled = true
       if (timerId) clearTimeout(timerId)
@@ -956,7 +956,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       }
     }
 
-    timerId = setTimeout(refreshChatsList, 5000)
+    void refreshChatsList()
     return () => {
       cancelled = true
       if (timerId) clearTimeout(timerId)
@@ -993,6 +993,29 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         .slice(0, 30),
     })
   }, [chats, visibleChats, selectedChatId, selectedChat, chatDebugLog, summarizeChatForLog])
+
+  useEffect(() => {
+    if (!selectedChat || !moduleSupercellEnabled) return
+    const category = String(selectedChat.category || '').trim()
+    chatDebugLog('supercell:selectedChat', {
+      chat: summarizeChatForLog(selectedChat),
+      isSupercellCategory: isSupercellCategory(category),
+      isSuperSellWrapper: isSuperSellMarketplaceLabel(category),
+      detectedEmail: selectedChatDetectedEmail || null,
+      manualEmail: selectedChatManualEmail || null,
+      itemTitle: currentItemTitle || null,
+      canUseSupercell: selectedChatCanUseSupercell,
+    })
+  }, [
+    selectedChat,
+    moduleSupercellEnabled,
+    selectedChatDetectedEmail,
+    selectedChatManualEmail,
+    currentItemTitle,
+    selectedChatCanUseSupercell,
+    chatDebugLog,
+    summarizeChatForLog,
+  ])
 
   const getOrderStatusLabel = (status) => {
     const s = String(status || '').toUpperCase()
@@ -1200,7 +1223,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         void loadMessagesForChat(chat)
       }
       try {
-        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        const { list, pageInfo: info } = await fetchUserChats(token, {
+          limit: 24,
+          preferCache: false,
+        })
         setChats((prev) => {
           const prevById = new Map((prev || []).map((c) => [c.id, c]))
           return (list || []).map((incoming) => {

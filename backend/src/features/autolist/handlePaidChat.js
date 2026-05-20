@@ -1,4 +1,5 @@
 const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
+const { logSupercellDebug } = require('../../functions/supercellHelpers')
 const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
 const { toUnixTs } = require('../../functions/toUnixTs')
 
@@ -328,6 +329,23 @@ async function handlePaidChat({
 
     const invalidEmailMessage =
       validation.enabled && typeof validation.invalidEmailMessage === 'string' ? validation.invalidEmailMessage.trim() : ''
+
+    logSupercellDebug('paidChat:flowActivated', {
+      chatId: flowChatId,
+      dealId: dealId || null,
+      category: effectiveCategory,
+      gameKey: supercellGame.gameKey,
+      hasEmailInState: Boolean(
+        extractSupercellEmailFromFields(
+          (fullDealSnapshot && Array.isArray(fullDealSnapshot.obtainingFields) && fullDealSnapshot.obtainingFields) ||
+            (fullDealSnapshot &&
+              fullDealSnapshot.item &&
+              Array.isArray(fullDealSnapshot.item.dataFields) &&
+              fullDealSnapshot.item.dataFields) ||
+            []
+        )
+      ),
+    })
 
     flowMap[flowChatId] = {
       ...(flowMap[flowChatId] || {}),

@@ -1,6 +1,13 @@
 const { sendJson } = require('./sendJson')
 const { readJsonBody } = require('./readJsonBody')
 const { runPlayerokInteractive } = require('../infra/playerokRequestGate')
+const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+
+function effectiveUserIdFromPayload(payload, currentUserId) {
+  const raw = payload && Object.prototype.hasOwnProperty.call(payload, 'userId') ? payload.userId : null
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : currentUserId
+}
 
 const { handleActiveLots } = require('../features/playerok/activeLots/handleActiveLots')
 const { handleChats } = require('../features/playerok/chats/handleChats')
@@ -84,10 +91,14 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
       isChatsSnapshotFresh: deps.isChatsSnapshotFresh,
       scheduleChatsSnapshotRefresh: deps.scheduleChatsSnapshotRefresh,
     }
-    const result =
+    const effectiveUserId = effectiveUserIdFromPayload(payload, currentUserId)
+    const result = await runWithPlayerokUser(effectiveUserId, () =>
       payload.warmup === true
-        ? await handleChats({ payload, currentUserId, deps: chatsDeps })
-        : await runPlayerokInteractive(() => handleChats({ payload, currentUserId, deps: chatsDeps }))
+        ? handleChats({ payload, currentUserId: effectiveUserId, deps: chatsDeps })
+        : runPlayerokInteractive(() =>
+            handleChats({ payload, currentUserId: effectiveUserId, deps: chatsDeps })
+          )
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -134,10 +145,9 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/autolist-tick') {
     const payload = await readUnlimited()
     if (payload == null) return true
-    const payloadUserIdRaw = payload && Object.prototype.hasOwnProperty.call(payload, 'userId') ? payload.userId : null
-    const payloadUserId = Number(payloadUserIdRaw)
-    const effectiveUserId = Number.isFinite(payloadUserId) && payloadUserId > 0 ? payloadUserId : currentUserId
-    const result = await handleAutolistTick({
+    const effectiveUserId = effectiveUserIdFromPayload(payload, currentUserId)
+    const result = await runWithPlayerokUser(effectiveUserId, () =>
+      handleAutolistTick({
       payload,
       currentUserId: effectiveUserId,
       deps: {
@@ -187,8 +197,11 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         processActiveSupercellFlows: deps.processActiveSupercellFlows,
         processSingleSupercellFlow: deps.processSingleSupercellFlow,
         isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+        handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
+        handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
+        fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -283,6 +296,14 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
           processSingleSupercellFlow: deps.processSingleSupercellFlow,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+          handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
+          handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
+          requestDealById: deps.requestDealById,
+          requestItemById: deps.requestItemById,
+          resolveEffectiveProductSettings: deps.resolveEffectiveProductSettings,
+          createChatMessage: deps.createChatMessage,
+          normalizeKeyPart: deps.normalizeKeyPart,
+          buildProductKey: deps.buildProductKey,
         },
       })
     )

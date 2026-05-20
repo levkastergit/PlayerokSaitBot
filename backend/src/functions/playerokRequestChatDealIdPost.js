@@ -44,7 +44,7 @@ function postChatDealBootstrap(token, userAgent, chatId, idType) {
       },
     }
 
-    const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+    const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
       let data = ''
       resp.on('data', (chunk) => {
         data += chunk

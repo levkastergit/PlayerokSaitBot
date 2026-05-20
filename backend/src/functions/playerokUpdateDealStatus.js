@@ -52,7 +52,7 @@ function createUpdateDealStatus() {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

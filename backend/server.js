@@ -284,6 +284,12 @@ const { setupProductSettingsRepo } = require('./src/db/productSettingsRepo')
 
 const { getSettings, getAllSettings, upsertSettings, deleteSettings } = setupProductSettingsRepo(db)
 
+const { setupPlayerokOutboundIpRepo } = require('./src/db/playerokOutboundIpRepo')
+const { loadBindings: loadOutboundIpBindings, saveBindings: saveOutboundIpBindings } =
+  setupPlayerokOutboundIpRepo(db)
+const { setOutboundIpBindingsResolver } = require('./src/infra/playerokOutboundIp')
+setOutboundIpBindingsResolver(loadOutboundIpBindings)
+
 const { setupHistoryRepo } = require('./src/db/historyRepo')
 
 const {
@@ -334,6 +340,10 @@ const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { processActiveSupercellFlows } = require('./src/features/autolist/processActiveSupercellFlows')
 const { scanCompletedAndRelist } = require('./src/features/autolist/scanCompletedAndRelist')
 const { handlePaidChat } = require('./src/features/autolist/handlePaidChat')
+const {
+  handlePostPurchaseAutomessage,
+  handleDealConfirmedAutomessage,
+} = require('./src/features/autolist/handleChatAutomessage')
 const { handleAutolistTick } = require('./src/features/autolist/handleAutolistTick')
 const { handleRelistItem } = require('./src/features/playerok/relistItem/handleRelistItem')
 const { handleItemPriorityStatuses } = require('./src/features/playerok/itemPriorityStatuses/handleItemPriorityStatuses')
@@ -688,11 +698,15 @@ const server = http.createServer(async (req, res) => {
         confirmConnect,
         getPartnersForOwner,
         getDirectorsForWorker,
+        loadOutboundIpBindings,
+        saveOutboundIpBindings,
       },
     })
     if (handled) return
   }
 
+  const { runWithPlayerokUser } = require('./src/infra/playerokRequestContext')
+  return runWithPlayerokUser(currentUserId, async () => {
   if (pathname === '/api/playerok/ddos-cookie') {
     if (req.method === 'GET') {
       const value = getPlayerokDdosCookie()
@@ -840,6 +854,8 @@ const server = http.createServer(async (req, res) => {
         processActiveSupercellFlows,
         processSingleSupercellFlow,
         isSupercellModuleEnabled,
+        handlePostPurchaseAutomessage,
+        handleDealConfirmedAutomessage,
         fetchInProgressDealsFromPlayerok,
         fetchActiveItemsFromPlayerok,
         fetchCompletedDealsFromPlayerok,
@@ -905,6 +921,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 404, { error: 'Not found' })
+  })
 })
 
 server.listen(PORT, () => {

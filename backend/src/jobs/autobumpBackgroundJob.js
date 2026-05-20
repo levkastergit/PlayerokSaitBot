@@ -1,3 +1,5 @@
+const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+
 function setupAutobumpBackgroundJob({
   getStoredToken,
   getAllSettings,
@@ -24,6 +26,7 @@ function setupAutobumpBackgroundJob({
       }
       // Пока фоновое автоподнятие работает только для базового пользователя id=1
       const userId = 1
+      await runWithPlayerokUser(userId, async () => {
       const row = getStoredToken.get(userId)
       if (!row || !row.token) return
       const token = row.token
@@ -175,6 +178,7 @@ function setupAutobumpBackgroundJob({
           console.warn('[autobump-tick] поднятие не удалось', { key, res })
         }
       }
+      })
     } catch (err) {
       // Обработка ошибок Redis OOM и других
       const errMsg = err?.message || String(err || '')

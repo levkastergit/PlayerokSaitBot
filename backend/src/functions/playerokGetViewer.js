@@ -39,7 +39,7 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions('sync') }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

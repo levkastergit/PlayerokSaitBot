@@ -455,6 +455,75 @@ function getLatestPlausibleEmailFromNonViewerMessages(messages, viewerUsername) 
   return null
 }
 
+const ITEM_PAID_MARKER = '{{ITEM_PAID}}'
+
+function isSupercellDebugEnabled() {
+  const v = String(process.env.PLAYEROK_SUPERCELL_DEBUG || '').trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+function logSupercellDebug(label, payload) {
+  if (!isSupercellDebugEnabled()) return
+  const ts = new Date().toISOString()
+  if (payload !== undefined) {
+    console.log(`[PLAYEROK_SUPERCELL_DEBUG] ${ts} ${label}`, payload)
+  } else {
+    console.log(`[PLAYEROK_SUPERCELL_DEBUG] ${ts} ${label}`)
+  }
+}
+
+/**
+ * Самый свежий dealId в чате: сначала по маркеру оплаты, иначе по createdAt сообщения.
+ * Нужен при нескольких сделках с одним покупателем в одном чате.
+ */
+function pickLatestDealIdFromMessages(messages) {
+  const list = Array.isArray(messages) ? messages : []
+  if (list.length === 0) return null
+
+  const sorted = [...list].sort((a, b) => {
+    const ta = a?.createdAt ? new Date(a.createdAt).getTime() : 0
+    const tb = b?.createdAt ? new Date(b.createdAt).getTime() : 0
+    return ta - tb
+  })
+
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const m = sorted[i]
+    const id =
+      m?.dealId != null
+        ? String(m.dealId).trim()
+        : m?.deal?.id != null
+          ? String(m.deal.id).trim()
+          : ''
+    if (!id) continue
+    if (String(m?.text || '').includes(ITEM_PAID_MARKER)) return id
+  }
+
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const m = sorted[i]
+    const id =
+      m?.dealId != null
+        ? String(m.dealId).trim()
+        : m?.deal?.id != null
+          ? String(m.deal.id).trim()
+          : ''
+    if (id) return id
+  }
+
+  return null
+}
+
+/**
+ * dealId из списка чатов может указывать на старую сделку; в истории сообщений — на актуальную.
+ */
+function resolveEffectiveDealIdForChat({ dealIdFromRequest, messages }) {
+  const requested = dealIdFromRequest != null ? String(dealIdFromRequest).trim() : ''
+  const fromMessages = pickLatestDealIdFromMessages(messages)
+  if (!requested) return fromMessages || null
+  if (!fromMessages) return requested
+  if (requested === fromMessages) return requested
+  return fromMessages
+}
+
 function hasSupercellCodeRequestedMessage(messages, viewerUsername, gameName) {
   const expectedText = formatSupercellCodeRequestedMessage(gameName)
   const normalizedViewer = normalizeComparableUsername(viewerUsername)
@@ -483,5 +552,9 @@ module.exports = {
   isSuperSellMarketplaceLabel,
   pickSupercellCategoryFromItemHints,
   pickSupercellCategoryFromDeal,
+  pickLatestDealIdFromMessages,
+  resolveEffectiveDealIdForChat,
+  isSupercellDebugEnabled,
+  logSupercellDebug,
 }
 

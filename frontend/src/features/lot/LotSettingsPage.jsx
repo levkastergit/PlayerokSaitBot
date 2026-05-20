@@ -88,6 +88,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       enabled: false,
       messages: [],
     },
+    postPurchaseAutomessage: {
+      enabled: false,
+      message: '',
+    },
+    dealConfirmedAutomessage: {
+      enabled: false,
+      message: '',
+    },
     emailValidation: {
       enabled: false,
       invalidEmailMessage: '',
@@ -191,6 +199,24 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
               : []
           return { ...base.automessage, ...loadedAm, messages }
         })(),
+        postPurchaseAutomessage: {
+          ...base.postPurchaseAutomessage,
+          ...(loaded.postPurchaseAutomessage || {}),
+          enabled: Boolean(loaded.postPurchaseAutomessage?.enabled),
+          message:
+            typeof loaded.postPurchaseAutomessage?.message === 'string'
+              ? loaded.postPurchaseAutomessage.message
+              : '',
+        },
+        dealConfirmedAutomessage: {
+          ...base.dealConfirmedAutomessage,
+          ...(loaded.dealConfirmedAutomessage || {}),
+          enabled: Boolean(loaded.dealConfirmedAutomessage?.enabled),
+          message:
+            typeof loaded.dealConfirmedAutomessage?.message === 'string'
+              ? loaded.dealConfirmedAutomessage.message
+              : '',
+        },
         emailValidation: {
           ...base.emailValidation,
           ...loadedEmailValidation,
@@ -404,6 +430,20 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     setProductSettings((prev) => ({
       ...prev,
       automessage: { ...(prev?.automessage || {}), [field]: value },
+    }))
+  }
+
+  const setPostPurchaseAutomessage = (field, value) => {
+    setProductSettings((prev) => ({
+      ...prev,
+      postPurchaseAutomessage: { ...(prev?.postPurchaseAutomessage || {}), [field]: value },
+    }))
+  }
+
+  const setDealConfirmedAutomessage = (field, value) => {
+    setProductSettings((prev) => ({
+      ...prev,
+      dealConfirmedAutomessage: { ...(prev?.dealConfirmedAutomessage || {}), [field]: value },
     }))
   }
 
@@ -788,6 +828,70 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                         + Добавить сообщение
                       </button>
                     </div>
+                  )}
+                </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автосообщение после покупки товара</h3>
+                  <p className="card-text">
+                    Отправляется в чат после системного сообщения «Товар отправлен».
+                  </p>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.postPurchaseAutomessage?.enabled)}
+                      onChange={(e) => setPostPurchaseAutomessage('enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">
+                      Включить автосообщение после покупки товара
+                    </span>
+                  </label>
+                  {Boolean(productSettings?.postPurchaseAutomessage?.enabled) && (
+                    <label className="lot-settings-field">
+                      <span className="lot-settings-field__label">Текст сообщения</span>
+                      <textarea
+                        className="lot-settings-textarea"
+                        rows={4}
+                        value={productSettings?.postPurchaseAutomessage?.message ?? ''}
+                        onChange={(e) => setPostPurchaseAutomessage('message', e.target.value)}
+                        placeholder="Сообщение покупателю после отправки товара"
+                      />
+                    </label>
+                  )}
+                </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автосообщение после подтверждения сделки</h3>
+                  <p className="card-text">
+                    Отправляется в чат после системного сообщения «Сделка подтверждена» (или «подтверждена автоматически»).
+                  </p>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.dealConfirmedAutomessage?.enabled)}
+                      onChange={(e) => setDealConfirmedAutomessage('enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">
+                      Включить автосообщение после подтверждения сделки
+                    </span>
+                  </label>
+                  {Boolean(productSettings?.dealConfirmedAutomessage?.enabled) && (
+                    <label className="lot-settings-field">
+                      <span className="lot-settings-field__label">Текст сообщения</span>
+                      <textarea
+                        className="lot-settings-textarea"
+                        rows={4}
+                        value={productSettings?.dealConfirmedAutomessage?.message ?? ''}
+                        onChange={(e) => setDealConfirmedAutomessage('message', e.target.value)}
+                        placeholder="Сообщение покупателю после подтверждения сделки"
+                      />
+                    </label>
                   )}
                 </section>
                 {showSupercellEmailValidation && (

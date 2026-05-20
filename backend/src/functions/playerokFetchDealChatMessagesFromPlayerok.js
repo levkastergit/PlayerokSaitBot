@@ -7,6 +7,8 @@ const {
   pickBuyerEmailFromDeepGraphqlScan,
   collectDeepScanEmailCandidates,
   getLatestPlausibleEmailFromNonViewerMessages,
+  resolveEffectiveDealIdForChat,
+  logSupercellDebug,
   isEmailValid,
 } = require('./supercellHelpers')
 
@@ -240,15 +242,25 @@ function createFetchDealChatMessagesFromPlayerok({
       categoryFromChatList,
     })
 
-    // Пытаемся определить сделку и вытащить почту Supercell ID и данные товара
-    let effectiveDealId = dealId || null
-    if (!effectiveDealId) {
-      for (const m of allMessages) {
-        if (m.dealId) {
-          effectiveDealId = m.dealId
-          break
-        }
-      }
+    // Пытаемся определить сделку и вытащить почту Supercell ID и данные товара.
+    // При нескольких сделках в одном чате dealId из списка чатов часто устаревший.
+    const dealIdBeforeResolve = dealId || null
+    let effectiveDealId = resolveEffectiveDealIdForChat({
+      dealIdFromRequest: dealId,
+      messages: allMessages,
+    })
+    if (dealIdBeforeResolve && effectiveDealId && String(dealIdBeforeResolve) !== String(effectiveDealId)) {
+      logSupercellDebug('effectiveDealId:overriddenFromMessages', {
+        chatId,
+        dealIdFromRequest: dealIdBeforeResolve,
+        effectiveDealId,
+        messageCount: allMessages.length,
+      })
+      console.warn('[PLAYEROK_DEAL_EMAIL] dealId из списка чатов заменён на актуальный из сообщений', {
+        chatId,
+        dealIdFromRequest: dealIdBeforeResolve,
+        effectiveDealId,
+      })
     }
     const refererDealEarly =
       (dealId && String(dealId).trim()) ||

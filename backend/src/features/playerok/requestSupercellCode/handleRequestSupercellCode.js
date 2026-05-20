@@ -1,4 +1,8 @@
-const { pickSupercellCategoryFromDeal } = require('../../../functions/supercellHelpers')
+const {
+  pickSupercellCategoryFromDeal,
+  logSupercellDebug,
+  getSupercellGameByCategory,
+} = require('../../../functions/supercellHelpers')
 
 async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
   const {
@@ -40,8 +44,21 @@ async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
   }
 
   if (!getSupercellGameByCategory(category)) {
+    logSupercellDebug('requestSupercellCode:rejectCategory', {
+      dealId,
+      chatId,
+      categoryFromClient: payload.category || null,
+      categoryResolved: category,
+    })
     return { statusCode: 400, data: { error: 'Категория не поддерживает запрос кода Supercell' } }
   }
+
+  logSupercellDebug('requestSupercellCode:start', {
+    dealId,
+    chatId,
+    category,
+    emailDomain: email.includes('@') ? email.split('@')[1] : null,
+  })
 
   try {
     const result = await requestSupercellCodeForChat({

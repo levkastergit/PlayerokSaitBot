@@ -48,7 +48,7 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions('finance') }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => { data += chunk })
         resp.on('end', () => {

@@ -6,7 +6,7 @@ function setupChatsWarmupBackgroundJob({
   intervalMs = 60000,
   pageLimit = 24,
   maxPagesPerUser = 6,
-  pageDelayMs = 400,
+  pageDelayMs = 0,
 }) {
   let inFlight = false
   console.log('[chats-warmup] фоновое задание запланировано (интервал: 60 с)')

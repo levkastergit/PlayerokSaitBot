@@ -1,5 +1,11 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { changeAccountPassword, fetchAuthMe } from '../../services/authApi'
+import {
+  OUTBOUND_IP_DISABLED,
+  fetchOutboundIpSettings,
+  fetchOutboundIps,
+  saveOutboundIpSettings,
+} from '../../services/outboundIpApi'
 
 export function SettingsTab({ token, onTokenChange, onLogout }) {
   const [value, setValue] = useState(token ?? '')
@@ -16,6 +22,16 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
   const [pwdSubmitting, setPwdSubmitting] = useState(false)
   const [pwdMessage, setPwdMessage] = useState(null)
   const [pwdError, setPwdError] = useState(null)
+
+  const [ipLoading, setIpLoading] = useState(true)
+  const [ipAddresses, setIpAddresses] = useState([])
+  const [ipChannels, setIpChannels] = useState([])
+  const [ipBindings, setIpBindings] = useState({})
+  const [ipLegacyEnv, setIpLegacyEnv] = useState(null)
+  const [ipDisabledValue, setIpDisabledValue] = useState(OUTBOUND_IP_DISABLED)
+  const [ipSaving, setIpSaving] = useState(false)
+  const [ipMessage, setIpMessage] = useState(null)
+  const [ipError, setIpError] = useState(null)
 
   useEffect(() => {
     setValue(token ?? '')
@@ -38,6 +54,64 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
     })
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setIpLoading(true)
+    setIpError(null)
+    Promise.all([fetchOutboundIps(), fetchOutboundIpSettings()]).then(([ips, settings]) => {
+      if (cancelled) return
+      if (!ips.ok) {
+        setIpError(ips.error || 'Не удалось загрузить IP')
+        setIpLoading(false)
+        return
+      }
+      setIpAddresses(ips.addresses)
+      setIpLegacyEnv(ips.legacyEnvIp)
+      setIpDisabledValue(ips.disabledValue || OUTBOUND_IP_DISABLED)
+      const channels =
+        (settings.ok && settings.channels?.length ? settings.channels : ips.channels) || []
+      setIpChannels(channels)
+      setIpBindings(settings.ok ? settings.bindings : {})
+      if (!settings.ok) {
+        setIpError(settings.error || null)
+      }
+      setIpLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const ipSelectOptions = useMemo(() => {
+    const opts = [
+      { value: ipDisabledValue, label: 'Выключено' },
+      { value: '', label: 'Автовыбор (без привязки)' },
+    ]
+    for (const row of ipAddresses) {
+      if (row?.address) opts.push({ value: row.address, label: row.address })
+    }
+    return opts
+  }, [ipAddresses, ipDisabledValue])
+
+  const handleIpBindingChange = (channelId, value) => {
+    setIpBindings((prev) => ({ ...prev, [channelId]: value }))
+    setIpMessage(null)
+    setIpError(null)
+  }
+
+  const handleSaveIpBindings = async (event) => {
+    event.preventDefault()
+    setIpSaving(true)
+    setIpMessage(null)
+    setIpError(null)
+    const r = await saveOutboundIpSettings(ipBindings)
+    setIpSaving(false)
+    if (r.ok) {
+      setIpBindings(r.bindings || ipBindings)
+      setIpMessage('Настройки IP сохранены')
+    } else {
+      setIpError(r.error || 'Ошибка сохранения')
+    }
+  }
 
   const accountLabel =
     accountLogin ||
@@ -160,6 +234,87 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
               )}
             </div>
           </form>
+        </section>
+
+        <section className="card settings-card settings-card--outbound-ip">
+          <h2 className="card-title">Исходящие IP для Playerok</h2>
+          <p className="card-text settings-hint">
+            Для каждой категории: IP с сервера, автовыбор или «Выключено» — тогда связанные запросы к
+            Playerok не выполняются, пока категорию снова не включите.
+          </p>
+          {ipLoading ? (
+            <p className="card-text">Загрузка адресов…</p>
+          ) : ipChannels.length === 0 ? (
+            <p className="card-text settings-hint">Не удалось загрузить категории.</p>
+          ) : (
+            <>
+              {ipAddresses.length > 0 ? (
+                <p className="card-text settings-outbound-ip-list">
+                  <span className="settings-meta-key">Доступные на сервере: </span>
+                  <strong className="settings-meta-value">
+                    {ipAddresses.map((a) => a.address).join(', ')}
+                  </strong>
+                </p>
+              ) : (
+                <p className="card-text settings-hint">
+                  На сервере нет IPv4 для привязки — доступны «Автовыбор» и «Выключено».
+                  {ipLegacyEnv ? (
+                    <> В .env задан PLAYEROK_OUTBOUND_IP={ipLegacyEnv} (fallback при автовыборе).</>
+                  ) : null}
+                </p>
+              )}
+              <form className="settings-form settings-outbound-ip-form" onSubmit={handleSaveIpBindings}>
+                <div className="settings-outbound-ip-grid">
+                  {ipChannels.map((ch) => {
+                    const binding = ipBindings[ch.id] ?? ''
+                    const isOff = binding === ipDisabledValue
+                    return (
+                      <div key={ch.id} className="settings-outbound-ip-row">
+                        <label
+                          htmlFor={`outbound-ip-${ch.id}`}
+                          className="settings-label settings-outbound-ip-label"
+                        >
+                          {ch.label}
+                          {isOff ? (
+                            <span className="settings-outbound-ip-badge settings-outbound-ip-badge--off">
+                              отключено
+                            </span>
+                          ) : null}
+                        </label>
+                        {ch.hint ? (
+                          <p className="settings-hint settings-outbound-ip-hint">{ch.hint}</p>
+                        ) : null}
+                        <select
+                          id={`outbound-ip-${ch.id}`}
+                          className={
+                            isOff
+                              ? 'input-theme settings-outbound-ip-select settings-outbound-ip-select--off'
+                              : 'input-theme settings-outbound-ip-select'
+                          }
+                          value={binding}
+                          onChange={(e) => handleIpBindingChange(ch.id, e.target.value)}
+                        >
+                          {ipSelectOptions.map((opt) => (
+                            <option
+                              key={`${ch.id}-${opt.value === ipDisabledValue ? 'off' : opt.value || 'auto'}`}
+                              value={opt.value}
+                            >
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )
+                  })}
+                </div>
+                {ipError && <p className="settings-message settings-message--error">{ipError}</p>}
+                {ipMessage && <p className="settings-message settings-message--success">{ipMessage}</p>}
+                <button type="submit" className="btn-primary" disabled={ipSaving}>
+                  {ipSaving ? 'Сохранение…' : 'Сохранить IP-настройки'}
+                </button>
+              </form>
+            </>
+          )}
         </section>
 
         <section className="card settings-card settings-card--password">

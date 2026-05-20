@@ -79,7 +79,7 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+      const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
         let data = ''
         resp.on('data', (chunk) => {
           data += chunk

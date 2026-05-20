@@ -358,6 +358,8 @@ export async function fetchUserChats(token, opts = {}) {
   }
   if (opts.afterCursor) payload.afterCursor = opts.afterCursor
   if (opts.limit != null) payload.limit = opts.limit
+  if (opts.preferCache === false) payload.preferCache = false
+  else payload.preferCache = true
 
   const response = await trackedFetch(BACKEND_USER_CHATS_URL, {
     ...FETCH_CREDENTIALS,

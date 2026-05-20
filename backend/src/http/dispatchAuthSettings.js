@@ -21,6 +21,9 @@ const { handlePartnersDeleteInvite } = require('../features/partners/handlePartn
 const { handlePartnersGetOwnerList } = require('../features/partners/handlePartnersGetOwnerList')
 const { handlePartnersGetWorkerList } = require('../features/partners/handlePartnersGetWorkerList')
 const { handlePartnersConnect } = require('../features/partners/handlePartnersConnect')
+const { handleGetOutboundIps } = require('../features/playerokOutboundIp/handleGetOutboundIps')
+const { handleGetOutboundIpSettings } = require('../features/playerokOutboundIp/handleGetOutboundIpSettings')
+const { handleSetOutboundIpSettings } = require('../features/playerokOutboundIp/handleSetOutboundIpSettings')
 
 async function dispatchPublicAuth({ req, res, pathname, deps }) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -208,6 +211,31 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
       return true
     }
     const result = await handlePartnersConnect({ payload, deps, currentUserId })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/playerok/outbound-ips') {
+    const result = await handleGetOutboundIps()
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/playerok/outbound-ip-settings') {
+    const result = await handleGetOutboundIpSettings({ currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/outbound-ip-settings') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handleSetOutboundIpSettings({ payload, currentUserId, deps })
     sendJson(res, result.statusCode, result.data)
     return true
   }

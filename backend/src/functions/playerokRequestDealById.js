@@ -63,7 +63,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'user-agent': ua,
           },
         }
-        const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+        const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
           let data = ''
           resp.on('data', (chunk) => {
             data += chunk
@@ -107,7 +107,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'Content-Length': Buffer.byteLength(body, 'utf8'),
           },
         }
-        const req = https.request({ ...options, ...playerokHttpsExtraOptions() }, (resp) => {
+        const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
           let data = ''
           resp.on('data', (chunk) => {
             data += chunk
