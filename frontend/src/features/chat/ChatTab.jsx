@@ -78,6 +78,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   })
   const [emailDraftByChatId, setEmailDraftByChatId] = useState({})
   const listRef = useRef(null)
+  const messagesRef = useRef(null)
+  const stickToBottomRef = useRef(true)
   const loadingMoreRef = useRef(false)
   const chatStateByIdRef = useRef({})
   const selectedChatIdRef = useRef(null)
@@ -316,6 +318,18 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       return ta - tb
     })
   }
+
+  const isMessagesNearBottom = (el, threshold = 80) => {
+    if (!el) return true
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    return distance < threshold
+  }
+
+  const scrollMessagesToBottom = useCallback(() => {
+    const el = messagesRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+  }, [])
 
   const applyLoadedChatData = (
     chat,
@@ -863,6 +877,37 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     selectedChat && (selectedChatState?.itemImageUrl || selectedChat.itemImageUrl || null)
   const currentItemTitle =
     selectedChat && (selectedChatState?.itemTitle || selectedChat.itemTitle || '')
+
+  useEffect(() => {
+    stickToBottomRef.current = true
+  }, [selectedChatId])
+
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return undefined
+    const onScroll = () => {
+      stickToBottomRef.current = isMessagesNearBottom(el)
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [selectedChatId, selectedChatState?.messages?.length])
+
+  useEffect(() => {
+    if (!selectedChatId) return
+    const state = chatStateById[selectedChatId]
+    if (!state || state.loading) return
+    if (!(state.messages?.length > 0)) return
+    if (!stickToBottomRef.current) return
+    const frameId = requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollMessagesToBottom())
+    })
+    return () => cancelAnimationFrame(frameId)
+  }, [
+    selectedChatId,
+    selectedChatState?.loading,
+    selectedChatState?.messages,
+    scrollMessagesToBottom,
+  ])
 
   useEffect(() => {
     if (!token || !selectedChat?.id) return
@@ -1550,7 +1595,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
               {!selectedChatState?.loading &&
                 !selectedChatState?.error &&
                 (selectedChatState?.messages || []).length > 0 && (
-                  <div className="chat-messages">
+                  <div ref={messagesRef} className="chat-messages">
                     {(() => {
                       const messagesToRender = selectedChatState.messages || []
                       return messagesToRender.map((m) => {
