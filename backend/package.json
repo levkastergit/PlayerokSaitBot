@@ -6,7 +6,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.10.0",
     "dotenv": "^16.6.1",
     "https-proxy-agent": "^5.0.1"
   }

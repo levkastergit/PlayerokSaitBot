@@ -6,6 +6,11 @@ import {
   fetchOutboundIps,
   saveOutboundIpSettings,
 } from '../../services/outboundIpApi'
+import {
+  fetchApprouteSettings,
+  saveApprouteApiKey,
+  clearApprouteApiKey,
+} from '../../services/approuteApi'
 
 export function SettingsTab({ token, onTokenChange, onLogout }) {
   const [value, setValue] = useState(token ?? '')
@@ -32,6 +37,13 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
   const [ipSaving, setIpSaving] = useState(false)
   const [ipMessage, setIpMessage] = useState(null)
   const [ipError, setIpError] = useState(null)
+
+  const [approuteKeyValue, setApprouteKeyValue] = useState('')
+  const [approuteConfigured, setApprouteConfigured] = useState(false)
+  const [approuteLoading, setApprouteLoading] = useState(true)
+  const [approuteSaving, setApprouteSaving] = useState(false)
+  const [approuteMessage, setApprouteMessage] = useState(null)
+  const [approuteError, setApprouteError] = useState(null)
 
   useEffect(() => {
     setValue(token ?? '')
@@ -77,6 +89,22 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
         setIpError(settings.error || null)
       }
       setIpLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setApprouteLoading(true)
+    setApprouteError(null)
+    fetchApprouteSettings().then((r) => {
+      if (cancelled) return
+      if (r.ok) {
+        setApprouteConfigured(Boolean(r.configured))
+      } else {
+        setApprouteError(r.error || null)
+      }
+      setApprouteLoading(false)
     })
     return () => { cancelled = true }
   }, [])
@@ -134,6 +162,37 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
     onTokenChange?.('')
     setIsSaved(false)
     setSavedAt(new Date())
+  }
+
+  const handleSaveApprouteKey = async (event) => {
+    event.preventDefault()
+    setApprouteSaving(true)
+    setApprouteMessage(null)
+    setApprouteError(null)
+    const r = await saveApprouteApiKey(approuteKeyValue)
+    setApprouteSaving(false)
+    if (r.ok) {
+      setApprouteConfigured(Boolean(r.configured))
+      setApprouteKeyValue('')
+      setApprouteMessage('Ключ AppRoute сохранён')
+    } else {
+      setApprouteError(r.error || 'Ошибка сохранения')
+    }
+  }
+
+  const handleClearApprouteKey = async () => {
+    setApprouteSaving(true)
+    setApprouteMessage(null)
+    setApprouteError(null)
+    const r = await clearApprouteApiKey()
+    setApprouteSaving(false)
+    if (r.ok) {
+      setApprouteConfigured(false)
+      setApprouteKeyValue('')
+      setApprouteMessage(null)
+    } else {
+      setApprouteError(r.error || 'Ошибка')
+    }
   }
 
   const handlePasswordSubmit = async (event) => {
@@ -199,6 +258,54 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
                 </button>
               </div>
             </>
+          )}
+        </section>
+
+        <section className="card settings-card settings-card--approute">
+          <h2 className="card-title">AppRoute API</h2>
+          <p className="card-text settings-hint">
+            Ключ для автовыдачи через{' '}
+            <a href="https://approute.ru/" target="_blank" rel="noopener noreferrer">
+              approute.ru
+            </a>
+            . Заголовок запроса: X-Api-Key.
+          </p>
+          {approuteLoading ? (
+            <p className="card-text">Загрузка…</p>
+          ) : (
+            <form className="settings-form" onSubmit={handleSaveApprouteKey}>
+              <label htmlFor="approute-api-key" className="settings-label">
+                API-ключ
+              </label>
+              <input
+                id="approute-api-key"
+                className="input-theme"
+                type="password"
+                value={approuteKeyValue}
+                onChange={(e) => setApprouteKeyValue(e.target.value)}
+                placeholder={approuteConfigured ? 'Ключ сохранён (скрыт)' : 'Вставьте API-ключ'}
+                autoComplete="off"
+              />
+              <div className="token-actions">
+                <button type="submit" className="btn-primary" disabled={approuteSaving}>
+                  Сохранить ключ
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={approuteSaving}
+                  onClick={handleClearApprouteKey}
+                >
+                  Очистить
+                </button>
+              </div>
+              {approuteMessage && (
+                <p className="settings-message settings-message--success">{approuteMessage}</p>
+              )}
+              {approuteError && (
+                <p className="settings-message settings-message--error">{approuteError}</p>
+              )}
+            </form>
           )}
         </section>
 

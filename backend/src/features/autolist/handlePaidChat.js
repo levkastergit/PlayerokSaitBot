@@ -2,6 +2,22 @@ const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
 const { logSupercellDebug } = require('../../functions/supercellHelpers')
 const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
 const { toUnixTs } = require('../../functions/toUnixTs')
+const { shouldSkipApprouteAutodelivery } = require('../approute/approuteAutodeliveryGuards')
+const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
+const { logAutolistTick, warnAutolistTick } = require('../../debug/autolistTickLog')
+const {
+  dealApprouteOrderEventKey,
+  dealApprouteChatEventKey,
+} = require('../../functions/approuteDealKeys')
+const {
+  buildPaidChatAutomessageEventKey,
+  tryBeginChatAutomessageSend,
+  finishChatAutomessageSend,
+  tryBeginApprouteChatSend,
+  finishApprouteChatSend,
+  PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
+} = require('./autolistState')
+const { hasSellerMessageText } = require('./handleChatAutomessage')
 
 async function handlePaidChat({
   currentUserId,
@@ -25,6 +41,7 @@ async function handlePaidChat({
   publishItem,
   insertListingFee,
   autolistMarkProcessed,
+  autolistWasProcessed,
   autolistSetItemState,
   insertSale,
   normalizeKeyPart,
@@ -39,34 +56,89 @@ async function handlePaidChat({
   createChatMessage,
   sleep,
   supercellModuleEnabled = true,
+  loadApprouteApiKeyPlain,
+  runApprouteAutodelivery,
+  updateDealStatus,
+  deliveryOnly = false,
+  chatMessages = null,
+  viewerUsername = null,
 }) {
   // 2.2 Фиксируем продажу и выполняем автосообщения/автовыдачу для этого товара
-  const item = await withRetry(
-    () => requestItemById(token, userAgent, dealItemId),
-    { label: 'itemById', retries: 3, shouldRetry: isPlayerokRateLimitError }
-  )
+  let item = null
+  if (dealItemId) {
+    item = await withRetry(
+      () => requestItemById(token, userAgent, dealItemId),
+      { label: 'itemById', retries: 3, shouldRetry: isPlayerokRateLimitError }
+    )
+  }
+  if (!item && fullDealSnapshot?.item && typeof fullDealSnapshot.item === 'object') {
+    item = fullDealSnapshot.item
+  }
 
-  if (!item) return
-
-  const itemStatus = item.status || null
-  const rawTitle = item.title || item.name || ''
+  const itemStatus = item?.status || fullDealSnapshot?.item?.status || null
+  const rawTitle =
+    item?.title ||
+    item?.name ||
+    fullDealSnapshot?.item?.title ||
+    fullDealSnapshot?.item?.name ||
+    fullDealSnapshot?.productTitle ||
+    lastChat?.itemTitle ||
+    ''
   const rawGame =
     typeof item?.game === 'string'
       ? item.game
-      : (item?.game?.name && typeof item.game.name === 'string' ? item.game.name : '') || item?.game_name || ''
+      : (item?.game?.name && typeof item.game.name === 'string' ? item.game.name : '') ||
+        item?.game_name ||
+        (typeof fullDealSnapshot?.item?.game === 'string' ? fullDealSnapshot.item.game : '') ||
+        (fullDealSnapshot?.item?.game?.name && typeof fullDealSnapshot.item.game.name === 'string'
+          ? fullDealSnapshot.item.game.name
+          : '') ||
+        fullDealSnapshot?.item?.game_name ||
+        (typeof fullDealSnapshot?.category === 'string' ? fullDealSnapshot.category : '') ||
+        (typeof lastChat?.category === 'string' ? lastChat.category : '') ||
+        ''
   const itemCategoryName =
     item?.category && typeof item.category === 'object'
       ? String(item.category.name || item.category.title || '').trim()
-      : ''
+      : typeof fullDealSnapshot?.category === 'string'
+        ? String(fullDealSnapshot.category).trim()
+        : ''
 
   const title = normalizeKeyPart(rawTitle)
   const game = normalizeKeyPart(rawGame)
-  const productKey = buildProductKey(game, title)
+  const productKeyFromDeal =
+    fullDealSnapshot && typeof fullDealSnapshot.productKey === 'string'
+      ? String(fullDealSnapshot.productKey).trim()
+      : ''
+  const productKey = productKeyFromDeal || buildProductKey(game, title)
+  const publishEventKey = `deal:${dealId || dealItemId}`
+  const approuteOrderKey = dealApprouteOrderEventKey(dealId, dealItemId)
+  const approuteChatKey = dealApprouteChatEventKey(dealId, dealItemId)
+  const skipPublishRelist =
+    typeof autolistWasProcessed === 'function' && autolistWasProcessed(tokenHash, publishEventKey)
+
+  const { effectiveSettings: settingsForPublish, effectiveKey: settingsKeyForPublish } =
+    resolveEffectiveProductSettings(currentUserId, productKey)
+  const autolistEnabled = Boolean(settingsForPublish?.autolist?.enabled)
+  const shouldTryPublish = !deliveryOnly && autolistEnabled
 
   // 2.3 Пытаемся перевыставить конкретный товар из сделки, подбирая корректный статус приоритета
   let paidChatPriorityStatusId = null
   let paidChatStatusIds = []
-  try {
+  if (!shouldTryPublish) {
+    // только доставка в чат (AppRoute и т.п.) — publishItem не вызываем
+  } else if (!dealItemId) {
+    warnAutolistTick('paid_chat: publishItem пропущен, отсутствует itemId', {
+      dealId: dealId || null,
+      productKey: String(productKey || ''),
+    })
+  } else if (skipPublishRelist) {
+    logAutolistTick('paid_chat: publish уже обработан, пропуск publishItem', {
+      dealItemId,
+      productKey: String(productKey || ''),
+      publishEventKey,
+    })
+  } else try {
     // Для получения статусов поднятия используем ОРИГИНАЛЬНУЮ цену (rawPrice), а не цену со скидкой
     const priceForStatuses =
       typeof item?.rawPrice === 'number' && item.rawPrice > 0
@@ -98,7 +170,7 @@ async function handlePaidChat({
 
     const wasRelistedByScan = relistedByScanIds.includes(String(dealItemId))
     if (wasRelistedByScan) {
-      console.log('[autolist-tick] paid_chat: товар уже перевыставлен в scan, пропуск publishItem', {
+      logAutolistTick('paid_chat: товар уже перевыставлен в scan, пропуск publishItem', {
         dealItemId,
         productKey: String(productKey || ''),
       })
@@ -120,7 +192,7 @@ async function handlePaidChat({
       let statusesToTry = priorityStatusId ? [priorityStatusId, ...otherStatuses] : otherStatuses
       if (statusesToTry.length === 0) statusesToTry = [AUTOBUMP_PRIORITY_STATUS_ID]
 
-      console.log('[autolist-tick] paid_chat: перед publishItem', {
+      logAutolistTick('paid_chat: перед publishItem', {
         dealItemId,
         itemIdFromItem: item?.id,
         itemStatus,
@@ -193,7 +265,7 @@ async function handlePaidChat({
         updatedAt: nowTs,
       })
     } else {
-      console.log('[autolist-tick] paid_chat: publishItem не вызывался — статус товара не SOLD', {
+      logAutolistTick('paid_chat: publishItem не вызывался — статус товара не SOLD', {
         dealItemId,
         itemStatus,
         productKey: String(productKey || ''),
@@ -204,7 +276,7 @@ async function handlePaidChat({
     const cannotUpdateStatus = msg.includes('нельзя обновить статус')
     const retryable = isAutolistRetryableMessage(msg)
 
-    console.warn('[autolist-tick] перевыставление не удалось', {
+    warnAutolistTick('перевыставление не удалось', {
       trigger: 'paid_chat',
       itemId: dealItemId,
       productKey: String(productKey || ''),
@@ -245,9 +317,9 @@ async function handlePaidChat({
   // Fix: insert into sales_history
   try {
     const salePrice =
-      typeof item.price === 'number'
+      typeof item?.price === 'number'
         ? item.price
-        : typeof item.rawPrice === 'number'
+        : typeof item?.rawPrice === 'number'
           ? item.rawPrice
           : 0
 
@@ -289,7 +361,8 @@ async function handlePaidChat({
   }
 
   // Настройки: по productKey; если есть settingsLabel — берём из группы __group__::метка
-  const { effectiveSettings, effectiveKey } = resolveEffectiveProductSettings(currentUserId, productKey)
+  const effectiveSettings = settingsForPublish
+  const effectiveKey = settingsKeyForPublish
 
   const dealCategory =
     fullDealSnapshot &&
@@ -347,60 +420,136 @@ async function handlePaidChat({
       ),
     })
 
+    const prevFlow = flowMap[flowChatId] || {}
+    const prevDealId = prevFlow.dealId != null ? String(prevFlow.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDealInChat = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+
+    const emailFromNewDeal = String(
+      extractSupercellEmailFromFields(
+        (fullDealSnapshot && Array.isArray(fullDealSnapshot.obtainingFields) && fullDealSnapshot.obtainingFields) ||
+          (fullDealSnapshot &&
+            fullDealSnapshot.item &&
+            Array.isArray(fullDealSnapshot.item.dataFields) &&
+            fullDealSnapshot.item.dataFields) ||
+          []
+      ) || ''
+    ).trim() || null
+
     flowMap[flowChatId] = {
-      ...(flowMap[flowChatId] || {}),
+      ...prevFlow,
       chatId: flowChatId,
       dealId: dealId || null,
       productKey,
       category: effectiveCategory,
       invalidEmailMessage,
-      invalidMessageSent: Boolean(flowMap[flowChatId]?.invalidMessageSent),
-      requestCodeRequested: Boolean(flowMap[flowChatId]?.requestCodeRequested),
-      latestEmail: String(
-        extractSupercellEmailFromFields(
-          (fullDealSnapshot && Array.isArray(fullDealSnapshot.obtainingFields) && fullDealSnapshot.obtainingFields) ||
-            (fullDealSnapshot &&
-              fullDealSnapshot.item &&
-              Array.isArray(fullDealSnapshot.item.dataFields) &&
-              fullDealSnapshot.item.dataFields) ||
-            []
-        ) || ''
-      ).trim() || null,
+      invalidMessageSent: isNewDealInChat ? false : Boolean(prevFlow.invalidMessageSent),
+      requestCodeRequested: isNewDealInChat ? false : Boolean(prevFlow.requestCodeRequested),
+      latestEmail: emailFromNewDeal || (isNewDealInChat ? null : prevFlow.latestEmail || null),
       active: true,
-      createdAt: Number(flowMap[flowChatId]?.createdAt || nowTs),
+      createdAt: isNewDealInChat ? nowTs : Number(prevFlow.createdAt || nowTs),
       updatedAt: nowTs,
     }
   }
 
   const s = effectiveSettings
-  if (!s) return
+
+  const runApprouteBlock = typeof runApprouteAutodelivery === 'function' && Boolean(s?.autodeliveryApi?.enabled)
+
+  if (!s) {
+    warnAutolistTick('paid_chat: нет настроек для товара', {
+      productKey: String(productKey || ''),
+      effectiveKey: String(effectiveKey || ''),
+      dealId: dealId || null,
+    })
+    logApprouteAutodelivery('skip: no_product_settings', {
+      productKey: String(productKey || ''),
+      dealId: dealId || null,
+      approuteChatKey,
+    })
+    return
+  }
 
   // Автосообщение
   const am = s.automessage
   if (am?.enabled && lastChat?.id) {
-    const raw = am.messages
-    const messages = Array.isArray(raw)
-      ? raw.map((m) => String(m).trim()).filter(Boolean)
-      : typeof raw === 'string' && raw.trim()
-        ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
-        : []
+    const chatIdStr = String(lastChat.id)
+    const automessageEventKey = buildPaidChatAutomessageEventKey(chatIdStr, dealId)
+    const dealTsForAutomessage =
+      (Number(dealTs) > 0 ? Number(dealTs) : 0) || dealPurchaseUnixTs(fullDealSnapshot, toUnixTs) || 0
+    const isAutomessageDealExpired =
+      dealTsForAutomessage > 0 && nowTs - dealTsForAutomessage > PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC
 
-    for (let i = 0; i < messages.length; i++) {
+    if (isAutomessageDealExpired) {
+      if (automessageEventKey && typeof autolistMarkProcessed === 'function') {
+        autolistMarkProcessed(tokenHash, automessageEventKey, nowTs)
+      }
+      logAutolistTick('paid_chat: automessage пропущен (сделка устарела)', {
+        chatId: chatIdStr,
+        dealId: dealId || null,
+        dealAgeSec: nowTs - dealTsForAutomessage,
+        maxAgeSec: PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
+      })
+    } else if (
+      automessageEventKey &&
+      typeof tryBeginChatAutomessageSend === 'function' &&
+      typeof finishChatAutomessageSend === 'function' &&
+      tryBeginChatAutomessageSend(tokenHash, automessageEventKey)
+    ) {
+      let automessageSuccess = false
       try {
-        await withRetry(
-          () => createChatMessage(token, userAgent, lastChat.id, messages[i]),
-          { label: 'createChatMessage(automessage)', retries: 3, shouldRetry: isPlayerokRateLimitError }
-        )
-        if (i < messages.length - 1) {
-          await sleep(900)
+        const raw = am.messages
+        const textsToSend = Array.isArray(raw)
+          ? raw.map((m) => String(m).trim()).filter(Boolean)
+          : typeof raw === 'string' && raw.trim()
+            ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
+            : []
+
+        const history = Array.isArray(chatMessages) ? chatMessages : []
+        const allAlreadyInChat =
+          textsToSend.length > 0 &&
+          history.length > 0 &&
+          textsToSend.every((line) => hasSellerMessageText(history, line, viewerUsername))
+
+        if (allAlreadyInChat) {
+          automessageSuccess = true
+        } else if (textsToSend.length > 0) {
+          let sentCount = 0
+          let failedIndex = -1
+
+          for (let i = 0; i < textsToSend.length; i++) {
+            if (history.length > 0 && hasSellerMessageText(history, textsToSend[i], viewerUsername)) {
+              sentCount += 1
+              continue
+            }
+            try {
+              await withRetry(
+                () => createChatMessage(token, userAgent, chatIdStr, textsToSend[i]),
+                { label: 'createChatMessage(automessage)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+              )
+              sentCount += 1
+              if (i < textsToSend.length - 1) {
+                await sleep(900)
+              }
+            } catch (err) {
+              failedIndex = i
+              warnAutolistTick('automessage не отправлено', {
+                reason: 'automessage_send_failed',
+                chatId: chatIdStr,
+                dealId: dealId || null,
+                index: i,
+                error: err?.message || String(err),
+              })
+              break
+            }
+          }
+
+          automessageSuccess = sentCount === textsToSend.length && failedIndex < 0
         }
-      } catch (err) {
-        console.warn('[autolist-tick] automessage не отправлено', {
-          reason: 'automessage_send_failed',
-          chatId: lastChat.id,
-          dealId: dealId || null,
-          index: i,
-          error: err?.message || String(err),
+      } finally {
+        finishChatAutomessageSend(tokenHash, automessageEventKey, {
+          success: automessageSuccess,
+          nowTs,
         })
       }
     }
@@ -417,7 +566,7 @@ async function handlePaidChat({
           { label: 'createChatMessage(messageOnPurchase)', retries: 3, shouldRetry: isPlayerokRateLimitError }
         )
       } catch (err) {
-        console.warn('[autolist-tick] автодоставка messageOnPurchase не удалась', { error: err?.message })
+        warnAutolistTick('автодоставка messageOnPurchase не удалась', { error: err?.message })
       }
     }
 
@@ -438,8 +587,100 @@ async function handlePaidChat({
           const updatedAt = Math.floor(Date.now() / 1000)
           upsertSettings.run(currentUserId, effectiveKey, JSON.stringify(updated), updatedAt)
         } catch (err) {
-          console.warn('[autolist-tick] автодоставка отправка кода не удалась', { productKey: effectiveKey, error: err?.message })
+          warnAutolistTick('автодоставка отправка кода не удалась', { productKey: effectiveKey, error: err?.message })
         }
+      }
+    }
+  }
+
+  if (typeof runApprouteAutodelivery !== 'function') {
+    warnAutolistTick('paid_chat: runApprouteAutodelivery не подключён', {
+      productKey: String(productKey || ''),
+      dealId: dealId || null,
+    })
+  } else if (!runApprouteBlock) {
+    const apiCfg = s?.autodeliveryApi
+    const approuteNeverConfigured =
+      !apiCfg?.enabled && !(apiCfg?.serviceId != null && String(apiCfg.serviceId).trim())
+    logApprouteAutodelivery('skip: autodelivery_api_disabled', {
+      productKey: String(effectiveKey || productKey || ''),
+      dealId: dealId || null,
+      approuteChatKey,
+      apiEnabled: Boolean(apiCfg?.enabled),
+      hasServiceId: Boolean(apiCfg?.serviceId),
+      approuteNeverConfigured,
+    })
+    if (approuteNeverConfigured && typeof autolistMarkProcessed === 'function') {
+      autolistMarkProcessed(tokenHash, approuteChatKey, nowTs)
+    }
+  } else {
+    const legacyApprouteKey = `approute:${dealId || dealItemId}`
+    const approuteChatSent =
+      typeof autolistWasProcessed === 'function' && autolistWasProcessed(tokenHash, approuteChatKey)
+    const approuteOrderPlaced =
+      (typeof autolistWasProcessed === 'function' && autolistWasProcessed(tokenHash, approuteOrderKey)) ||
+      (typeof autolistWasProcessed === 'function' && autolistWasProcessed(tokenHash, legacyApprouteKey))
+    const lastMessageText = lastChat?.lastMessage?.text ?? null
+    const approuteGuard = shouldSkipApprouteAutodelivery({ dealStatus, lastMessageText })
+
+    if (approuteChatSent) {
+      logApprouteAutodelivery('skip: chat already sent', {
+        approuteChatKey,
+        productKey: String(effectiveKey || ''),
+        dealId: dealId || null,
+      })
+    } else if (
+      approuteGuard.skip &&
+      !approuteOrderPlaced &&
+      !(approuteGuard.reason === 'item_sent' && runApprouteBlock)
+    ) {
+      logApprouteAutodelivery('skip: paid_chat deal_state (no order)', {
+        approuteChatKey,
+        productKey: String(effectiveKey || ''),
+        dealId: dealId || null,
+        reason: approuteGuard.reason,
+        dealStatus: approuteGuard.dealStatus,
+      })
+    } else if (!tryBeginApprouteChatSend(tokenHash, approuteChatKey)) {
+      logApprouteAutodelivery('skip: approute in-flight', {
+        approuteChatKey,
+        dealId: dealId || null,
+      })
+    } else {
+      try {
+        const approuteResult = await runApprouteAutodelivery({
+          currentUserId,
+          loadApprouteApiKeyPlain,
+          settings: s,
+          lastChat,
+          dealId,
+          dealStatus,
+          lastMessageText,
+          productKey: effectiveKey,
+          token,
+          userAgent,
+          createChatMessage,
+          withRetry,
+          isPlayerokRateLimitError,
+          sleep,
+          orderAlreadyPlaced: approuteOrderPlaced || deliveryOnly,
+          onApprouteOrderPlaced: () => {
+            if (typeof autolistMarkProcessed === 'function') {
+              autolistMarkProcessed(tokenHash, approuteOrderKey, nowTs)
+            }
+          },
+          updateDealStatus,
+          chatMessages,
+          viewerUsername,
+        })
+        if (approuteResult?.markApprouteOrderDone && typeof autolistMarkProcessed === 'function') {
+          autolistMarkProcessed(tokenHash, approuteOrderKey, nowTs)
+        }
+        if (approuteResult?.markApprouteChatDone && typeof autolistMarkProcessed === 'function') {
+          autolistMarkProcessed(tokenHash, approuteChatKey, nowTs)
+        }
+      } finally {
+        finishApprouteChatSend(tokenHash, approuteChatKey)
       }
     }
   }

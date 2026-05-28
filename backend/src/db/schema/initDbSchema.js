@@ -7,7 +7,13 @@ const { createListingFeesTable } = require('./createListingFeesTable')
 const { createActionsHistoryTable } = require('./createActionsHistoryTable')
 const { createPartnersTable } = require('./createPartnersTable')
 const { createChatSnapshotsTable } = require('./createChatSnapshotsTable')
+const { createChatThreadsTable } = require('./createChatThreadsTable')
+const { createChatMessagesTable } = require('./createChatMessagesTable')
+const { createChatDealsTable } = require('./createChatDealsTable')
+const { createChatSyncStateTable } = require('./createChatSyncStateTable')
+const { createChatSyncRunsTable } = require('./createChatSyncRunsTable')
 const { createPlayerokOutboundIpSettingsTable } = require('./createPlayerokOutboundIpSettingsTable')
+const { createApprouteSettingsTable } = require('./createApprouteSettingsTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -19,7 +25,13 @@ function initDbSchema(db) {
   createActionsHistoryTable(db)
   createPartnersTable(db)
   createChatSnapshotsTable(db)
+  createChatThreadsTable(db)
+  createChatMessagesTable(db)
+  createChatDealsTable(db)
+  createChatSyncStateTable(db)
+  createChatSyncRunsTable(db)
   createPlayerokOutboundIpSettingsTable(db)
+  createApprouteSettingsTable(db)
 }
 
 module.exports = { initDbSchema }

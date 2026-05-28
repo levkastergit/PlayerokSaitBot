@@ -457,6 +457,47 @@ function getLatestPlausibleEmailFromNonViewerMessages(messages, viewerUsername) 
 
 const ITEM_PAID_MARKER = '{{ITEM_PAID}}'
 
+function messageDealId(msg) {
+  if (!msg || typeof msg !== 'object') return ''
+  if (msg.dealId != null) return String(msg.dealId).trim()
+  if (msg.deal && msg.deal.id != null) return String(msg.deal.id).trim()
+  return ''
+}
+
+/**
+ * Ограничивает историю текущей сделкой (повторные покупки в одном чате).
+ * Сначала якорь {{ITEM_PAID}} для dealId, иначе сообщения с тем же dealId.
+ */
+function scopeMessagesToDeal(messages, dealId) {
+  const list = Array.isArray(messages) ? messages : []
+  const wantDeal = dealId != null ? String(dealId).trim() : ''
+  if (!wantDeal) return list
+
+  const sorted = [...list].sort((a, b) => {
+    const ta = a?.createdAt ? new Date(a.createdAt).getTime() : 0
+    const tb = b?.createdAt ? new Date(b.createdAt).getTime() : 0
+    return ta - tb
+  })
+
+  let paidAnchorIndex = -1
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const m = sorted[i]
+    if (!String(m?.text || '').includes(ITEM_PAID_MARKER)) continue
+    const mid = messageDealId(m)
+    if (!mid || mid === wantDeal) {
+      paidAnchorIndex = i
+      break
+    }
+  }
+  if (paidAnchorIndex >= 0) return sorted.slice(paidAnchorIndex)
+
+  const filtered = sorted.filter((m) => {
+    const mid = messageDealId(m)
+    return !mid || mid === wantDeal
+  })
+  return filtered.length > 0 ? filtered : list
+}
+
 function isSupercellDebugEnabled() {
   const v = String(process.env.PLAYEROK_SUPERCELL_DEBUG || '').trim().toLowerCase()
   return v === '1' || v === 'true' || v === 'yes' || v === 'on'
@@ -524,10 +565,10 @@ function resolveEffectiveDealIdForChat({ dealIdFromRequest, messages }) {
   return fromMessages
 }
 
-function hasSupercellCodeRequestedMessage(messages, viewerUsername, gameName) {
+function hasSupercellCodeRequestedMessage(messages, viewerUsername, gameName, dealId = null) {
   const expectedText = formatSupercellCodeRequestedMessage(gameName)
   const normalizedViewer = normalizeComparableUsername(viewerUsername)
-  const list = Array.isArray(messages) ? messages : []
+  const list = scopeMessagesToDeal(messages, dealId)
   return list.some((msg) => {
     const text = String(msg?.text || '').trim()
     if (text !== expectedText) return false
@@ -554,6 +595,8 @@ module.exports = {
   pickSupercellCategoryFromDeal,
   pickLatestDealIdFromMessages,
   resolveEffectiveDealIdForChat,
+  scopeMessagesToDeal,
+  messageDealId,
   isSupercellDebugEnabled,
   logSupercellDebug,
 }

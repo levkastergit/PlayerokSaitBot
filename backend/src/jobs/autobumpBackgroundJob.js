@@ -16,8 +16,6 @@ function setupAutobumpBackgroundJob({
   const autobumpLastAttemptByKey = {}
   let autobumpViewerBackoffUntil = 0
   let autobumpViewerFailStreak = 0
-  let autobumpLastErrorLogTs = 0
-  console.log('[autobump] фоновое задание запланировано (интервал: 15 с)')
 
   setInterval(async () => {
     try {
@@ -174,8 +172,6 @@ function setupAutobumpBackgroundJob({
 
         if (res.ok && res.bumpedAt) {
           lastBumpByKey[key] = res.bumpedAt
-        } else {
-          console.warn('[autobump-tick] поднятие не удалось', { key, res })
         }
       }
       })
@@ -183,7 +179,6 @@ function setupAutobumpBackgroundJob({
       // Обработка ошибок Redis OOM и других
       const errMsg = err?.message || String(err || '')
       if (errMsg.includes('OOM') || errMsg.includes('maxmemory')) {
-        console.warn('[autobump-tick] Redis OOM — пропуск этого тика', { error: errMsg })
         return
       }
 
@@ -199,18 +194,8 @@ function setupAutobumpBackgroundJob({
           30 * 2 ** Math.min(autobumpViewerFailStreak - 1, 4)
         )
         autobumpViewerBackoffUntil = Date.now() + backoffSec * 1000
-        const now = Date.now()
-        if (now - autobumpLastErrorLogTs > 120000) {
-          autobumpLastErrorLogTs = now
-          console.warn(
-            '[autobump-tick] Playerok viewer недоступен (5xx/сеть). Пауза',
-            { backoffSec, message: errMsg.slice(0, 280) }
-          )
-        }
         return
       }
-
-      console.error('[autobump-tick] ошибка', err)
     }
   }, intervalMs)
 }

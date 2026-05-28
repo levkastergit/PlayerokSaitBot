@@ -22,13 +22,6 @@ function createFetchActiveItemsFromPlayerok({
       if (cached?.active) {
         const now = Date.now()
         if (now < cached.active.expiresAt) {
-          console.log('[cache] возврат активных лотов из кэша', {
-            token: token.substring(0, 10) + '...',
-            age:
-              Math.floor(
-                (now - (cached.active.expiresAt - LOTS_CACHE_TTL_MS)) / 1000
-              ) + 's',
-          })
           return cached.active.data
         }
       }

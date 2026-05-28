@@ -1,6 +1,7 @@
 'use strict'
 
 const { normalizeProductKey } = require('./keyUtils')
+const { mergeProductSettings } = require('./mergeProductSettings')
 
 function createResolveEffectiveProductSettings({ getSettings, getGroupSettingsKey }) {
   if (!getSettings || typeof getSettings.get !== 'function') {
@@ -21,21 +22,29 @@ function createResolveEffectiveProductSettings({ getSettings, getGroupSettingsKe
 
     try {
       const row = getSettings.get(userId, normalizedKey)
+      let itemSettings = null
       if (row?.settings) {
-        effectiveSettings = JSON.parse(row.settings)
-        const label =
-          effectiveSettings && typeof effectiveSettings.settingsLabel === 'string'
-            ? effectiveSettings.settingsLabel.trim()
-            : ''
+        itemSettings = JSON.parse(row.settings)
+        effectiveKey = normalizedKey
+      }
 
-        if (label) {
-          const groupKey = getGroupSettingsKey(label)
-          const groupRow = getSettings.get(userId, groupKey)
-          if (groupRow?.settings) {
-            effectiveSettings = JSON.parse(groupRow.settings)
-            effectiveKey = groupKey
-          }
+      const label =
+        itemSettings && typeof itemSettings.settingsLabel === 'string'
+          ? itemSettings.settingsLabel.trim()
+          : ''
+
+      let groupSettings = null
+      if (label) {
+        const groupKey = getGroupSettingsKey(label)
+        const groupRow = getSettings.get(userId, groupKey)
+        if (groupRow?.settings) {
+          groupSettings = JSON.parse(groupRow.settings)
+          effectiveKey = groupKey
         }
+      }
+
+      if (itemSettings || groupSettings) {
+        effectiveSettings = mergeProductSettings(groupSettings, itemSettings)
       }
     } catch (_) {
       effectiveSettings = null

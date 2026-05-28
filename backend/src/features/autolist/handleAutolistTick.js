@@ -3,9 +3,18 @@ const {
   DEAL_CONFIRMED_MARKERS,
   lastMessageHasAnyMarker,
 } = require('./handleChatAutomessage')
+const { shouldSkipApprouteAutodelivery } = require('../approute/approuteAutodeliveryGuards')
+const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
+const { logAutolistTick, warnAutolistTick } = require('../../debug/autolistTickLog')
+const {
+  dealApprouteOrderEventKey,
+  dealApprouteChatEventKey,
+} = require('../../functions/approuteDealKeys')
+const { resolvePaidChatDealFromChat } = require('../../functions/resolvePaidChatDealFromChat')
 const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
+  CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
 async function handleAutolistTick({ payload, currentUserId, deps }) {
@@ -19,6 +28,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     AUTOLIST_MAX_CHATS_TO_SCAN,
     autolistGetCompletedScanMap,
     autolistGetLastChatMeta,
+    autolistGetApprouteRetryMap,
     autolistPruneProcessedMap,
     autolistPruneSeenChatsMap,
     autolistPruneItemStateMap,
@@ -31,6 +41,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistGetItemState,
     autolistWasProcessed,
     autolistMarkProcessed,
+    autolistClearProcessed,
     autolistSetItemState,
     getSettings,
     getGroupSettingsKey,
@@ -59,6 +70,11 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     handlePostPurchaseAutomessage,
     handleDealConfirmedAutomessage,
     fetchDealChatMessagesFromPlayerok,
+    loadApprouteApiKeyPlain,
+    runApprouteAutodelivery,
+    updateDealStatus,
+    requestChatDealIdPost,
+    requestChatById,
   } = deps
 
   const nowTs = Math.floor(Date.now() / 1000)
@@ -142,24 +158,115 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       lastChatMeta.lastMessageIdByChatId = {}
     }
     const msgIdByChat = lastChatMeta.lastMessageIdByChatId
+    const approuteRetryMap = autolistGetApprouteRetryMap(tokenHash)
+    const APPROUTE_RETRY_INTERVAL_SEC = 120
+    const APPROUTE_RESCAN_MAX_PER_TICK = 3
+    let approuteRescanCount = 0
 
     const paidChatCandidates = []
-    for (const chatNode of chatsSlice) {
+    const paidChatCandidateChatIds = new Set()
+
+    const tryCollectPaidChatCandidate = async (chatNode, { approuteOnly = false } = {}) => {
       const chatId = chatNode?.id != null ? String(chatNode.id) : null
       const lm = chatNode?.lastMessage || null
       const currMsgId = lm?.id != null ? String(lm.id) : null
-      if (!chatId || !currMsgId) continue
-      const prevMsgId = msgIdByChat[chatId] != null ? String(msgIdByChat[chatId]) : null
-      if (prevMsgId === currMsgId) continue
+      if (!chatId || !currMsgId || paidChatCandidateChatIds.has(chatId)) return
 
-      const d = lm?.deal || null
-      const dItemId = d?.item?.id || null
-      if (!dItemId) {
-        msgIdByChat[chatId] = currMsgId
-        continue
+      const prevMsgId = msgIdByChat[chatId] != null ? String(msgIdByChat[chatId]) : null
+      const messageChanged = prevMsgId !== currMsgId
+      let scopedMessages = []
+      if (messageChanged || String(lm?.text || '').includes('{{ITEM_PAID}}')) {
+        try {
+          const fetched = await withRetry(
+            () =>
+              fetchDealChatMessagesFromPlayerok(token, userAgent, lm?.deal?.id || null, chatId, {
+                viewerUsername: viewer?.username || null,
+              }),
+            {
+              label: 'dealChatMessages(autolistTick)',
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            }
+          )
+          scopedMessages = Array.isArray(fetched?.messages) ? fetched.messages : []
+        } catch (_) {
+          scopedMessages = []
+        }
       }
 
-      paidChatCandidates.push({ chatNode, lm, d, chatId, currMsgId, dItemId })
+      const resolved = await resolvePaidChatDealFromChat({
+        token,
+        userAgent,
+        chatNode,
+        withRetry,
+        isPlayerokRateLimitError,
+        requestDealById,
+        requestChatDealIdPost,
+        requestChatById,
+        messages: scopedMessages,
+      })
+      const d = resolved.deal || lm?.deal || chatNode?.deal || null
+      const candidateDealId = resolved.dealId
+      let dItemId = resolved.dealItemId
+
+      const approuteChatKey = dealApprouteChatEventKey(candidateDealId, dItemId)
+      const approuteOrderKey = dealApprouteOrderEventKey(candidateDealId, dItemId)
+      const legacyApprouteKey = `approute:${candidateDealId || dItemId || ''}`
+      const approuteChatPending =
+        Boolean(candidateDealId || dItemId) && !autolistWasProcessed(tokenHash, approuteChatKey)
+      const approuteOrderPlaced =
+        autolistWasProcessed(tokenHash, approuteOrderKey) ||
+        autolistWasProcessed(tokenHash, legacyApprouteKey)
+      if (approuteOnly && !approuteChatPending) return
+      if (approuteOnly && !messageChanged && approuteChatPending) {
+        if (approuteRescanCount >= APPROUTE_RESCAN_MAX_PER_TICK) return
+        approuteRescanCount++
+      }
+      if (!messageChanged && !approuteChatPending) return
+
+      if (!dItemId) {
+        if (approuteChatPending) {
+          logApprouteAutodelivery('skip: tick no_item_id', {
+            chatId,
+            approuteChatKey,
+            dealId: candidateDealId,
+            lastMessageText: lm?.text != null ? String(lm.text).slice(0, 120) : null,
+          })
+        }
+        return
+      }
+
+      if (!messageChanged && approuteChatPending) {
+        logApprouteAutodelivery('tick: rescan pending approute', {
+          chatId,
+          approuteChatKey,
+          approuteOrderPlaced,
+          dealId: candidateDealId,
+        })
+      }
+
+      paidChatCandidateChatIds.add(chatId)
+      paidChatCandidates.push({
+        chatNode,
+        lm,
+        d,
+        chatId,
+        currMsgId,
+        dItemId,
+        candidateDealId,
+        scopedMessages,
+      })
+    }
+
+    for (const chatNode of chatsSlice) {
+      await tryCollectPaidChatCandidate(chatNode)
+    }
+    for (const chatNode of chatNodes.slice(0, AUTOLIST_MAX_CHATS_TO_SCAN)) {
+      await tryCollectPaidChatCandidate(chatNode, { approuteOnly: true })
+    }
+
+    if (paidChatCandidates.length > 0) {
+      logApprouteAutodelivery('tick: paid_chat candidates', { count: paidChatCandidates.length })
     }
 
     let paidScanResult = null
@@ -200,8 +307,8 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
     const paidChatHandledChatIds = []
     for (const cand of paidChatCandidates) {
-      const { chatNode, lm, d, chatId, currMsgId, dItemId } = cand
-      const candidateDealId = d?.id || null
+      const { chatNode, lm, d, chatId, currMsgId, dItemId, scopedMessages } = cand
+      const candidateDealId = cand.candidateDealId || d?.id || null
       const dealEventKey = `deal:${candidateDealId || dItemId}`
 
       let fullDealSnapshot = null
@@ -223,7 +330,36 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         dealStatus = d?.status || null
       }
 
-      if (autolistWasProcessed(tokenHash, dealEventKey)) {
+      const approuteChatKey = dealApprouteChatEventKey(candidateDealId, dItemId)
+      const approuteOrderKey = dealApprouteOrderEventKey(candidateDealId, dItemId)
+      const legacyApprouteKey = `approute:${candidateDealId || dItemId}`
+      const approuteChatSent = autolistWasProcessed(tokenHash, approuteChatKey)
+      const approuteOrderPlaced =
+        autolistWasProcessed(tokenHash, approuteOrderKey) ||
+        autolistWasProcessed(tokenHash, legacyApprouteKey)
+      const approuteChatPending = !approuteChatSent
+      const approuteGuard = shouldSkipApprouteAutodelivery({
+        dealStatus,
+        lastMessageText: lm?.text,
+      })
+
+      if (approuteGuard.skip && !approuteOrderPlaced && !approuteChatPending) {
+        logApprouteAutodelivery('skip: tick deal_state (no order)', {
+          chatId,
+          approuteChatKey,
+          dealId: candidateDealId || null,
+          reason: approuteGuard.reason,
+          dealStatus: approuteGuard.dealStatus,
+        })
+      }
+
+      if (autolistWasProcessed(tokenHash, dealEventKey) && approuteChatSent) {
+        logApprouteAutodelivery('skip: tick already_handled', {
+          chatId,
+          dealEventKey,
+          approuteChatKey,
+          dealId: candidateDealId || null,
+        })
         msgIdByChat[chatId] = currMsgId
         continue
       }
@@ -233,12 +369,40 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         candidateDealTs &&
         (candidateAgeSec == null || candidateAgeSec <= AUTOLIST_LAST_CHAT_FRESH_SEC)
 
-      if (!isFreshPaid) {
+      if (!isFreshPaid && !approuteChatPending) {
+        logAutolistTick('paid_chat: пропуск (старая сделка)', {
+          chatId,
+          candidateAgeSec,
+          dealEventKey,
+          approuteChatKey,
+          approuteSkip: approuteGuard.skip ? approuteGuard.reason : null,
+          approuteChatPending,
+        })
         msgIdByChat[chatId] = currMsgId
         continue
       }
 
+      if (!isFreshPaid && approuteChatPending) {
+        logAutolistTick('paid_chat: старая сделка, доставка в чат', {
+          chatId,
+          candidateAgeSec,
+          dealEventKey,
+          approuteChatKey,
+          approuteOrderPlaced,
+        })
+      }
+
+      const prevMsgId = msgIdByChat[chatId] != null ? String(msgIdByChat[chatId]) : null
+      const messageChanged = prevMsgId !== currMsgId
+      if (!messageChanged && approuteChatPending && !approuteOrderPlaced) {
+        const lastRetryTs = Number(approuteRetryMap[approuteChatKey] || 0)
+        if (lastRetryTs && nowTs - lastRetryTs < APPROUTE_RETRY_INTERVAL_SEC) {
+          continue
+        }
+      }
+
       dealItemId = dItemId
+      const deliveryOnly = !isFreshPaid && approuteChatPending
       await handlePaidChat({
         currentUserId,
         tokenHash,
@@ -252,6 +416,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         lastChat: chatNode,
         fullDealSnapshot,
         relistedByScanIds,
+        deliveryOnly,
         AUTOBUMP_PRIORITY_STATUS_ID,
         withRetry,
         isPlayerokRateLimitError,
@@ -261,6 +426,8 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         publishItem,
         insertListingFee,
         autolistMarkProcessed,
+        autolistClearProcessed,
+        autolistWasProcessed,
         autolistSetItemState,
         insertSale,
         normalizeKeyPart,
@@ -275,7 +442,16 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         createChatMessage,
         sleep,
         supercellModuleEnabled,
+        loadApprouteApiKeyPlain,
+        runApprouteAutodelivery,
+        updateDealStatus,
+        chatMessages: Array.isArray(scopedMessages) ? scopedMessages : [],
+        viewerUsername: viewer?.username || null,
       })
+
+      if (approuteChatPending) {
+        approuteRetryMap[approuteChatKey] = nowTs
+      }
 
       lastChatMeta.lastPaidTs = Math.max(Number(lastChatMeta.lastPaidTs || 0), candidateDealTs || 0)
       msgIdByChat[chatId] = currMsgId
@@ -324,6 +500,15 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         const eventKey = scan.buildEventKey(chatId, candidateDealId)
         if (!eventKey || autolistWasProcessed(tokenHash, eventKey)) continue
 
+        const triggerTs = toUnixTs(lm?.createdAt)
+        if (
+          triggerTs > 0 &&
+          nowTs - triggerTs > CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC
+        ) {
+          autolistMarkProcessed(tokenHash, eventKey, nowTs)
+          continue
+        }
+
         try {
           const { messages, itemTitle, itemCategory } = await withRetry(
             () =>
@@ -357,9 +542,10 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
             createChatMessage,
             normalizeKeyPart,
             buildProductKey,
+            toUnixTs,
           })
         } catch (err) {
-          console.warn(`[autolist-tick] ${scan.logLabel} scan failed`, {
+          warnAutolistTick(`${scan.logLabel} scan failed`, {
             chatId,
             dealId: candidateDealId || null,
             error: err?.message || String(err),

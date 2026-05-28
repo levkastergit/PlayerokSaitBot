@@ -27,22 +27,10 @@ async function handleItemPriorityStatuses({ payload, currentUserId, deps }) {
               : null
         if (itemPrice != null && itemPrice > 0) {
           currentPrice = itemPrice
-          console.info('[item-priority-statuses] текущая цена обновлена (rawPrice для статусов)', {
-            itemId,
-            oldPrice: Number(price) || 0,
-            currentPrice,
-            discountedPrice: currentItem.price,
-            rawPrice: currentItem.rawPrice,
-          })
         }
       }
     } catch (err) {
-      // Если не удалось получить актуальную цену, используем переданную
-      console.warn('[item-priority-statuses] не удалось получить текущую цену', {
-        itemId,
-        error: err?.message,
-        usingProvidedPrice: currentPrice,
-      })
+      // Если не удалось получить актуальную цену, используем переданную.
     }
 
     const list = await fetchItemPriorityStatuses(token, userAgent, itemId, currentPrice)

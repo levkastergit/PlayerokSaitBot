@@ -1,4 +1,5 @@
 import { trackedFetch } from './requestTracker'
+import { logChatAutomationEvents } from '../debug/chatLoggingLog.js'
 
 const ENV_ORIGIN = (import.meta.env.VITE_BACKEND_ORIGIN || '').trim()
 const RUNTIME_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
@@ -20,6 +21,8 @@ const BACKEND_COMPLETED_LOTS_URL =
 const BACKEND_IN_PROGRESS_DEALS_URL = `${BACKEND_ORIGIN}/api/playerok/in-progress-deals`
 const BACKEND_COMPLETED_DEALS_URL = `${BACKEND_ORIGIN}/api/playerok/completed-deals`
 const BACKEND_DEAL_CHAT_MESSAGES_URL = `${BACKEND_ORIGIN}/api/playerok/deal-chat-messages`
+const BACKEND_DEAL_CHAT_MESSAGES_BATCH_URL = `${BACKEND_ORIGIN}/api/playerok/deal-chat-messages-batch`
+const BACKEND_APPROUTE_CHAT_RESCAN_URL = `${BACKEND_ORIGIN}/api/playerok/approute-chat-rescan`
 const BACKEND_REQUEST_SUPERCELL_CODE_URL = `${BACKEND_ORIGIN}/api/playerok/request-supercell-code`
 const BACKEND_REQUEST_SUPERCELL_CODE_TEST_URL = `${BACKEND_ORIGIN}/api/playerok/request-supercell-code-test`
 const BACKEND_CANCEL_DEAL_URL = `${BACKEND_ORIGIN}/api/playerok/cancel-deal`
@@ -40,6 +43,15 @@ const BACKEND_REQUEST_WITHDRAWAL_URL = `${BACKEND_ORIGIN}/api/playerok/request-w
 const BACKEND_REMOVE_TRANSACTION_URL = `${BACKEND_ORIGIN}/api/playerok/remove-transaction`
 const BACKEND_DDOS_COOKIE_URL = `${BACKEND_ORIGIN}/api/playerok/ddos-cookie`
 const BACKEND_DDOS_CHECK_URL = `${BACKEND_ORIGIN}/api/playerok/ddos-check`
+const BACKEND_CHATS_PROBE_STEP_URL = `${BACKEND_ORIGIN}/api/playerok/chats-probe-step`
+const BACKEND_CHAT_DB_LIST_URL = `${BACKEND_ORIGIN}/api/chat-db/list`
+const BACKEND_CHAT_DB_MESSAGES_URL = `${BACKEND_ORIGIN}/api/chat-db/messages`
+const BACKEND_CHAT_DB_SEND_URL = `${BACKEND_ORIGIN}/api/chat-db/send`
+const BACKEND_CHAT_DB_FULL_SCAN_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan`
+const BACKEND_CHAT_DB_FULL_SCAN_RESET_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-reset`
+const BACKEND_CHAT_DB_FULL_SCAN_STATUS_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-status`
+const BACKEND_CHAT_DB_SYNC_STEP_LOG_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log`
+const BACKEND_CHAT_DB_SYNC_STEP_LOG_CLEAR_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log/clear`
 
 const FETCH_CREDENTIALS = { credentials: 'include' }
 
@@ -383,6 +395,203 @@ export async function fetchUserChats(token, opts = {}) {
   return { list, pageInfo }
 }
 
+/** Список чатов из локальной БД (синхронизация выполняется на backend). */
+export async function fetchChatDbList(token, opts = {}) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_LIST_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...(opts.limit != null ? { limit: opts.limit } : {}),
+      ...(opts.offset != null ? { offset: opts.offset } : {}),
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка загрузки чатов из БД: ${response.status}`)
+  }
+  const data = await response.json()
+  return {
+    list: Array.isArray(data?.list) ? data.list : [],
+    total: Number(data?.total || 0),
+    pageInfo:
+      data && typeof data.pageInfo === 'object'
+        ? {
+            hasNextPage: Boolean(data.pageInfo.hasNextPage),
+            endCursor: data.pageInfo.endCursor || null,
+          }
+        : { hasNextPage: false, endCursor: null },
+  }
+}
+
+/** Сообщения чата из локальной БД. */
+export async function fetchChatDbMessages(token, { chatId, dealId, skipSmartEmail = true } = {}) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_MESSAGES_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...(chatId ? { chatId } : {}),
+      ...(dealId ? { dealId } : {}),
+      ...(skipSmartEmail ? { skipSmartEmail: true } : {}),
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка загрузки сообщений из БД: ${response.status}`)
+  return {
+    list: Array.isArray(data?.list) ? data.list : [],
+    buyerSupercellEmail: data?.buyerSupercellEmail || null,
+    itemTitle: data?.itemTitle || null,
+    itemImageUrl: data?.itemImageUrl || null,
+    itemCategory: data?.itemCategory || null,
+    deals: Array.isArray(data?.deals) ? data.deals : [],
+  }
+}
+
+/** Batch-обертка над fetchChatDbMessages для совместимости ChatTab. */
+export async function fetchChatDbMessagesBatch(token, chatEntries = [], opts = {}) {
+  const entries = Array.isArray(chatEntries) ? chatEntries : []
+  const concurrencyRaw = Number(opts?.concurrency)
+  const concurrency =
+    Number.isFinite(concurrencyRaw) && concurrencyRaw > 0
+      ? Math.min(4, Math.max(1, Math.trunc(concurrencyRaw)))
+      : 2
+  const results = []
+
+  for (let i = 0; i < entries.length; i += concurrency) {
+    const chunk = entries.slice(i, i + concurrency)
+    const chunkResults = await Promise.all(
+      chunk.map(async (entry) => {
+      const chatId = entry?.chatId || null
+      const dealId = entry?.dealId || null
+      try {
+        const data = await fetchChatDbMessages(token, { chatId, dealId })
+        return {
+          chatId: chatId ? String(chatId) : null,
+          dealId: dealId || null,
+          ok: true,
+          error: null,
+          list: data.list,
+          buyerSupercellEmail: data.buyerSupercellEmail || null,
+          itemTitle: data.itemTitle,
+          itemImageUrl: data.itemImageUrl,
+          itemCategory: data.itemCategory,
+          deals: data.deals,
+          automationEvents: [],
+        }
+      } catch (err) {
+        return {
+          chatId: chatId ? String(chatId) : null,
+          dealId: dealId || null,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          list: [],
+          buyerSupercellEmail: null,
+          itemTitle: null,
+          itemImageUrl: null,
+          itemCategory: null,
+          deals: [],
+          automationEvents: [],
+        }
+      }
+      })
+    )
+    results.push(...chunkResults)
+  }
+
+  return { results }
+}
+
+/** Отправка сообщения в Playerok и запись в локальную БД. */
+export async function sendChatDbMessage(token, { dealId, chatId, text, clientMessageId, clientCreatedAt }) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_SEND_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...(dealId ? { dealId } : {}),
+      ...(chatId ? { chatId } : {}),
+      text,
+      ...(clientMessageId ? { clientMessageId } : {}),
+      ...(clientCreatedAt ? { clientCreatedAt } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка отправки сообщения: ${response.status}`)
+  return data
+}
+
+export async function startChatDbFullScan(token, opts = {}) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_FULL_SCAN_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...(opts.force ? { force: true } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка запуска прогрузки чатов: ${response.status}`)
+  return data
+}
+
+export async function fetchChatDbFullScanStatus() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_FULL_SCAN_STATUS_URL, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    // На проде endpoint статуса может кратковременно отдавать 502/503/504 через прокси.
+    // Для UI это не критично: скрываем шум и просто считаем статус временно недоступным.
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      return {
+        ok: false,
+        unavailable: true,
+        statusCode: response.status,
+        state: null,
+        runs: [],
+      }
+    }
+    throw new Error(data.error || `Ошибка статуса прогрузки: ${response.status}`)
+  }
+  return data
+}
+
+export async function fetchChatDbSyncStepLog() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_SYNC_STEP_LOG_URL, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка лога синка: ${response.status}`)
+  return data
+}
+
+export async function clearChatDbSyncStepLog() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_SYNC_STEP_LOG_CLEAR_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка очистки лога синка: ${response.status}`)
+  return data
+}
+
+export async function resetChatDbFullScan() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_FULL_SCAN_RESET_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка сброса прогрузки: ${response.status}`)
+  return data
+}
+
 /** Пометить чат скрытым (ручное скрытие в UI). */
 export async function hideChat(token, chatId) {
   if (!chatId) throw new Error('chatId обязателен')
@@ -421,8 +630,71 @@ export async function unhideChat(token, chatId) {
   return data
 }
 
+/** Batch-загрузка сообщений нескольких чатов одним запросом. */
+export async function fetchDealChatMessagesBatch(token, chatEntries = [], opts = {}) {
+  const chats = (chatEntries || [])
+    .filter((entry) => entry && (entry.chatId || entry.dealId))
+    .map((entry) => ({
+      chatId: entry.chatId || undefined,
+      dealId: entry.dealId || undefined,
+      buyerName:
+        typeof entry.buyerName === 'string' && entry.buyerName.trim()
+          ? entry.buyerName.trim()
+          : undefined,
+      category:
+        typeof entry.category === 'string' && entry.category.trim()
+          ? entry.category.trim()
+          : undefined,
+    }))
+
+  if (chats.length === 0) {
+    return { results: [] }
+  }
+
+  const response = await trackedFetch(BACKEND_DEAL_CHAT_MESSAGES_BATCH_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      chats,
+      ...(opts.messagesOnly === true ? { messagesOnly: true } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.error || `Ошибка batch-загрузки чатов: ${response.status}`)
+  }
+  const data = await response.json()
+  const results = Array.isArray(data?.results)
+    ? data.results.map((entry) => ({
+        chatId: entry?.chatId != null ? String(entry.chatId) : null,
+        dealId: entry?.dealId || null,
+        ok: Boolean(entry?.ok),
+        error: entry?.error ? String(entry.error) : null,
+        list: Array.isArray(entry?.list) ? entry.list : [],
+        buyerSupercellEmail:
+          entry && typeof entry.buyerSupercellEmail === 'string' ? entry.buyerSupercellEmail : null,
+        itemTitle: entry && typeof entry.itemTitle === 'string' ? entry.itemTitle : null,
+        itemImageUrl: entry && typeof entry.itemImageUrl === 'string' ? entry.itemImageUrl : null,
+        itemCategory: entry && typeof entry.itemCategory === 'string' ? entry.itemCategory : null,
+        automationEvents: Array.isArray(entry?.automationEvents) ? entry.automationEvents : [],
+      }))
+    : []
+
+  for (const entry of results) {
+    if (entry.automationEvents?.length > 0) {
+      logChatAutomationEvents(entry.automationEvents)
+    }
+  }
+
+  return { results }
+}
+
 /** Сообщения чата по сделке (для вкладок Выполнение и Чат). chatId — если есть (из списка сделок), иначе бэкенд возьмёт по dealId. */
 export async function fetchDealChatMessages(token, dealId, chatId, options = {}) {
+  const messagesOnly = options.messagesOnly === true
   if (!dealId && !chatId) {
     return {
       list: [],
@@ -440,32 +712,73 @@ export async function fetchDealChatMessages(token, dealId, chatId, options = {})
     options && typeof options.category === 'string' && options.category.trim()
       ? options.category.trim()
       : undefined
-  const response = await trackedFetch(BACKEND_DEAL_CHAT_MESSAGES_URL, {
+
+  const { results } = await fetchDealChatMessagesBatch(
+    token,
+    [
+      {
+        dealId: dealId || undefined,
+        chatId: chatId || undefined,
+        buyerName,
+        category,
+      },
+    ],
+    { messagesOnly }
+  )
+
+  const entry =
+    (chatId && results.find((item) => item.chatId === String(chatId))) || results[0] || null
+  if (!entry || !entry.ok) {
+    throw new Error(entry?.error || 'Ошибка загрузки чата сделки')
+  }
+
+  return {
+    list: entry.list,
+    buyerSupercellEmail: entry.buyerSupercellEmail,
+    itemTitle: entry.itemTitle,
+    itemImageUrl: entry.itemImageUrl,
+    itemCategory: entry.itemCategory,
+  }
+}
+
+/** Ручной запуск автовыдачи Api для чата (сброс очереди и повтор). */
+export async function rescanApprouteChat(token, { chatId, dealId, dealItemId, itemId }) {
+  const cid = chatId != null ? String(chatId).trim() : ''
+  if (!cid) throw new Error('chatId обязателен')
+
+  const response = await trackedFetch(BACKEND_APPROUTE_CHAT_RESCAN_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...(token ? { token } : {}),
+      chatId: cid,
       dealId: dealId || undefined,
-      chatId: chatId || undefined,
-      ...(buyerName ? { buyerName } : {}),
-      ...(category ? { category } : {}),
+      dealItemId: dealItemId || itemId || undefined,
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     }),
   })
+  const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(err.error || `Ошибка загрузки чата сделки: ${response.status}`)
+    throw new Error(
+      (typeof data.error === 'string' && data.error.trim()) ||
+        (typeof data.reason === 'string' && data.reason.trim()) ||
+        `Ошибка рескана: ${response.status}`
+    )
   }
-  const data = await response.json()
-  const list = Array.isArray(data?.list) ? data.list : []
-  const buyerSupercellEmail = data && typeof data.buyerSupercellEmail === 'string'
-    ? data.buyerSupercellEmail
-    : null
-  const itemTitle = data && typeof data.itemTitle === 'string' ? data.itemTitle : null
-  const itemImageUrl = data && typeof data.itemImageUrl === 'string' ? data.itemImageUrl : null
-  const itemCategory = data && typeof data.itemCategory === 'string' ? data.itemCategory : null
-  return { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory }
+  if (data && data.ok === false) {
+    const msg =
+      (typeof data.error === 'string' && data.error.trim()) ||
+      (typeof data.reason === 'string' && data.reason.trim()) ||
+      'Автовыдача Api не выполнена'
+    if (data.pending) {
+      const err = new Error(msg)
+      err.pending = true
+      throw err
+    }
+    throw new Error(msg)
+  }
+  return data
 }
 
 /** Отправить сообщение в чат по сделке или chatId. */
@@ -969,6 +1282,26 @@ export async function getPlayerokDdosCookieStatus() {
   const response = await trackedFetch(BACKEND_DDOS_COOKIE_URL, FETCH_CREDENTIALS)
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка статуса cookie: ${response.status}`)
+  return data
+}
+
+/** Одна загрузка списка чатов (userChats, referer /chats) для теста лимита 429. */
+export async function fetchChatsProbeStep(token, opts = {}) {
+  const response = await trackedFetch(BACKEND_CHATS_PROBE_STEP_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+      ...(opts.userId ? { userId: opts.userId } : {}),
+      ...(opts.limit != null ? { limit: opts.limit } : {}),
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка загрузки чатов: ${response.status}`)
+  }
   return data
 }
 

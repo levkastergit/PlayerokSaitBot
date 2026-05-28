@@ -9,6 +9,7 @@ import {
   fetchItemPriorityStatuses,
   recordBump,
 } from '../../services/playerokApi'
+import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
 
 export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [productSettings, setProductSettings] = useState(null)
@@ -27,6 +28,12 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [bumpCooldownUntil, setBumpCooldownUntil] = useState(0)
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [scheduleDragOverIndex, setScheduleDragOverIndex] = useState(null)
+  const [approuteServices, setApprouteServices] = useState([])
+  const [approuteServicesLoading, setApprouteServicesLoading] = useState(false)
+  const [approuteServicesError, setApprouteServicesError] = useState(null)
+  const [approuteVariants, setApprouteVariants] = useState([])
+  const [approuteVariantsLoading, setApprouteVariantsLoading] = useState(false)
+  const [approuteVariantsError, setApprouteVariantsError] = useState(null)
 
   const baseProductKey = lot ? getProductKey(lot) : null
   const groupKey = settingsLabel ? getGroupSettingsKey(settingsLabel) : ''
@@ -59,6 +66,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           settingsLabel: trimmedLabel,
           groupName: typeof cleaned.groupName === 'string' ? cleaned.groupName : '',
           autobump: cleaned.autobump || { enabled: false, schedule: [] },
+          autodeliveryApi: cleaned.autodeliveryApi || { enabled: false },
         }
       : { ...cleaned, settingsLabel: '' }
 
@@ -81,6 +89,21 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       enabled: false,
       codes: [],
       messageOnPurchase: '',
+      autoCompleteDeal: false,
+    },
+    autodeliveryApi: {
+      enabled: false,
+      serviceId: '',
+      serviceName: '',
+      variantId: '',
+      variantName: '',
+      variantOrderServiceId: '',
+      denominationId: '',
+      variantRequired: false,
+      ordersType: 'shop',
+      quantity: 1,
+      messageOnPurchase: '',
+      deliveryMessage: '{delivery}',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -168,6 +191,127 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   }, [token, lot?.id, lot?.price])
 
   useEffect(() => {
+    if (!productSettings?.autodeliveryApi?.enabled) {
+      setApprouteServices([])
+      setApprouteServicesError(null)
+      setApprouteServicesLoading(false)
+      return
+    }
+    let cancelled = false
+    setApprouteServicesLoading(true)
+    setApprouteServicesError(null)
+    fetchApprouteServices()
+      .then((r) => {
+        if (cancelled) return
+        if (!r.ok) {
+          setApprouteServices([])
+          setApprouteServicesError(r.error || 'Не удалось загрузить услуги AppRoute')
+        } else {
+          setApprouteServices(r.services || [])
+          setApprouteServicesError(null)
+        }
+        setApprouteServicesLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setApprouteServices([])
+        setApprouteServicesError('Не удалось загрузить услуги AppRoute')
+        setApprouteServicesLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [productSettings?.autodeliveryApi?.enabled])
+
+  const approuteServiceId = productSettings?.autodeliveryApi?.serviceId ?? ''
+
+  useEffect(() => {
+    if (!productSettings?.autodeliveryApi?.enabled) {
+      setApprouteVariants([])
+      setApprouteVariantsError(null)
+      setApprouteVariantsLoading(false)
+      return
+    }
+    const sid = String(approuteServiceId || '').trim()
+    if (!sid) {
+      setApprouteVariants([])
+      setApprouteVariantsError(null)
+      setApprouteVariantsLoading(false)
+      return
+    }
+    let cancelled = false
+    setApprouteVariantsLoading(true)
+    setApprouteVariantsError(null)
+    fetchApprouteServiceVariants(sid)
+      .then((r) => {
+        if (cancelled) return
+        if (!r.ok) {
+          setApprouteVariants([])
+          setApprouteVariantsError(r.error || 'Не удалось загрузить номиналы')
+          setProductSettings((prev) => {
+            if (!prev?.autodeliveryApi) return prev
+            return {
+              ...prev,
+              autodeliveryApi: { ...prev.autodeliveryApi, variantRequired: false },
+            }
+          })
+        } else {
+          const variants = r.variants || []
+          setApprouteVariants(variants)
+          setApprouteVariantsError(null)
+          setProductSettings((prev) => {
+            if (!prev?.autodeliveryApi) return prev
+            const api = prev.autodeliveryApi
+            const curVariant = String(api.variantId || '').trim()
+            const stillValid = variants.some((v) => String(v.id) === curVariant)
+            const variantRequired = variants.length > 0
+            let nextVariantId = api.variantId
+            let nextVariantName = api.variantName
+            let nextVariantOrderServiceId = api.variantOrderServiceId || ''
+            let nextDenominationId = api.denominationId || ''
+            if (!stillValid && curVariant) {
+              nextVariantId = ''
+              nextVariantName = ''
+              nextVariantOrderServiceId = ''
+              nextDenominationId = ''
+            } else if (stillValid && curVariant) {
+              const picked = variants.find((v) => String(v.id) === curVariant)
+              nextVariantName = picked ? formatApprouteVariantLabel(picked) : api.variantName
+              nextVariantOrderServiceId = picked?.orderServiceId
+                ? String(picked.orderServiceId)
+                : curVariant
+              nextDenominationId = picked?.denominationId
+                ? String(picked.denominationId)
+                : curVariant
+            }
+            const nextOrdersType =
+              r.ordersType != null && String(r.ordersType).trim()
+                ? String(r.ordersType).trim().toLowerCase()
+                : api.ordersType || 'shop'
+            return {
+              ...prev,
+              autodeliveryApi: {
+                ...api,
+                variantId: nextVariantId,
+                variantName: nextVariantName,
+                variantOrderServiceId: nextVariantOrderServiceId,
+                denominationId: nextDenominationId,
+                variantRequired,
+                ordersType: nextOrdersType,
+              },
+            }
+          })
+        }
+        setApprouteVariantsLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setApprouteVariants([])
+        setApprouteVariantsError('Не удалось загрузить номиналы')
+        setApprouteVariantsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [productSettings?.autodeliveryApi?.enabled, approuteServiceId])
+
+  useEffect(() => {
     if (!token || !baseProductKey) {
       setProductSettings(null)
       setLoadingSettings(false)
@@ -188,6 +332,40 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         cost: typeof loaded.cost === 'number' ? loaded.cost : (parseFloat(loaded.cost) || 0),
         groupName: typeof loaded.groupName === 'string' ? loaded.groupName : '',
         autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
+        autodeliveryApi: {
+          ...base.autodeliveryApi,
+          ...(loaded.autodeliveryApi || {}),
+          serviceId:
+            loaded.autodeliveryApi?.serviceId != null
+              ? String(loaded.autodeliveryApi.serviceId)
+              : '',
+          serviceName:
+            typeof loaded.autodeliveryApi?.serviceName === 'string'
+              ? loaded.autodeliveryApi.serviceName
+              : '',
+          quantity: Math.max(1, Math.min(99, Math.floor(Number(loaded.autodeliveryApi?.quantity) || 1))),
+          variantId:
+            loaded.autodeliveryApi?.variantId != null
+              ? String(loaded.autodeliveryApi.variantId)
+              : '',
+          variantName:
+            typeof loaded.autodeliveryApi?.variantName === 'string'
+              ? loaded.autodeliveryApi.variantName
+              : '',
+          variantRequired: Boolean(loaded.autodeliveryApi?.variantRequired),
+          variantOrderServiceId:
+            typeof loaded.autodeliveryApi?.variantOrderServiceId === 'string'
+              ? loaded.autodeliveryApi.variantOrderServiceId
+              : '',
+          denominationId:
+            loaded.autodeliveryApi?.denominationId != null
+              ? String(loaded.autodeliveryApi.denominationId)
+              : '',
+          ordersType:
+            loaded.autodeliveryApi?.ordersType != null
+              ? String(loaded.autodeliveryApi.ordersType).toLowerCase()
+              : 'shop',
+        },
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
@@ -765,6 +943,185 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           <span className="lot-settings-toggle__knob" />
                         </span>
                         <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи кода</span>
+                      </label>
+                    </div>
+                  )}
+                </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автовыдача Api</h3>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autodeliveryApi?.enabled)}
+                      onChange={(e) => setFeature('autodeliveryApi', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу Api</span>
+                  </label>
+                  {Boolean(productSettings?.autodeliveryApi?.enabled) && (
+                    <div className="lot-settings-autodelivery-extra">
+                      {approuteServicesLoading && (
+                        <p className="lot-settings-field__label">Загрузка услуг AppRoute…</p>
+                      )}
+                      {approuteServicesError && (
+                        <p className="lot-settings-field__label">{approuteServicesError}</p>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Услуга AppRoute</span>
+                        <select
+                          className="lot-settings-input"
+                          value={productSettings?.autodeliveryApi?.serviceId ?? ''}
+                          onChange={(e) => {
+                            const id = e.target.value
+                            const picked = approuteServices.find((s) => String(s.id) === String(id))
+                            setProductSettings((prev) => ({
+                              ...prev,
+                              autodeliveryApi: {
+                                ...(prev?.autodeliveryApi || {}),
+                                serviceId: id,
+                                serviceName: picked?.name || '',
+                                variantId: '',
+                                variantName: '',
+                                variantOrderServiceId: '',
+                                variantRequired: false,
+                              },
+                            }))
+                          }}
+                        >
+                          <option value="">— выберите услугу —</option>
+                          {approuteServices.map((svc) => (
+                            <option key={svc.id} value={svc.id}>
+                              {svc.name}
+                              {svc.price != null ? ` (${svc.price} ₽)` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {String(approuteServiceId || '').trim() && (
+                        <>
+                          {approuteVariantsLoading && (
+                            <p className="lot-settings-field__label">Загрузка номиналов…</p>
+                          )}
+                          {approuteVariantsError && (
+                            <p className="lot-settings-field__label">{approuteVariantsError}</p>
+                          )}
+                          {approuteVariants.length > 0 && (
+                            <label className="lot-settings-field">
+                              <span className="lot-settings-field__label">Номинал</span>
+                              <select
+                                className="lot-settings-input"
+                                value={productSettings?.autodeliveryApi?.variantId ?? ''}
+                                  onChange={(e) => {
+                                    const vid = e.target.value
+                                    const picked = approuteVariants.find((v) => String(v.id) === String(vid))
+                                    setProductSettings((prev) => ({
+                                      ...prev,
+                                      autodeliveryApi: {
+                                        ...(prev?.autodeliveryApi || {}),
+                                        variantId: vid,
+                                        variantName: picked ? formatApprouteVariantLabel(picked) : '',
+                                        variantOrderServiceId: picked?.orderServiceId
+                                          ? String(picked.orderServiceId)
+                                          : vid,
+                                        denominationId: picked?.denominationId
+                                          ? String(picked.denominationId)
+                                          : vid,
+                                      },
+                                    }))
+                                  }}
+                              >
+                                <option value="">— выберите номинал —</option>
+                                {approuteVariants.map((v) => (
+                                  <option key={v.id} value={v.id}>
+                                    {formatApprouteVariantLabel(v)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">ID услуги (если нет в списке)</span>
+                        <input
+                          type="text"
+                          className="lot-settings-input"
+                          value={productSettings?.autodeliveryApi?.serviceId ?? ''}
+                          onChange={(e) =>
+                            setProductSettings((prev) => ({
+                              ...prev,
+                              autodeliveryApi: {
+                                ...(prev?.autodeliveryApi || {}),
+                                serviceId: e.target.value,
+                                variantId: '',
+                                variantName: '',
+                                variantOrderServiceId: '',
+                                variantRequired: false,
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      {approuteVariants.length > 0 && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">ID номинала (если нет в списке)</span>
+                          <input
+                            type="text"
+                            className="lot-settings-input"
+                            value={productSettings?.autodeliveryApi?.variantId ?? ''}
+                            onChange={(e) => setFeature('autodeliveryApi', 'variantId', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Количество</span>
+                        <input
+                          type="number"
+                          className="lot-settings-input lot-settings-input--price"
+                          min={1}
+                          max={99}
+                          value={productSettings?.autodeliveryApi?.quantity ?? 1}
+                          onChange={(e) =>
+                            setFeature(
+                              'autodeliveryApi',
+                              'quantity',
+                              Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1))
+                            )
+                          }
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при покупке</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          value={productSettings?.autodeliveryApi?.messageOnPurchase ?? ''}
+                          onChange={(e) => setFeature('autodeliveryApi', 'messageOnPurchase', e.target.value)}
+                          rows={2}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение с выдачей ({'{delivery}'}, {'{Kod}'})</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          value={productSettings?.autodeliveryApi?.deliveryMessage ?? '{delivery}'}
+                          onChange={(e) => setFeature('autodeliveryApi', 'deliveryMessage', e.target.value)}
+                          rows={3}
+                        />
+                      </label>
+                      <label className="lot-settings-toggle">
+                        <input
+                          type="checkbox"
+                          className="lot-settings-toggle__input"
+                          checked={Boolean(productSettings?.autodeliveryApi?.autoCompleteDeal)}
+                          onChange={(e) => setFeature('autodeliveryApi', 'autoCompleteDeal', e.target.checked)}
+                        />
+                        <span className="lot-settings-toggle__switch">
+                          <span className="lot-settings-toggle__knob" />
+                        </span>
+                        <span className="lot-settings-toggle__label">Автозавершение сделки</span>
                       </label>
                     </div>
                   )}

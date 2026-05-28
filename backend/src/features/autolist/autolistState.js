@@ -1,11 +1,15 @@
 const AUTOLIST_LAST_CHAT_FRESH_SEC = 600
-const AUTOLIST_MAX_CHATS_TO_SCAN = 10
+const AUTOLIST_MAX_CHATS_TO_SCAN = 25
 const AUTOLIST_PROCESSED_TTL_SEC = 60 * 60
 const AUTOLIST_SEEN_CHAT_TTL_SEC = 24 * 60 * 60
 const AUTOLIST_ITEM_STATE_TTL_SEC = 24 * 60 * 60
 // Даже если новых чатов нет, периодически сканируем последние завершённые товары.
 // Иначе "ожидает автовыставления" может висеть бесконечно. Интервал — 2 минуты.
 const AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC = 120
+/** Макс. возраст системного триггера (подтверждение товара / сделки) для автосообщения в чат. */
+const CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC = 10 * 60
+/** Макс. возраст сделки для paid_chat-автосообщения после покупки. */
+const PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC = 2 * 60
 
 function autolistGetProcessedMap(tokenHash) {
   global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
@@ -33,6 +37,24 @@ function autolistMarkProcessed(tokenHash, eventKey, nowTs) {
   if (!eventKey) return
   const map = autolistGetProcessedMap(tokenHash)
   map[eventKey] = nowTs
+}
+
+function autolistClearProcessed(tokenHash, eventKey) {
+  if (!eventKey) return
+  const map = autolistGetProcessedMap(tokenHash)
+  delete map[eventKey]
+}
+
+function autolistClearApprouteChatProcessed(tokenHash) {
+  const map = autolistGetProcessedMap(tokenHash)
+  let cleared = 0
+  for (const k of Object.keys(map)) {
+    if (String(k).startsWith('approute-chat:')) {
+      delete map[k]
+      cleared++
+    }
+  }
+  return cleared
 }
 
 function autolistGetSeenChatsMap(tokenHash) {
@@ -102,6 +124,15 @@ function autolistGetCompletedScanMap(tokenHash) {
   return global.__autolistCompletedScanByTokenHash[key]
 }
 
+function autolistGetApprouteRetryMap(tokenHash) {
+  global.__approuteRetryByTokenHash = global.__approuteRetryByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__approuteRetryByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__approuteRetryByTokenHash[key] = {}
+  return global.__approuteRetryByTokenHash[key]
+}
+
 function autolistGetLastChatMeta(tokenHash) {
   global.__autolistLastChatByTokenHash = global.__autolistLastChatByTokenHash || {}
   const key = String(tokenHash)
@@ -154,7 +185,15 @@ function buildDealConfirmedAutomessageEventKey(chatId, dealId) {
   return buildChatAutomessageEventKey('deal_confirmed_auto_msg', chatId, dealId)
 }
 
+function buildPaidChatAutomessageEventKey(chatId, dealId) {
+  return buildChatAutomessageEventKey('lot_automessage', chatId, dealId)
+}
+
 function chatAutomessageLockKey(tokenHash, eventKey) {
+  return `${String(tokenHash)}::${String(eventKey)}`
+}
+
+function approuteChatLockKey(tokenHash, eventKey) {
   return `${String(tokenHash)}::${String(eventKey)}`
 }
 
@@ -190,6 +229,22 @@ const tryBeginPostPurchaseAutomessageSend = tryBeginChatAutomessageSend
 /** @deprecated используйте finishChatAutomessageSend */
 const finishPostPurchaseAutomessageSend = finishChatAutomessageSend
 
+function tryBeginApprouteChatSend(tokenHash, eventKey) {
+  if (!eventKey) return false
+  global.__approuteChatInFlight = global.__approuteChatInFlight || {}
+  const lockKey = approuteChatLockKey(tokenHash, eventKey)
+  if (global.__approuteChatInFlight[lockKey]) return false
+  global.__approuteChatInFlight[lockKey] = true
+  return true
+}
+
+function finishApprouteChatSend(tokenHash, eventKey) {
+  if (!eventKey) return
+  global.__approuteChatInFlight = global.__approuteChatInFlight || {}
+  const lockKey = approuteChatLockKey(tokenHash, eventKey)
+  delete global.__approuteChatInFlight[lockKey]
+}
+
 module.exports = {
   AUTOLIST_LAST_CHAT_FRESH_SEC,
   AUTOLIST_MAX_CHATS_TO_SCAN,
@@ -197,10 +252,15 @@ module.exports = {
   AUTOLIST_SEEN_CHAT_TTL_SEC,
   AUTOLIST_ITEM_STATE_TTL_SEC,
   AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC,
+  CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
+  PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
   autolistGetProcessedMap,
   autolistPruneProcessedMap,
   autolistWasProcessed,
   autolistMarkProcessed,
+  autolistClearProcessed,
+  autolistClearApprouteChatProcessed,
+  autolistGetApprouteRetryMap,
   autolistGetSeenChatsMap,
   autolistPruneSeenChatsMap,
   autolistWasChatSeen,
@@ -215,9 +275,12 @@ module.exports = {
   autolistPruneSupercellFlowMap,
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
+  buildPaidChatAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   tryBeginPostPurchaseAutomessageSend,
   finishPostPurchaseAutomessageSend,
+  tryBeginApprouteChatSend,
+  finishApprouteChatSend,
 }
 

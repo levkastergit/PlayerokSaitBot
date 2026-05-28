@@ -24,6 +24,10 @@ const { handlePartnersConnect } = require('../features/partners/handlePartnersCo
 const { handleGetOutboundIps } = require('../features/playerokOutboundIp/handleGetOutboundIps')
 const { handleGetOutboundIpSettings } = require('../features/playerokOutboundIp/handleGetOutboundIpSettings')
 const { handleSetOutboundIpSettings } = require('../features/playerokOutboundIp/handleSetOutboundIpSettings')
+const { handleGetApprouteSettings } = require('../features/approute/handleGetApprouteSettings')
+const { handleSetApprouteSettings } = require('../features/approute/handleSetApprouteSettings')
+const { handleGetApprouteServices } = require('../features/approute/handleGetApprouteServices')
+const { handleGetApprouteServiceVariants } = require('../features/approute/handleGetApprouteServiceVariants')
 
 async function dispatchPublicAuth({ req, res, pathname, deps }) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -236,6 +240,39 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
       return true
     }
     const result = await handleSetOutboundIpSettings({ payload, currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/approute/settings') {
+    const result = await handleGetApprouteSettings({ currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/approute/settings') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handleSetApprouteSettings({ payload, currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/approute/services') {
+    const result = await handleGetApprouteServices({ currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  const approuteVariantsMatch = pathname.match(/^\/api\/approute\/services\/([^/]+)\/variants$/)
+  if (req.method === 'GET' && approuteVariantsMatch) {
+    const serviceId = decodeURIComponent(approuteVariantsMatch[1])
+    const result = await handleGetApprouteServiceVariants({ serviceId, currentUserId, deps })
     sendJson(res, result.statusCode, result.data)
     return true
   }

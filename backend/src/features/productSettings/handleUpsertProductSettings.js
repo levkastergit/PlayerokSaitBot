@@ -1,5 +1,5 @@
 async function handleUpsertProductSettings({ payload, currentUserId, deps }) {
-  const { getTokenFromBodyOrStored, upsertSettings } = deps
+  const { getTokenFromBodyOrStored, upsertSettings, autolistClearApprouteChatProcessed } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
   const productKey = payload.productKey
   const settings = payload.settings
@@ -8,7 +8,6 @@ async function handleUpsertProductSettings({ payload, currentUserId, deps }) {
     return { statusCode: 400, data: { error: 'token and productKey are required' } }
   }
 
-  const tokenHash = token
   const key = String(productKey)
   const settingsStr = typeof settings === 'object' && settings !== null ? JSON.stringify(settings) : '{}'
   const updatedAt = Math.floor(Date.now() / 1000)
@@ -18,18 +17,12 @@ async function handleUpsertProductSettings({ payload, currentUserId, deps }) {
 
     try {
       const s = typeof settings === 'object' && settings !== null ? settings : {}
-      console.info('[settings:save]', {
-        tokenHash,
-        productKey: key,
-        hasAutodelivery: Boolean(s && s.autodelivery),
-        autodeliveryEnabled: Boolean(s && s.autodelivery && s.autodelivery.enabled),
-        codesCount: Array.isArray(s && s.autodelivery && s.autodelivery.codes) ? s.autodelivery.codes.length : 0,
-        hasAutomessage: Boolean(s && s.automessage),
-        automessageEnabled: Boolean(s && s.automessage && s.automessage.enabled),
-        hasAutolist: Boolean(s && s.autolist),
-        autolistEnabled: Boolean(s && s.autolist && s.autolist.enabled),
-        settingsLabel: typeof s.settingsLabel === 'string' ? s.settingsLabel : null,
-      })
+      if (
+        s.autodeliveryApi?.enabled &&
+        typeof autolistClearApprouteChatProcessed === 'function'
+      ) {
+        autolistClearApprouteChatProcessed(token)
+      }
     } catch (_) {}
 
     return { statusCode: 200, data: { ok: true, updated_at: updatedAt } }

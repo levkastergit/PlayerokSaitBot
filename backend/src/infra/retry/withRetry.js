@@ -50,11 +50,6 @@ async function withRetry(fn, opts = {}) {
       const exp = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt))
       const jitter = Math.floor(Math.random() * 250)
       const delay = exp + jitter
-      console.warn(`[retry] ${label} не удалось, повтор`, {
-        attempt: attempt + 1,
-        delayMs: delay,
-        error: err?.message,
-      })
       await sleep(delay)
     }
   }

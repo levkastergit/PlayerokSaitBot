@@ -166,7 +166,6 @@ function scheduleChatsSnapshotRefresh(userId, token, userAgent, opts = {}) {
 // Периодическая очистка устаревших записей из кэша
 setInterval(() => {
   const now = Date.now()
-  let cleaned = 0
   for (const [token, cache] of lotsCache.entries()) {
     if (cache.active && now >= cache.active.expiresAt) {
       delete cache.active
@@ -177,11 +176,7 @@ setInterval(() => {
     // Удаляем запись, если оба кэша пусты
     if (!cache.active && !cache.completed) {
       lotsCache.delete(token)
-      cleaned++
     }
-  }
-  if (cleaned > 0) {
-    console.log('[cache] очищены устаревшие записи кэша', { cleaned, remaining: lotsCache.size })
   }
 }, 60 * 1000) // Проверяем каждую минуту
 
@@ -201,7 +196,7 @@ initLogger()
 // "Код от хеда": user-agent для запросов к Playerok берём из .env, чтобы не был захардкожен в коде.
 const PLAYEROK_USER_AGENT =
   process.env.PLAYEROK_USER_AGENT == null ? '' : String(process.env.PLAYEROK_USER_AGENT).trim()
-// Лимитер Playerok: PLAYEROK_MIN_REQUEST_GAP_MS; UI чата обходит очередь (runPlayerokInteractive в dispatchPlayerok), warmup — нет.
+// Лимитер Playerok: PLAYEROK_MIN_REQUEST_GAP_MS; runPlayerokInteractive — только send/rescan/supercell в UI.
 
 const { hashPassword, verifyPassword, encryptToken, decryptToken } = require('./src/infra/crypto/tokenCrypto')
 const {
@@ -267,6 +262,7 @@ function isSupercellModuleEnabled(userId) {
 
 const { setupTokensRepo } = require('./src/db/tokensRepo')
 const { setupChatSnapshotsRepo } = require('./src/db/chatSnapshotsRepo')
+const { setupChatDbRepo } = require('./src/db/chatDbRepo')
 
 const {
   getStoredToken,
@@ -278,7 +274,13 @@ const {
   getTokenFromQueryOrStored,
 } = setupTokensRepo(db)
 
+const { setupApprouteRepo } = require('./src/db/approuteRepo')
+const { loadApprouteApiKeyPlain, saveApprouteApiKey, getApprouteSettingsMeta } = setupApprouteRepo(db)
+
+const { runApprouteAutodelivery } = require('./src/features/approute/runApprouteAutodelivery')
+
 chatSnapshotsRepo = setupChatSnapshotsRepo(db)
+const chatDbRepo = setupChatDbRepo(db)
 
 const { setupProductSettingsRepo } = require('./src/db/productSettingsRepo')
 
@@ -336,6 +338,7 @@ const { readJsonBody } = require('./src/http/readJsonBody')
 const { dispatchPublicAuth, dispatchPrivateAuthAndSettings } = require('./src/http/dispatchAuthSettings')
 const { dispatchFinance } = require('./src/http/dispatchFinance')
 const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
+const { dispatchChatDb } = require('./src/http/dispatchChatDb')
 
 const { processActiveSupercellFlows } = require('./src/features/autolist/processActiveSupercellFlows')
 const { scanCompletedAndRelist } = require('./src/features/autolist/scanCompletedAndRelist')
@@ -404,6 +407,8 @@ const {
   autolistPruneProcessedMap,
   autolistWasProcessed,
   autolistMarkProcessed,
+  autolistClearProcessed,
+  autolistClearApprouteChatProcessed,
   autolistGetSeenChatsMap,
   autolistPruneSeenChatsMap,
   autolistWasChatSeen,
@@ -414,6 +419,7 @@ const {
   autolistGetItemState,
   autolistGetCompletedScanMap,
   autolistGetLastChatMeta,
+  autolistGetApprouteRetryMap,
   autolistGetSupercellFlowMap,
   autolistPruneSupercellFlowMap,
 } = require('./src/features/autolist/autolistState')
@@ -537,6 +543,32 @@ const fetchDealChatMessagesFromPlayerok = createFetchDealChatMessagesFromPlayero
   extractItemImageUrl,
   extractSupercellEmailFromFields,
   getLatestBuyerEmailFromMessages,
+})
+
+const { createChatDbSyncService } = require('./src/features/chat-db/chatDbSyncService')
+const chatDbSyncService = createChatDbSyncService({
+  chatDbRepo,
+  getViewer,
+  requestUserChatsPage,
+  fetchDealChatMessagesFromPlayerok,
+  userAgentProvider: () =>
+    PLAYEROK_USER_AGENT ||
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+  runAutomationForChat: async ({ userId, token, userAgent, chatId, dealId, dealItemId }) => {
+    if (!postLocalRef) return
+    try {
+      await postLocalRef('/api/playerok/deal-chat-messages', {
+        userId,
+        token,
+        userAgent,
+        chatId,
+        ...(dealId ? { dealId } : {}),
+        ...(dealItemId ? { dealItemId } : {}),
+      })
+    } catch (_) {
+      // ignore automation bridge errors
+    }
+  },
 })
 
 // Отправить текстовое сообщение в чат по chatId или dealId.
@@ -691,6 +723,7 @@ const server = http.createServer(async (req, res) => {
         CATEGORY_SETTINGS_PREFIX,
         getCategorySettingsKey,
         getTokenFromBodyOrStored,
+        autolistClearApprouteChatProcessed,
         // partners
         upsertInvite,
         deleteInvite,
@@ -700,6 +733,9 @@ const server = http.createServer(async (req, res) => {
         getDirectorsForWorker,
         loadOutboundIpBindings,
         saveOutboundIpBindings,
+        loadApprouteApiKeyPlain,
+        saveApprouteApiKey,
+        getApprouteSettingsMeta,
       },
     })
     if (handled) return
@@ -764,6 +800,29 @@ const server = http.createServer(async (req, res) => {
 
   // Finance endpoints dispatcher (sales/bump/logs/profit)
   {
+    const handled = await dispatchChatDb({
+      req,
+      res,
+      pathname,
+      currentUserId,
+      deps: {
+        chatDbRepo,
+        chatDbSyncService,
+        fetchDealChatMessagesFromPlayerok,
+        requestDealById,
+        getTokenFromBodyOrStored,
+        getHiddenChats,
+        getViewer,
+        sendChatMessageToPlayerok,
+        loadStoredTokenPlain,
+        getAllStoredTokens,
+      },
+    })
+    if (handled) return
+  }
+
+  // Finance endpoints dispatcher (sales/bump/logs/profit)
+  {
     const handled = await dispatchFinance({
       req,
       res,
@@ -819,6 +878,7 @@ const server = http.createServer(async (req, res) => {
         AUTOLIST_MAX_CHATS_TO_SCAN,
         autolistGetCompletedScanMap,
         autolistGetLastChatMeta,
+        autolistGetApprouteRetryMap,
         autolistPruneProcessedMap,
         autolistPruneSeenChatsMap,
         autolistPruneItemStateMap,
@@ -831,6 +891,7 @@ const server = http.createServer(async (req, res) => {
         autolistGetItemState,
         autolistWasProcessed,
         autolistMarkProcessed,
+        autolistClearProcessed,
         autolistSetItemState,
         getSettings,
         getGroupSettingsKey,
@@ -839,7 +900,10 @@ const server = http.createServer(async (req, res) => {
         normalizeKeyPart,
         buildProductKey,
         handlePaidChat,
+        loadApprouteApiKeyPlain,
+        runApprouteAutodelivery,
         requestDealById,
+        requestChatDealIdPost,
         toUnixTs,
         dealPurchaseUnixTs,
         insertSale,
@@ -887,6 +951,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Раздача фронтенда (статика из frontend/dist)
+  if (req.method === 'GET' && pathname === '/favicon.ico') {
+    const faviconPath = path.join(FRONTEND_DIST, 'favicon.ico')
+    if (fs.existsSync(faviconPath)) {
+      res.setHeader('Content-Type', 'image/x-icon')
+      res.setHeader('Cache-Control', 'public, max-age=86400')
+      res.statusCode = 200
+      return res.end(fs.readFileSync(faviconPath))
+    }
+  }
+
   if (req.method === 'GET' && !pathname.startsWith('/api/')) {
     const safePath = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '').replace(/\.\./g, '')
     const filePath = path.join(FRONTEND_DIST, safePath)
@@ -936,12 +1010,12 @@ server.listen(PORT, () => {
   const { setupAutolistBackgroundJob } = require('./src/jobs/autolistBackgroundJob')
   const { setupAutobumpBackgroundJob } = require('./src/jobs/autobumpBackgroundJob')
   const { setupChatsWarmupBackgroundJob } = require('./src/jobs/chatsWarmupBackgroundJob')
+  const { setupChatsSyncBackgroundJob } = require('./src/jobs/chatsSyncBackgroundJob')
 
   setupAutolistBackgroundJob({
     postLocal,
     getAllStoredTokens,
     loadStoredTokenPlain,
-    isSupercellModuleEnabled,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
   })
 
@@ -961,6 +1035,15 @@ server.listen(PORT, () => {
     getAllStoredTokens,
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+  })
+
+  setupChatsSyncBackgroundJob({
+    getAllStoredTokens,
+    loadStoredTokenPlain,
+    getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    chatDbSyncService,
+    chatDbRepo,
+    intervalMs: 500,
   })
 })
 

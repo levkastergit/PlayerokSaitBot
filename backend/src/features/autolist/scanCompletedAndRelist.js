@@ -1,5 +1,6 @@
 const { isAutolistRetryableMessage, autolistReasonShort, isPlayerokRateLimitMessage } = require('./autolistErrorClassify')
 const { sleep } = require('../../infra/retry/withRetry')
+const { logAutolistTick, warnAutolistTick } = require('../../debug/autolistTickLog')
 
 async function scanCompletedAndRelist({
   trigger,
@@ -274,7 +275,7 @@ async function scanCompletedAndRelist({
         const cannotUpdateStatus = msg.includes('нельзя обновить статус')
         const retryable = isAutolistRetryableMessage(msg)
         const reasonShort = cannotUpdateStatus ? 'нельзя обновить статус' : autolistReasonShort(msg)
-        console.warn('[autolist-tick] перевыставление лота не удалось', {
+        warnAutolistTick('перевыставление лота не удалось', {
           trigger,
           itemId,
           productKey: String(productKey || ''),
@@ -318,7 +319,7 @@ async function scanCompletedAndRelist({
       }
     }
 
-    console.log('[autolist-tick] сводка', {
+    logAutolistTick('сводка', {
       trigger,
       проверено: itemsToProcess.length,
       выставлено: relistedItems.length,
@@ -330,7 +331,7 @@ async function scanCompletedAndRelist({
     }
     return { ok: true, action: 'none', trigger }
   } catch (err) {
-    console.warn('[autolist-tick] сканирование завершённых не удалось', { trigger, error: err?.message })
+    warnAutolistTick('сканирование завершённых не удалось', { trigger, error: err?.message })
     if (isPlayerokRateLimitError(err)) {
       scanMeta.lastScanTs = nowTs + AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC
     }

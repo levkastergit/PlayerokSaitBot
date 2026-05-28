@@ -9,7 +9,6 @@ function setupChatsWarmupBackgroundJob({
   pageDelayMs = 0,
 }) {
   let inFlight = false
-  console.log('[chats-warmup] фоновое задание запланировано (интервал: 60 с)')
 
   setInterval(async () => {
     if (inFlight) return

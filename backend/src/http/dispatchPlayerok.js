@@ -11,6 +11,7 @@ function effectiveUserIdFromPayload(payload, currentUserId) {
 
 const { handleActiveLots } = require('../features/playerok/activeLots/handleActiveLots')
 const { handleChats } = require('../features/playerok/chats/handleChats')
+const { handleChatsProbeStep } = require('../features/playerok/chats/handleChatsProbeStep')
 const { handleHideChat } = require('../features/playerok/chats/handleHideChat')
 const { handleUnhideChat } = require('../features/playerok/chats/handleUnhideChat')
 const { handleBump } = require('../features/playerok/bump/handleBump')
@@ -20,7 +21,8 @@ const { handleItemPriorityStatuses } = require('../features/playerok/itemPriorit
 const { handleCompletedLots } = require('../features/playerok/completedLots/handleCompletedLots')
 const { handleInProgressDeals } = require('../features/playerok/inProgressDeals/handleInProgressDeals')
 const { handleCompletedDeals } = require('../features/playerok/completedDeals/handleCompletedDeals')
-const { handleDealChatMessages } = require('../features/playerok/dealChatMessages/handleDealChatMessages')
+const { handleDealChatMessages, handleDealChatMessagesBatch } = require('../features/playerok/dealChatMessages/handleDealChatMessages')
+const { handleApprouteChatRescan } = require('../features/approute/handleApprouteChatRescan')
 const { handleSendChatMessage } = require('../features/playerok/sendChatMessage/handleSendChatMessage')
 const { handleRequestSupercellCode } = require('../features/playerok/requestSupercellCode/handleRequestSupercellCode')
 const { handleCancelDeal } = require('../features/playerok/dealsActions/handleCancelDeal')
@@ -65,6 +67,24 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
       currentUserId,
       deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok },
     })
+    return sendJson(res, result.statusCode, result.data) || true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/chats-probe-step') {
+    const payload = await readLimited()
+    if (payload == null) return true
+    const result = await runPlayerokInteractive(() =>
+      handleChatsProbeStep({
+        payload,
+        currentUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          getViewer: deps.getViewer,
+          requestUserChatsPage: deps.requestUserChatsPage,
+          isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+        },
+      })
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -160,6 +180,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         AUTOLIST_MAX_CHATS_TO_SCAN: deps.AUTOLIST_MAX_CHATS_TO_SCAN,
         autolistGetCompletedScanMap: deps.autolistGetCompletedScanMap,
         autolistGetLastChatMeta: deps.autolistGetLastChatMeta,
+        autolistGetApprouteRetryMap: deps.autolistGetApprouteRetryMap,
         autolistPruneProcessedMap: deps.autolistPruneProcessedMap,
         autolistPruneSeenChatsMap: deps.autolistPruneSeenChatsMap,
         autolistPruneItemStateMap: deps.autolistPruneItemStateMap,
@@ -172,6 +193,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         autolistGetItemState: deps.autolistGetItemState,
         autolistWasProcessed: deps.autolistWasProcessed,
         autolistMarkProcessed: deps.autolistMarkProcessed,
+        autolistClearProcessed: deps.autolistClearProcessed,
         autolistSetItemState: deps.autolistSetItemState,
         getSettings: deps.getSettings,
         getGroupSettingsKey: deps.getGroupSettingsKey,
@@ -182,7 +204,12 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         normalizeKeyPart: deps.normalizeKeyPart,
         buildProductKey: deps.buildProductKey,
         handlePaidChat: deps.handlePaidChat,
+        loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
+        runApprouteAutodelivery: deps.runApprouteAutodelivery,
+        updateDealStatus: deps.updateDealStatus,
         requestDealById: deps.requestDealById,
+        requestChatDealIdPost: deps.requestChatDealIdPost,
+        requestChatById: deps.requestChatById,
         toUnixTs: deps.toUnixTs,
         dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
         insertSale: deps.insertSale,
@@ -280,11 +307,41 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
     return sendJson(res, result.statusCode, result.data) || true
   }
 
-  if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages') {
+  if (req.method === 'POST' && pathname === '/api/playerok/approute-chat-rescan') {
     const payload = await readLimited()
     if (payload == null) return true
     const result = await runPlayerokInteractive(() =>
-      handleDealChatMessages({
+      handleApprouteChatRescan({
+        payload,
+        currentUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          withRetry: deps.withRetry,
+          isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+          requestDealById: deps.requestDealById,
+          requestChatDealIdPost: deps.requestChatDealIdPost,
+          requestChatById: deps.requestChatById,
+          requestItemById: deps.requestItemById,
+          resolveEffectiveProductSettings: deps.resolveEffectiveProductSettings,
+          fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
+          loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
+          updateDealStatus: deps.updateDealStatus,
+          createChatMessage: deps.createChatMessage,
+          autolistClearProcessed: deps.autolistClearProcessed,
+          autolistMarkProcessed: deps.autolistMarkProcessed,
+          normalizeKeyPart: deps.normalizeKeyPart,
+          buildProductKey: deps.buildProductKey,
+          sleep: deps.sleep,
+        },
+      })
+    )
+    return sendJson(res, result.statusCode, result.data) || true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages') {
+    const payload = await readLimited()
+    if (payload == null) return true
+    const result = await handleDealChatMessages({
         payload,
         currentUserId,
         deps: {
@@ -304,9 +361,80 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           createChatMessage: deps.createChatMessage,
           normalizeKeyPart: deps.normalizeKeyPart,
           buildProductKey: deps.buildProductKey,
+          toUnixTs: deps.toUnixTs,
+          handlePaidChat: deps.handlePaidChat,
+          requestChatDealIdPost: deps.requestChatDealIdPost,
+          loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
+          runApprouteAutodelivery: deps.runApprouteAutodelivery,
+          updateDealStatus: deps.updateDealStatus,
+          autolistWasProcessed: deps.autolistWasProcessed,
+          autolistMarkProcessed: deps.autolistMarkProcessed,
+          autolistClearProcessed: deps.autolistClearProcessed,
+          extractSupercellEmailFromFields: deps.extractSupercellEmailFromFields,
+          getSupercellGameByCategory: deps.getSupercellGameByCategory,
+          pickSupercellCategoryFromItemHints: deps.pickSupercellCategoryFromItemHints,
+          upsertSettings: deps.upsertSettings,
+          insertSale: deps.insertSale,
+          dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
+          isPlayerokPublishRetryable: deps.isPlayerokPublishRetryable,
+          fetchItemPriorityStatuses: deps.fetchItemPriorityStatuses,
+          publishItem: deps.publishItem,
+          insertListingFee: deps.insertListingFee,
+          autolistSetItemState: deps.autolistSetItemState,
+          sleep: deps.sleep,
+          AUTOBUMP_PRIORITY_STATUS_ID: deps.AUTOBUMP_PRIORITY_STATUS_ID,
         },
-      })
-    )
+    })
+    return sendJson(res, result.statusCode, result.data) || true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages-batch') {
+    const payload = await readLimited()
+    if (payload == null) return true
+    const result = await handleDealChatMessagesBatch({
+        payload,
+        currentUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          withRetry: deps.withRetry,
+          isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+          getViewer: deps.getViewer,
+          fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
+          autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
+          processSingleSupercellFlow: deps.processSingleSupercellFlow,
+          isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+          handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
+          handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
+          requestDealById: deps.requestDealById,
+          requestItemById: deps.requestItemById,
+          resolveEffectiveProductSettings: deps.resolveEffectiveProductSettings,
+          createChatMessage: deps.createChatMessage,
+          normalizeKeyPart: deps.normalizeKeyPart,
+          buildProductKey: deps.buildProductKey,
+          toUnixTs: deps.toUnixTs,
+          handlePaidChat: deps.handlePaidChat,
+          requestChatDealIdPost: deps.requestChatDealIdPost,
+          loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
+          runApprouteAutodelivery: deps.runApprouteAutodelivery,
+          updateDealStatus: deps.updateDealStatus,
+          autolistWasProcessed: deps.autolistWasProcessed,
+          autolistMarkProcessed: deps.autolistMarkProcessed,
+          autolistClearProcessed: deps.autolistClearProcessed,
+          extractSupercellEmailFromFields: deps.extractSupercellEmailFromFields,
+          getSupercellGameByCategory: deps.getSupercellGameByCategory,
+          pickSupercellCategoryFromItemHints: deps.pickSupercellCategoryFromItemHints,
+          upsertSettings: deps.upsertSettings,
+          insertSale: deps.insertSale,
+          dealPurchaseUnixTs: deps.dealPurchaseUnixTs,
+          isPlayerokPublishRetryable: deps.isPlayerokPublishRetryable,
+          fetchItemPriorityStatuses: deps.fetchItemPriorityStatuses,
+          publishItem: deps.publishItem,
+          insertListingFee: deps.insertListingFee,
+          autolistSetItemState: deps.autolistSetItemState,
+          sleep: deps.sleep,
+          AUTOBUMP_PRIORITY_STATUS_ID: deps.AUTOBUMP_PRIORITY_STATUS_ID,
+        },
+    })
     return sendJson(res, result.statusCode, result.data) || true
   }
 

@@ -1,38 +1,28 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { logChatLogging } from '../../debug/chatLoggingLog.js'
+import { logChatMessagesGap } from '../../debug/chatMessagesGapLog.js'
+import { isPlayerokRateLimitMessage, pollDelayAfterErrors } from './chatRequestUtils.js'
 import {
-  fetchUserChats,
-  fetchDealChatMessages,
-  sendDealChatMessage,
+  fetchChatDbList,
+  fetchChatDbMessages,
+  fetchChatDbMessagesBatch,
+  sendChatDbMessage,
   hideChat,
   unhideChat,
   loadCategoryCommandsList,
   requestSupercellCode,
   cancelDeal,
   confirmDeal,
+  rescanApprouteChat,
+  loadProductSettingsList,
+  getProductKey,
+  getGroupSettingsKey,
+  startChatDbFullScan,
+  fetchChatDbFullScanStatus,
+  resetChatDbFullScan,
 } from '../../services/playerokApi'
 
-export function ChatTab({ token, moduleSupercellEnabled = false }) {
-  const CHAT_DEBUG_PREFIX = '[CHAT_DEBUG]'
-  const isChatDebugEnabled = useMemo(() => {
-    if (typeof window === 'undefined') return true
-    try {
-      const value = String(window.localStorage.getItem('chatDebug') || '').trim().toLowerCase()
-      if (value === '0' || value === 'false' || value === 'off') return false
-      if (value === '1' || value === 'true' || value === 'on') return true
-    } catch {
-      // ignore storage issues
-    }
-    return true
-  }, [])
-  const chatDebugLog = useCallback((event, payload = null) => {
-    if (!isChatDebugEnabled) return
-    const stamp = new Date().toISOString()
-    if (payload == null) {
-      console.log(`${CHAT_DEBUG_PREFIX} ${stamp} ${event}`)
-      return
-    }
-    console.log(`${CHAT_DEBUG_PREFIX} ${stamp} ${event}`, payload)
-  }, [isChatDebugEnabled])
+export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = true }) {
   const summarizeChatForLog = useCallback((chat) => ({
     id: chat?.id ?? null,
     dealId: chat?.dealId ?? null,
@@ -60,6 +50,15 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const [requestCodeState, setRequestCodeState] = useState({ loading: false, error: null })
   const [dealActionModal, setDealActionModal] = useState({ open: false, kind: null, chatId: null })
   const [dealActionState, setDealActionState] = useState({ loading: false, error: null })
+  const [approuteRescanState, setApprouteRescanState] = useState({
+    loading: false,
+    error: null,
+    notice: null,
+  })
+  const [productSettingsList, setProductSettingsList] = useState([])
+  const [fullScanState, setFullScanState] = useState({ loading: false, status: null, error: null })
+  const [fullScanTick, setFullScanTick] = useState(0)
+  const [showChatExtraInfo, setShowChatExtraInfo] = useState(false)
   const [isMobileChatLayout, setIsMobileChatLayout] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(max-width: 900px)').matches
@@ -83,11 +82,127 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const loadingMoreRef = useRef(false)
   const chatStateByIdRef = useRef({})
   const selectedChatIdRef = useRef(null)
-  const preloadSessionRef = useRef(0)
-  const MAX_BACKGROUND_PRELOAD = 16
+  const preloadQueueRef = useRef([])
+  const preloadQueueRunningRef = useRef(false)
+  const batchLoadInFlightRef = useRef(new Set())
+  const chatListScrollAnchorRef = useRef(null)
+  const initialLoadDoneRef = useRef(false)
+  const visibleChatsRef = useRef([])
+  const chatsRef = useRef([])
 
   const hasToken = Boolean(token)
+  const normalizeBuyerName = (value) => String(value || '').trim()
+  const isGenericBuyerName = (value) => {
+    const normalized = normalizeBuyerName(value).toLowerCase()
+    if (!normalized) return true
+    return ['покупатель', 'buyer', 'customer', 'заказчик', 'user'].includes(normalized)
+  }
+
+  useEffect(() => {
+    if (!token) {
+      setProductSettingsList([])
+      return
+    }
+    let cancelled = false
+    loadProductSettingsList(token)
+      .then((data) => {
+        if (!cancelled) setProductSettingsList(data.list || [])
+      })
+      .catch(() => {
+        if (!cancelled) setProductSettingsList([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (!token) {
+      setFullScanState({ loading: false, status: null, error: null })
+      return
+    }
+    let cancelled = false
+    let timerId = null
+    const poll = async () => {
+      try {
+        const data = await fetchChatDbFullScanStatus()
+        if (cancelled) return
+        setFullScanState((prev) => ({
+          ...prev,
+          status: data?.unavailable ? prev.status : data?.state || null,
+          error: null,
+        }))
+      } catch (err) {
+        if (cancelled) return
+        setFullScanState((prev) => ({
+          ...prev,
+          error: err instanceof Error ? err.message : String(err),
+        }))
+      } finally {
+        if (!cancelled) timerId = setTimeout(poll, 1000)
+      }
+    }
+    poll()
+    return () => {
+      cancelled = true
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [token])
+
+  const fullScanInProgress = Number(fullScanState.status?.scan_in_progress || 0) === 1
+  const fullScanDone = Number(fullScanState.status?.scan_progress_done || 0)
+  const fullScanTotal = Number(fullScanState.status?.scan_progress_total || 0)
+  const fullScanProgressPercent =
+    fullScanTotal > 0 ? Math.max(0, Math.min(100, Math.round((fullScanDone / fullScanTotal) * 100))) : 0
+  const fullScanStartedAt = Number(fullScanState.status?.full_scan_requested_at || 0)
+  const fullScanUpdatedAt = Number(fullScanState.status?.updated_at || 0)
+  const fullScanElapsedSec =
+    fullScanInProgress && fullScanStartedAt > 0
+      ? Math.max(0, Math.floor((Date.now() - fullScanStartedAt) / 1000))
+      : 0
+  const fullScanUpdateLagSec =
+    fullScanInProgress && fullScanUpdatedAt > 0
+      ? Math.max(0, Math.floor((Date.now() - fullScanUpdatedAt) / 1000))
+      : 0
+  const fullScanCurrentLabel = String(fullScanState.status?.scan_current_label || '').trim()
+  const fullScanCurrentStep = String(fullScanState.status?.scan_step || '').trim()
+  const fullScanLastError = String(fullScanState.status?.last_error || '').trim()
+
+  useEffect(() => {
+    if (!fullScanInProgress) return
+    const timer = setInterval(() => {
+      setFullScanTick((v) => v + 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [fullScanInProgress])
+
+  const settingsByKey = useMemo(() => {
+    const map = {}
+    productSettingsList.forEach(({ productKey, settings }) => {
+      if (productKey && settings) map[productKey] = settings
+    })
+    return map
+  }, [productSettingsList])
+
+  const resolveSettingsForChat = useCallback(
+    (chat, itemTitle) => {
+      const title = String(itemTitle || chat?.itemTitle || '').trim()
+      const game = String(chat?.category || '').trim()
+      const key = getProductKey({ game, title })
+      let s = settingsByKey[key]
+      const label = s && typeof s.settingsLabel === 'string' ? s.settingsLabel.trim() : ''
+      if (label) {
+        const gk = getGroupSettingsKey(label)
+        if (settingsByKey[gk]) s = settingsByKey[gk]
+      }
+      return s
+    },
+    [settingsByKey]
+  )
+
   const OUR_USERNAME = 'Levkaster'
+  const OUR_USERNAME_LOWER = OUR_USERNAME.toLowerCase()
+  const isOwnUsername = (value) => String(value || '').trim().toLowerCase() === OUR_USERNAME_LOWER
   const SUPERCELL_EMAIL_GAMES = [
     'brawl stars',
     'clash royale',
@@ -154,9 +269,21 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return luminance > 128 ? '#000' : '#fff'
   }
 
+  const parseTimestamp = (value) => {
+    const ts = Date.parse(value || '')
+    return Number.isFinite(ts) ? ts : 0
+  }
+
   const isFromBuyer = (message) => {
-    const username = (message.user?.username || '').trim()
-    return username !== OUR_USERNAME
+    if (typeof message?.fromBuyer === 'boolean') {
+      return message.fromBuyer
+    }
+    if (message?._optimisticOutgoing === true) {
+      return false
+    }
+    const username = (message?.user?.username || '').trim()
+    if (!username) return true
+    return !isOwnUsername(username)
   }
 
   const normalizeCategoryName = (name) =>
@@ -180,12 +307,81 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return markers.some((m) => n === m || n.includes(m))
   }
 
+  const SUPERCELL_TITLE_PATTERNS = [
+    { re: /brawl\s*stars|brawlstars|бравл\s*стар/i, label: 'Brawl Stars' },
+    { re: /clash\s*royale|clashroyale|клеш\s*роял|клеш\s*рояль/i, label: 'Clash Royale' },
+    {
+      re: /clash\s*of\s*clans|clashofclans|\bcoc\b|клеш\s*оф\s*клан|клеш\s*кланс|клеш\s*кленс/i,
+      label: 'Clash of Clans',
+    },
+  ]
+
+  const matchSupercellFromText = (text) => {
+    const raw = String(text || '')
+    if (!raw.trim()) return null
+    for (const pattern of SUPERCELL_TITLE_PATTERNS) {
+      if (pattern.re.test(raw)) return pattern.label
+    }
+    return null
+  }
+
   const isSupercellCategory = (name) => {
     const n = normalizeCategoryName(name)
     if (!n) return false
     if (SUPERCELL_EMAIL_GAMES.includes(n)) return true
+    if (SUPERCELL_EMAIL_GAMES.some((g) => n.includes(g))) return true
     if (isSuperSellMarketplaceLabel(name)) return true
+    if (matchSupercellFromText(name)) return true
     return false
+  }
+
+  const chatSupportsSupercell = (chat, { itemTitle = '', deals = [] } = {}) => {
+    if (!chat) return false
+    const candidates = [
+      chat.category,
+      itemTitle,
+      chat.itemTitle,
+      ...(Array.isArray(deals) ? deals.map((d) => d.itemCategory) : []),
+    ].filter((c) => c != null && String(c).trim())
+
+    for (const c of candidates) {
+      if (isSupercellCategory(c) && !isSuperSellMarketplaceLabel(c)) return true
+    }
+    for (const c of candidates) {
+      if (isSuperSellMarketplaceLabel(c)) return true
+    }
+    for (const c of candidates) {
+      const derived = deriveCategoryFromText(c)
+      if (derived && isSupercellCategory(derived)) return true
+    }
+    if (matchSupercellFromText(itemTitle) || matchSupercellFromText(chat.itemTitle)) return true
+    return false
+  }
+
+  const resolveSupercellCategoryForRequest = (chat, { itemTitle = '', deals = [] } = {}) => {
+    if (!chat) return ''
+    const candidates = [
+      chat.category,
+      itemTitle,
+      chat.itemTitle,
+      ...(Array.isArray(deals) ? deals.map((d) => d.itemCategory) : []),
+    ].filter((c) => c != null && String(c).trim())
+
+    for (const c of candidates) {
+      if (isSupercellCategory(c) && !isSuperSellMarketplaceLabel(c)) return String(c).trim()
+    }
+    for (const c of candidates) {
+      const derived = deriveCategoryFromText(c)
+      if (derived && isSupercellCategory(derived) && !isSuperSellMarketplaceLabel(derived)) {
+        return derived
+      }
+    }
+    const fromTitle = matchSupercellFromText(itemTitle) || matchSupercellFromText(chat.itemTitle)
+    if (fromTitle) return fromTitle
+    for (const c of candidates) {
+      if (isSupercellCategory(c)) return String(c).trim()
+    }
+    return ''
   }
 
   const deriveCategoryFromText = useCallback((value) => {
@@ -255,11 +451,29 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return result
   }
 
+  const previewFromListRow = (chat) => {
+    const fallbackText = String(chat.lastMessageText || '').trim()
+    if (!fallbackText) return null
+    const fromBuyer =
+      typeof chat?.lastMessageFromBuyer === 'boolean'
+        ? chat.lastMessageFromBuyer
+        : !isSystemMessage(fallbackText)
+    return {
+      text: formatMessageText(fallbackText),
+      fromBuyer,
+    }
+  }
+
   /** Последнее НЕ системное сообщение в чате + кто отправил. */
   const getLastChatMessagePreviewInfo = (chat) => {
     if (!chat?.id) return null
     const state = chatStateById[chat.id]
     const messages = Array.isArray(state?.messages) ? state.messages : []
+    const listLastId = chat.lastMessageId != null ? String(chat.lastMessageId) : null
+
+    let lastFromState = null
+    let lastFromStateId = null
+    let lastFromStateTs = 0
 
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i]
@@ -269,19 +483,42 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       if (isSystemMessage(m.text)) continue
 
       if (m.imageUrl && !String(m.text || '').trim()) {
-        return {
+        lastFromStateId = m.id != null ? String(m.id) : null
+        lastFromState = {
           text: 'Картинка',
           fromBuyer: isFromBuyer(m),
         }
+        lastFromStateTs = parseTimestamp(m.createdAt)
+        break
       }
       const t = String(m.text || '').trim()
       if (!t) continue
-      return {
+      lastFromStateId = m.id != null ? String(m.id) : null
+      lastFromState = {
         text: formatMessageText(t),
         fromBuyer: isFromBuyer(m),
       }
+      lastFromStateTs = parseTimestamp(m.createdAt)
+      break
     }
-    return null
+
+    const listAheadOfLocal =
+      Boolean(listLastId) &&
+      (!lastFromStateId || listLastId !== lastFromStateId)
+
+    const listTs = parseTimestamp(chat.lastMessageCreatedAt)
+    const shouldUseListPreview =
+      listAheadOfLocal &&
+      (!lastFromState ||
+        (listTs > 0 && lastFromStateTs > 0 ? listTs > lastFromStateTs : lastFromState.fromBuyer))
+
+    if (shouldUseListPreview) {
+      const fromList = previewFromListRow(chat)
+      if (fromList) return fromList
+    }
+
+    if (lastFromState) return lastFromState
+    return previewFromListRow(chat)
   }
 
   const getDerivedChatStatus = (chat) => {
@@ -319,6 +556,52 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     })
   }
 
+  /** Если thread/список опережает загруженные messages — показываем lastMessage из списка. */
+  const mergeListAheadMessage = (chat, messages) => {
+    if (!chat?.id) return Array.isArray(messages) ? messages : []
+    const list = Array.isArray(messages) ? [...messages] : []
+    const listLastId = chat.lastMessageId != null ? String(chat.lastMessageId) : null
+    if (!listLastId || list.some((m) => m?.id != null && String(m.id) === listLastId)) {
+      return list
+    }
+    const latestLoaded = list.length > 0 ? list[list.length - 1] : null
+    if (latestLoaded) {
+      const listTs = parseTimestamp(chat.lastMessageCreatedAt)
+      const latestLoadedTs = parseTimestamp(latestLoaded.createdAt)
+      if (listTs > 0 && latestLoadedTs > 0 && latestLoadedTs >= listTs) {
+        return list
+      }
+      if (listTs <= 0 && !isFromBuyer(latestLoaded)) {
+        return list
+      }
+    }
+    const text = String(chat.lastMessageText || '').trim()
+    if (!text) return list
+    const fromBuyer =
+      typeof chat?.lastMessageFromBuyer === 'boolean'
+        ? chat.lastMessageFromBuyer
+        : !isSystemMessage(text)
+    logChatMessagesGap('ui:merge-list-ahead', {
+      chatId: chat.id,
+      listLastId,
+      textPreview: text.slice(0, 120),
+      loadedCount: list.length,
+    })
+    list.push({
+      id: listLastId,
+      text,
+      createdAt: chat.lastMessageCreatedAt || null,
+      imageUrl: null,
+      user: {
+        username: fromBuyer
+          ? String(chat.buyerName || '').trim() || null
+          : OUR_USERNAME,
+      },
+      _fromListPreview: true,
+    })
+    return sortChatMessages(list)
+  }
+
   const isMessagesNearBottom = (el, threshold = 80) => {
     if (!el) return true
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
@@ -328,7 +611,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   const scrollMessagesToBottom = useCallback(() => {
     const el = messagesRef.current
     if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+    el.scrollTop = el.scrollHeight
   }, [])
 
   const applyLoadedChatData = (
@@ -337,10 +620,42 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     itemTitle,
     itemImageUrl,
     buyerSupercellEmail,
-    itemCategory = null
+    itemCategory = null,
+    dealSummaries = null
   ) => {
     const chatId = chat.id
-    const extractedBuyerName = chat.buyerName || extractBuyerNameFromMessages(list)
+    const prevMessagesSnapshot = Array.isArray(chatStateByIdRef.current[chatId]?.messages)
+      ? chatStateByIdRef.current[chatId].messages
+      : []
+    const knownUsernameByMessageId = new Map(
+      prevMessagesSnapshot
+        .map((m) => [m?.id != null ? String(m.id) : '', String(m?.user?.username || '').trim()])
+        .filter(([id, username]) => Boolean(id) && Boolean(username))
+    )
+    const sortedMessages = sortChatMessages(list).map((message) => {
+      const username = String(message?.user?.username || '').trim()
+      if (username || message?.id == null) return message
+      const knownUsername = knownUsernameByMessageId.get(String(message.id))
+      if (!knownUsername) return message
+      return {
+        ...message,
+        user: { ...(message.user || {}), username: knownUsername },
+      }
+    })
+    const latestMessage =
+      Array.isArray(sortedMessages) && sortedMessages.length > 0
+        ? sortedMessages[sortedMessages.length - 1]
+        : null
+    const latestMessageId = latestMessage?.id != null ? String(latestMessage.id) : null
+    const latestMessageText =
+      latestMessage?.text != null ? String(latestMessage.text) : null
+    const latestMessageCreatedAt = latestMessage?.createdAt || null
+    const latestMessageFromBuyer =
+      latestMessage && !isSystemMessage(latestMessageText) ? isFromBuyer(latestMessage) : null
+    const extractedBuyerName = extractBuyerNameFromMessages(list)
+    const shouldPatchBuyerName =
+      !isGenericBuyerName(extractedBuyerName) &&
+      isGenericBuyerName(chat.buyerName)
     const currentCategory = String(chat.category || '').trim()
     const shouldRecoverCategory =
       !currentCategory ||
@@ -355,7 +670,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       ? serverCategory || recoveredCategory || null
       : null
 
-    if (extractedBuyerName && !chat.buyerName) {
+    if (shouldPatchBuyerName) {
       setChats((prev) =>
         prev.map((c) =>
           c.id === chatId ? { ...c, buyerName: extractedBuyerName } : c
@@ -374,7 +689,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             : c
         )
       )
-      chatDebugLog(
+      logChatLogging(
         serverCategory ? 'category_from_deal_messages' : 'category_recovered_from_itemTitle',
         {
           chat: summarizeChatForLog(chat),
@@ -384,20 +699,127 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       )
     }
 
-    setChatStateById((prev) => ({
-      ...prev,
-      [chatId]: {
-        ...(prev[chatId] || {}),
-        loading: false,
-        error: null,
-        messages: sortChatMessages(list),
-        loaded: true,
-        itemTitle: itemTitle || chat.itemTitle || prev[chatId]?.itemTitle || null,
-        itemImageUrl: itemImageUrl || chat.itemImageUrl || prev[chatId]?.itemImageUrl || null,
-        buyerSupercellEmail: buyerSupercellEmail ?? prev[chatId]?.buyerSupercellEmail ?? null,
-      },
-    }))
-    chatDebugLog('applyLoadedChatData', {
+    // Обновляем превью чата слева только если локально пришли действительно
+    // более свежие данные, чтобы не откатывать новый lastMessage из списка чатов.
+    if (latestMessageId || latestMessageText || latestMessageCreatedAt) {
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chatId) return c
+          const currentTs = c.lastMessageCreatedAt ? Date.parse(c.lastMessageCreatedAt) : 0
+          const loadedTs = latestMessageCreatedAt ? Date.parse(latestMessageCreatedAt) : 0
+          const hasCurrentTs = Number.isFinite(currentTs) && currentTs > 0
+          const hasLoadedTs = Number.isFinite(loadedTs) && loadedTs > 0
+          const loadedIsNewer = hasLoadedTs && (!hasCurrentTs || loadedTs > currentTs)
+          const canFillGaps =
+            !hasCurrentTs &&
+            (!c.lastMessageId || !String(c.lastMessageText || '').trim())
+
+          if (!loadedIsNewer && !canFillGaps) return c
+
+          const nextLastMessageId = latestMessageId || c.lastMessageId || null
+          const nextLastMessageText = latestMessageText || c.lastMessageText || null
+          const nextLastMessageCreatedAt = latestMessageCreatedAt || c.lastMessageCreatedAt || null
+          const nextDealId =
+            latestMessage?.dealId != null
+              ? String(latestMessage.dealId)
+              : c.dealId || null
+          const nextLastMessageFromBuyer =
+            typeof latestMessageFromBuyer === 'boolean'
+              ? latestMessageFromBuyer
+              : String(nextLastMessageId || '') === String(c.lastMessageId || '')
+                ? (typeof c.lastMessageFromBuyer === 'boolean' ? c.lastMessageFromBuyer : null)
+                : null
+
+          if (
+            String(nextLastMessageId || '') === String(c.lastMessageId || '') &&
+            String(nextLastMessageText || '') === String(c.lastMessageText || '') &&
+            String(nextLastMessageCreatedAt || '') === String(c.lastMessageCreatedAt || '') &&
+            String(nextDealId || '') === String(c.dealId || '') &&
+            (typeof nextLastMessageFromBuyer === 'boolean'
+              ? nextLastMessageFromBuyer
+              : null) ===
+              (typeof c.lastMessageFromBuyer === 'boolean' ? c.lastMessageFromBuyer : null)
+          ) {
+            return c
+          }
+
+          return {
+            ...c,
+            lastMessageId: nextLastMessageId,
+            lastMessageText: nextLastMessageText,
+            lastMessageCreatedAt: nextLastMessageCreatedAt,
+            dealId: nextDealId,
+            lastMessageFromBuyer: nextLastMessageFromBuyer,
+          }
+        })
+      )
+    }
+
+    setChatStateById((prev) => {
+      const prevState = prev[chatId] || {}
+      const prevMessages = Array.isArray(prevState.messages) ? prevState.messages : []
+      // Не даём пустому/устаревшему ответу "снести" уже загруженную историю чата.
+      let nextMessages =
+        sortedMessages.length === 0 && prevMessages.length > 0
+          ? prevMessages
+          : sortedMessages
+      const pendingLocalMessages = prevMessages.filter((m) => m?._optimisticOutgoing === true)
+      if (pendingLocalMessages.length > 0) {
+        const knownMessageIds = new Set(
+          nextMessages
+            .filter((m) => m?.id != null)
+            .map((m) => String(m.id))
+        )
+        let hasAddedPending = false
+        for (const pending of pendingLocalMessages) {
+          const pendingId = pending?.id != null ? String(pending.id) : ''
+          if (!pendingId || knownMessageIds.has(pendingId)) continue
+          knownMessageIds.add(pendingId)
+          nextMessages.push(pending)
+          hasAddedPending = true
+        }
+        if (hasAddedPending) {
+          nextMessages = sortChatMessages(nextMessages)
+        }
+      }
+      const listLastId = chat.lastMessageId != null ? String(chat.lastMessageId) : null
+      const apiHasListLast =
+        Boolean(listLastId) &&
+        nextMessages.some((m) => m?.id != null && String(m.id) === listLastId)
+      if (listLastId && !apiHasListLast) {
+        logChatMessagesGap('applyLoadedChatData:list-ahead-of-api', {
+          chatId: chat.id,
+          listLastId,
+          apiCount: nextMessages.length,
+          latestMessageId,
+        })
+      }
+      nextMessages = mergeListAheadMessage(chat, nextMessages)
+      const hasListLastInMessages =
+        !listLastId || nextMessages.some((m) => m?.id != null && String(m.id) === listLastId)
+      const expectsMessages = Boolean(
+        chat.lastMessageId ||
+        String(chat.lastMessageText || '').trim() ||
+        latestMessageId
+      )
+      const loaded = !expectsMessages || hasListLastInMessages
+      return {
+        ...prev,
+        [chatId]: {
+          ...prevState,
+          loading: false,
+          error: null,
+          messages: nextMessages,
+          loaded,
+          backgroundLoading: false,
+          itemTitle: itemTitle || chat.itemTitle || prevState.itemTitle || null,
+          itemImageUrl: prevState.itemImageUrl || chat.itemImageUrl || itemImageUrl || null,
+          deals: Array.isArray(dealSummaries) ? dealSummaries : prevState.deals || [],
+          buyerSupercellEmail: buyerSupercellEmail ?? prevState.buyerSupercellEmail ?? null,
+        },
+      }
+    })
+    logChatLogging('applyLoadedChatData', {
       chat: summarizeChatForLog(chat),
       messagesCount: Array.isArray(list) ? list.length : 0,
       loadedItemTitle: itemTitle || null,
@@ -412,70 +834,20 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   }, [chatStateById])
 
   useEffect(() => {
+    chatsRef.current = chats
+  }, [chats])
+
+  useEffect(() => {
     selectedChatIdRef.current = selectedChatId
   }, [selectedChatId])
 
-  const normalizeUnreadCount = (value) => {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
-    return Math.trunc(value)
-  }
-
-  const resolveUnreadCount = (prevChat, incomingChat, selectedChatIdForCalc) => {
-    const incomingUnread = normalizeUnreadCount(incomingChat?.unreadCount)
-    if (incomingUnread != null) {
-      return incomingChat?.id === selectedChatIdForCalc ? 0 : incomingUnread
-    }
-
-    const prevUnreadRaw = normalizeUnreadCount(prevChat?.unreadCount)
-    const prevUnread = prevUnreadRaw != null ? prevUnreadRaw : 0
-    const hasNewLastMessage =
-      Boolean(prevChat && incomingChat) &&
-      Boolean(prevChat?.lastMessageId) &&
-      Boolean(incomingChat?.lastMessageId) &&
-      prevChat.lastMessageId !== incomingChat.lastMessageId
-
-    if (incomingChat?.id === selectedChatIdForCalc) {
-      return 0
-    }
-    if (hasNewLastMessage) {
-      return prevUnread + 1
-    }
-    return prevUnread
-  }
-
-  const PRELOAD_CONCURRENCY = 12
-
-  const preloadChatsData = useCallback(async (targetChats, options = {}) => {
-    if (!token || !Array.isArray(targetChats) || targetChats.length === 0) return
-    const shouldCancel = typeof options.shouldCancel === 'function'
-      ? options.shouldCancel
-      : () => false
-    const selectedId = selectedChatIdRef.current
-
-    const chatsToPreload = targetChats
-      .filter((chat) => {
-        if (chat.id === selectedId) return false
-        const state = chatStateByIdRef.current[chat.id]
-        return !(state && (state.loading || state.loaded))
-      })
-      .slice(0, MAX_BACKGROUND_PRELOAD)
-    if (chatsToPreload.length === 0) return
-    chatDebugLog('preloadChatsData:start', {
-      targetChats: targetChats.length,
-      chatsToPreload: chatsToPreload.length,
-      chatIds: chatsToPreload.map((chat) => chat.id),
-    })
-
-    for (let i = 0; i < chatsToPreload.length; i += PRELOAD_CONCURRENCY) {
-      if (shouldCancel()) return
-      const batch = chatsToPreload.slice(i, i + PRELOAD_CONCURRENCY)
-
-      await Promise.all(batch.map(async (chat) => {
-        if (shouldCancel()) return
-        const chatId = chat.id
-        const currentState = chatStateByIdRef.current[chatId]
-        if (currentState && (currentState.loading || currentState.loaded)) return
-
+  const pullMessagesForChat = useCallback(
+    async (chat, { silent = false } = {}) => {
+      if (!token || !chat?.id) return
+      const chatId = chat.id
+      const isSelected = selectedChatIdRef.current === chatId
+      const hasCachedMessages = Boolean(chatStateByIdRef.current[chatId]?.messages?.length)
+      if (isSelected && !silent && !hasCachedMessages) {
         setChatStateById((prev) => ({
           ...prev,
           [chatId]: {
@@ -484,55 +856,376 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             error: null,
             messages: prev[chatId]?.messages || [],
             loaded: false,
+            backgroundLoading: false,
           },
         }))
-
-        try {
-          chatDebugLog('preloadChatsData:fetchDealChatMessages:start', {
-            chat: summarizeChatForLog(chat),
+      }
+      try {
+        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals } =
+          await fetchChatDbMessages(token, {
+            dealId: chat.dealId || null,
+            chatId,
           })
-          const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-            await fetchDealChatMessages(token, chat.dealId || null, chatId, {
-              buyerName: chat.buyerName || undefined,
-              category: chat.category || undefined,
-            })
-          if (shouldCancel()) return
-          applyLoadedChatData(
-            chat,
-            list,
-            itemTitle,
-            itemImageUrl,
-            buyerSupercellEmail,
-            itemCategory
-          )
-        } catch {
-          chatDebugLog('preloadChatsData:fetchDealChatMessages:error', {
-            chat: summarizeChatForLog(chat),
-          })
-          if (shouldCancel()) return
+        applyLoadedChatData(
+          chat,
+          list,
+          itemTitle,
+          itemImageUrl,
+          buyerSupercellEmail || null,
+          itemCategory,
+          deals
+        )
+      } catch (_err) {
+        if (isSelected && !silent && !hasCachedMessages) {
+          const errMsg = _err instanceof Error ? _err.message : 'Ошибка загрузки чата'
+          const rateLimited = isPlayerokRateLimitMessage(errMsg)
           setChatStateById((prev) => ({
             ...prev,
             [chatId]: {
               ...(prev[chatId] || {}),
               loading: false,
-              error: null,
-              messages: prev[chatId]?.messages || [],
-              loaded: false,
+              error: errMsg,
+              loaded: !rateLimited,
+              backgroundLoading: false,
             },
           }))
         }
-      }))
-    }
-  }, [token, chatDebugLog, summarizeChatForLog])
+      }
+    },
+    [token]
+  )
 
-  const triggerBackgroundPreload = useCallback((targetChats) => {
-    if (!Array.isArray(targetChats) || targetChats.length === 0) return
-    const session = preloadSessionRef.current + 1
-    preloadSessionRef.current = session
-    void preloadChatsData(targetChats, {
-      shouldCancel: () => preloadSessionRef.current !== session,
+  const normalizeUnreadCount = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+    return Math.trunc(value)
+  }
+
+  const resolveUnreadCount = (prevChat, incomingChat, selectedChatIdForCalc) => {
+    if (incomingChat?.id === selectedChatIdForCalc) {
+      return 0
+    }
+
+    const incomingUnread = normalizeUnreadCount(incomingChat?.unreadCount)
+    const incomingLastMessageFromBuyer =
+      typeof incomingChat?.lastMessageFromBuyer === 'boolean'
+        ? incomingChat.lastMessageFromBuyer
+        : null
+    if (incomingLastMessageFromBuyer === false) {
+      return 0
+    }
+    const prevUnreadRaw = normalizeUnreadCount(prevChat?.unreadCount)
+    const prevUnread = prevUnreadRaw != null ? prevUnreadRaw : 0
+    const hasNewLastMessage =
+      Boolean(prevChat && incomingChat) &&
+      Boolean(incomingChat?.lastMessageId) &&
+      String(prevChat?.lastMessageId || '') !== String(incomingChat.lastMessageId || '')
+
+    if (incomingUnread != null) {
+      return incomingUnread
+    }
+
+    if (hasNewLastMessage) {
+      return prevUnread + 1
+    }
+
+    if (prevChat) {
+      return prevUnread
+    }
+
+    return incomingUnread != null ? incomingUnread : 0
+  }
+
+  const saveChatListScrollAnchor = useCallback((mode = 'prepend') => {
+    const el = listRef.current
+    if (!el) return
+    chatListScrollAnchorRef.current = {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      mode,
+    }
+  }, [])
+
+  const mergeChatEntry = useCallback((prevChat, incomingChat) => {
+    const isPoorCategory = (value) => {
+      const s = String(value || '').trim()
+      return !s || s === 'Категория не определена'
+    }
+    if (!prevChat) {
+      const incomingBuyer = normalizeBuyerName(incomingChat.buyerName)
+      const incomingLastMessageFromBuyer =
+        typeof incomingChat?.lastMessageFromBuyer === 'boolean'
+          ? incomingChat.lastMessageFromBuyer
+          : null
+      return {
+        ...incomingChat,
+        buyerName: isGenericBuyerName(incomingBuyer) ? null : incomingBuyer,
+        lastMessageFromBuyer: incomingLastMessageFromBuyer,
+        unreadCount: resolveUnreadCount(null, incomingChat, selectedChatIdRef.current),
+      }
+    }
+    const incCat = String(incomingChat.category || '').trim()
+    const prevCat = String(prevChat.category || '').trim()
+    const incPoor = isPoorCategory(incCat)
+    const prevPoor = isPoorCategory(prevCat)
+    const mergedCategory = incPoor ? (prevPoor ? incCat : prevCat) : incCat
+    const incomingBuyer = normalizeBuyerName(incomingChat.buyerName)
+    const previousBuyer = normalizeBuyerName(prevChat.buyerName)
+    const mergedBuyerName = isGenericBuyerName(incomingBuyer)
+      ? (isGenericBuyerName(previousBuyer) ? incomingBuyer : previousBuyer)
+      : incomingBuyer
+    const incomingLastMessageFromBuyer =
+      typeof incomingChat?.lastMessageFromBuyer === 'boolean'
+        ? incomingChat.lastMessageFromBuyer
+        : null
+    const mergedLastMessageFromBuyer =
+      incomingLastMessageFromBuyer != null
+        ? incomingLastMessageFromBuyer
+        : String(prevChat?.lastMessageId || '') === String(incomingChat?.lastMessageId || '')
+          ? (typeof prevChat?.lastMessageFromBuyer === 'boolean' ? prevChat.lastMessageFromBuyer : null)
+          : null
+    return {
+      ...prevChat,
+      ...incomingChat,
+      buyerName: mergedBuyerName || null,
+      category: mergedCategory,
+      itemImageUrl: prevChat.itemImageUrl || incomingChat.itemImageUrl || null,
+      itemTitle: incomingChat.itemTitle || prevChat.itemTitle || null,
+      lastMessageFromBuyer: mergedLastMessageFromBuyer,
+      unreadCount: resolveUnreadCount(prevChat, incomingChat, selectedChatIdRef.current),
+    }
+  }, [])
+
+  const mergeChatsWithRefresh = useCallback((prevChats, incomingChats) => {
+    const chatSortValue = (chat) => {
+      const ts = chat?.lastMessageCreatedAt ? Date.parse(chat.lastMessageCreatedAt) : NaN
+      return Number.isFinite(ts) ? ts : 0
+    }
+    const sortByLastMessageDesc = (list) =>
+      [...(list || [])].sort((a, b) => {
+        const aTs = chatSortValue(a)
+        const bTs = chatSortValue(b)
+        if (bTs !== aTs) return bTs - aTs
+        return String(b?.id || '').localeCompare(String(a?.id || ''))
+      })
+
+    const prevById = new Map((prevChats || []).map((chat) => [chat.id, chat]))
+    const incomingIds = new Set((incomingChats || []).map((chat) => chat.id))
+    const refreshedHead = (incomingChats || []).map((incoming) =>
+      mergeChatEntry(prevById.get(incoming.id) || null, incoming)
+    )
+    const tail = (prevChats || []).filter((chat) => !incomingIds.has(chat.id))
+    return sortByLastMessageDesc([...refreshedHead, ...tail])
+  }, [mergeChatEntry])
+
+  const CHAT_MESSAGES_BATCH_SIZE = 6
+  const CHAT_LIST_POLL_MS = 1200
+  const CHAT_MESSAGES_POLL_MS = 1200
+  const PRELOAD_INITIAL_COUNT = 8
+  const PRELOAD_VIEWPORT_PRIORITY = 4
+
+  const chatNeedsMessagesLoad = useCallback((chatId) => {
+    if (!chatId) return false
+    const chatKey = String(chatId)
+    if (batchLoadInFlightRef.current.has(chatKey)) return false
+    const state = chatStateByIdRef.current[chatId]
+    if (state?.loaded && !state?.error) {
+      if (!Array.isArray(state.messages) || state.messages.length === 0) {
+        const chat = chatsRef.current.find((c) => String(c.id) === chatKey)
+        if (chat?.lastMessageId || String(chat?.lastMessageText || '').trim()) {
+          return true
+        }
+      }
+      return false
+    }
+    return true
+  }, [])
+
+  const loadChatsMessagesBatch = useCallback(async (targetChats, options = {}) => {
+    if (!token || !Array.isArray(targetChats) || targetChats.length === 0) return
+    const shouldCancel = typeof options.shouldCancel === 'function'
+      ? options.shouldCancel
+      : () => false
+    const selectedId = selectedChatIdRef.current
+
+    const chatsToLoad = targetChats.filter((chat) => chat?.id && chatNeedsMessagesLoad(chat.id))
+    if (chatsToLoad.length === 0) return
+
+    for (const chat of chatsToLoad) {
+      batchLoadInFlightRef.current.add(String(chat.id))
+    }
+
+    const chatById = new Map(chatsToLoad.map((chat) => [String(chat.id), chat]))
+    logChatLogging('loadChatsMessagesBatch:start', {
+      targetChats: targetChats.length,
+      chatsToLoad: chatsToLoad.length,
+      chatIds: chatsToLoad.map((chat) => chat.id),
     })
-  }, [preloadChatsData])
+
+    setChatStateById((prev) => {
+      const next = { ...prev }
+      for (const chat of chatsToLoad) {
+        const chatId = chat.id
+        const isSelected = chatId === selectedId
+        const hasCachedMessages = Boolean(prev[chatId]?.messages?.length)
+        next[chatId] = {
+          ...(prev[chatId] || {}),
+          loading: isSelected && !hasCachedMessages,
+          error: null,
+          messages: prev[chatId]?.messages || [],
+          loaded: hasCachedMessages ? Boolean(prev[chatId]?.loaded) : false,
+          backgroundLoading: !isSelected,
+        }
+      }
+      return next
+    })
+
+    try {
+      const entries = chatsToLoad.map((chat) => ({
+        chatId: chat.id,
+        dealId: chat.dealId || undefined,
+        buyerName: chat.buyerName || undefined,
+        category: chat.category || undefined,
+      }))
+
+      logChatLogging('loadChatsMessagesBatch:request', {
+        count: entries.length,
+        chatIds: entries.map((entry) => entry.chatId),
+      })
+
+      const { results } = await fetchChatDbMessagesBatch(token, entries)
+      if (shouldCancel()) return
+
+      for (const result of results) {
+        const chatId = result?.chatId
+        if (!chatId) continue
+        const chat = chatById.get(String(chatId))
+        if (!chat) continue
+
+        if (!result.ok) {
+          const errMsg = result.error || 'Ошибка загрузки чата'
+          const rateLimited = isPlayerokRateLimitMessage(errMsg)
+          logChatLogging('loadChatsMessagesBatch:item:error', {
+            chat: summarizeChatForLog(chat),
+            message: errMsg,
+            rateLimited,
+          })
+          setChatStateById((prev) => ({
+            ...prev,
+            [chatId]: {
+              ...(prev[chatId] || {}),
+              loading: false,
+              error: errMsg,
+              messages: prev[chatId]?.messages || [],
+              loaded: !rateLimited,
+              backgroundLoading: false,
+            },
+          }))
+          continue
+        }
+
+        applyLoadedChatData(
+          chat,
+          result.list,
+          result.itemTitle,
+          result.itemImageUrl,
+          result.buyerSupercellEmail,
+          result.itemCategory,
+          result.deals
+        )
+      }
+
+      logChatLogging('loadChatsMessagesBatch:chunk:done', {
+        count: results.length,
+        okCount: results.filter((item) => item.ok).length,
+        errorCount: results.filter((item) => !item.ok).length,
+      })
+    } catch (err) {
+      logChatLogging('loadChatsMessagesBatch:error', {
+        message: err instanceof Error ? err.message : String(err),
+        chatIds: chatsToLoad.map((chat) => chat.id),
+      })
+      if (shouldCancel()) return
+      const errMsg = err instanceof Error ? err.message : 'Ошибка загрузки чата'
+      const rateLimited = isPlayerokRateLimitMessage(errMsg)
+      setChatStateById((prev) => {
+        const next = { ...prev }
+        for (const chat of chatsToLoad) {
+          const chatId = chat.id
+          next[chatId] = {
+            ...(prev[chatId] || {}),
+            loading: false,
+            error: errMsg,
+            messages: prev[chatId]?.messages || [],
+            loaded: !rateLimited,
+            backgroundLoading: false,
+          }
+        }
+        return next
+      })
+    } finally {
+      for (const chat of chatsToLoad) {
+        batchLoadInFlightRef.current.delete(String(chat.id))
+      }
+      if (shouldCancel()) {
+        setChatStateById((prev) => {
+          const next = { ...prev }
+          for (const chat of chatsToLoad) {
+            const chatId = chat.id
+            const prevState = prev[chatId]
+            if (!prevState || prevState.loaded) continue
+            next[chatId] = {
+              ...prevState,
+              loading: false,
+              backgroundLoading: false,
+            }
+          }
+          return next
+        })
+      }
+    }
+  }, [token, summarizeChatForLog, chatNeedsMessagesLoad])
+
+  const drainPreloadQueue = useCallback(async () => {
+    if (preloadQueueRunningRef.current) return
+    preloadQueueRunningRef.current = true
+    try {
+      while (preloadQueueRef.current.length > 0) {
+        if (!token) break
+        const batch = preloadQueueRef.current.splice(0, CHAT_MESSAGES_BATCH_SIZE)
+        const pending = batch.filter((chat) => chat?.id && chatNeedsMessagesLoad(chat.id))
+        if (pending.length === 0) continue
+        await loadChatsMessagesBatch(pending, { messagesOnly: true })
+      }
+    } finally {
+      preloadQueueRunningRef.current = false
+      if (preloadQueueRef.current.length > 0) {
+        void drainPreloadQueue()
+      }
+    }
+  }, [token, loadChatsMessagesBatch, chatNeedsMessagesLoad])
+
+  const enqueueChatsForPreload = useCallback(
+    (targetChats, options = {}) => {
+      if (!token || !Array.isArray(targetChats) || targetChats.length === 0) return
+      const priority = options.priority === true
+      const knownIds = new Set(preloadQueueRef.current.map((c) => c.id))
+      const toAdd = []
+      for (const chat of targetChats) {
+        if (!chat?.id || knownIds.has(chat.id)) continue
+        if (!chatNeedsMessagesLoad(chat.id)) continue
+        knownIds.add(chat.id)
+        toAdd.push(chat)
+      }
+      if (toAdd.length === 0) return
+      if (priority) {
+        preloadQueueRef.current.unshift(...toAdd)
+      } else {
+        preloadQueueRef.current.push(...toAdd)
+      }
+      void drainPreloadQueue()
+    },
+    [token, chatNeedsMessagesLoad, drainPreloadQueue]
+  )
 
   const isChatCompleted = (chat) => {
     if (!chat) return false
@@ -584,6 +1277,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       setSelectedChatId(null)
       setChatStateById({})
       setDraftByChatId({})
+      initialLoadDoneRef.current = false
       return
     }
     let cancelled = false
@@ -591,11 +1285,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       setLoading(true)
       setError(null)
       try {
-        chatDebugLog('fetchUserChats:start', { limit: 24 })
-        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        logChatLogging('fetchUserChats:start', { limit: 24 })
+        const { list, pageInfo: info } = await fetchChatDbList(token, { limit: 24, offset: 0 })
         if (cancelled) return
 
-        chatDebugLog('fetchUserChats:success', {
+        logChatLogging('fetchUserChats:success', {
           count: list.length,
           pageInfo: info || { hasNextPage: false, endCursor: null },
           undefinedCategoryCount: list.filter((c) => {
@@ -608,13 +1302,16 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
           const prevById = new Map((prev || []).map((chat) => [chat.id, chat]))
           return (list || []).map((incomingChat) => {
             const prevChat = prevById.get(incomingChat.id) || null
-            return {
-              ...incomingChat,
-              unreadCount: resolveUnreadCount(prevChat, incomingChat, selectedChatIdRef.current),
-            }
+            return mergeChatEntry(prevChat, incomingChat)
+          }).sort((a, b) => {
+            const aTs = a?.lastMessageCreatedAt ? Date.parse(a.lastMessageCreatedAt) : 0
+            const bTs = b?.lastMessageCreatedAt ? Date.parse(b.lastMessageCreatedAt) : 0
+            if (bTs !== aTs) return bTs - aTs
+            return String(b?.id || '').localeCompare(String(a?.id || ''))
           })
         })
         setPageInfo(info || { hasNextPage: false, endCursor: null })
+        initialLoadDoneRef.current = true
         if (list.length > 0) {
           const prevSelected = selectedChatIdRef.current
           let nextSelectedId =
@@ -627,20 +1324,21 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
           }
           selectedChatIdRef.current = nextSelectedId
           setSelectedChatId(nextSelectedId)
-          triggerBackgroundPreload(list)
+          void loadChatsMessagesBatch(list.slice(0, PRELOAD_INITIAL_COUNT))
         } else {
           selectedChatIdRef.current = null
           setSelectedChatId(null)
         }
       } catch (err) {
         if (cancelled) return
-        chatDebugLog('fetchUserChats:error', {
+        logChatLogging('fetchUserChats:error', {
           message: err instanceof Error ? err.message : String(err),
         })
         setError(err instanceof Error ? err.message : 'Ошибка загрузки чатов')
         setChats([])
         setPageInfo({ hasNextPage: false, endCursor: null })
         setSelectedChatId(null)
+        initialLoadDoneRef.current = false
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -648,9 +1346,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     load()
     return () => {
       cancelled = true
-      preloadSessionRef.current += 1
+      preloadQueueRef.current = []
+      initialLoadDoneRef.current = false
     }
-  }, [token, triggerBackgroundPreload])
+  }, [token, loadChatsMessagesBatch, mergeChatEntry, enqueueChatsForPreload])
 
   // Загрузка команд по категориям
   useEffect(() => {
@@ -693,7 +1392,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     loadingMoreRef.current = true
     setLoadingMore(true)
     try {
-      chatDebugLog('loadMore:start', {
+      logChatLogging('loadMore:start', {
         requestParams: {
           limit: 24,
           afterCursor: pageInfo.endCursor || null,
@@ -703,14 +1402,17 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       if (afterCursor) {
         requestParams.afterCursor = afterCursor
       }
-      const { list, pageInfo: info } = await fetchUserChats(token, requestParams)
+      const { list, pageInfo: info } = await fetchChatDbList(token, {
+        limit: requestParams.limit,
+        offset: chats.length,
+      })
 
       if (!list || list.length === 0) {
-        chatDebugLog('loadMore:emptyPage', null)
+        logChatLogging('loadMore:emptyPage', null)
         setPageInfo({ hasNextPage: false, endCursor: null })
         return
       }
-      chatDebugLog('loadMore:success', {
+      logChatLogging('loadMore:success', {
         count: list.length,
         pageInfo: info || { hasNextPage: false, endCursor: null },
         undefinedCategoryCount: list.filter((c) => {
@@ -721,22 +1423,67 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       })
 
       setChats((prev) => {
-        const updated = [...prev, ...list]
-        return updated
+        const prevById = new Map(prev.map((chat) => [chat.id, chat]))
+        const mergedNew = list.map((incoming) => mergeChatEntry(prevById.get(incoming.id) || null, incoming))
+        return [...prev, ...mergedNew.filter((chat) => !prevById.has(chat.id))].sort((a, b) => {
+          const aTs = a?.lastMessageCreatedAt ? Date.parse(a.lastMessageCreatedAt) : 0
+          const bTs = b?.lastMessageCreatedAt ? Date.parse(b.lastMessageCreatedAt) : 0
+          if (bTs !== aTs) return bTs - aTs
+          return String(b?.id || '').localeCompare(String(a?.id || ''))
+        })
       })
-      triggerBackgroundPreload(list)
 
       const newPageInfo = info || { hasNextPage: false, endCursor: null }
       setPageInfo(newPageInfo)
+      enqueueChatsForPreload(list)
     } catch (err) {
-      chatDebugLog('loadMore:error', {
+      logChatLogging('loadMore:error', {
         message: err instanceof Error ? err.message : String(err),
       })
     } finally {
       setLoadingMore(false)
       loadingMoreRef.current = false
     }
-  }, [token, pageInfo.hasNextPage, pageInfo.endCursor, chats.length, triggerBackgroundPreload])
+  }, [token, pageInfo.hasNextPage, pageInfo.endCursor, mergeChatEntry, enqueueChatsForPreload])
+
+  const visibleChats = useMemo(() => {
+    if (chatFilter === 'hide-completed') {
+      const base = chats.filter((chat) => !chat.isHidden)
+      return base.filter((chat) => !isChatCompleted(chat))
+    }
+    return chats
+  }, [chats, chatFilter, chatStateById])
+
+  useEffect(() => {
+    visibleChatsRef.current = visibleChats
+  }, [visibleChats])
+
+  const preloadChatsNearViewport = useCallback(() => {
+    const el = listRef.current
+    const chatList = visibleChatsRef.current
+    if (!el || chatList.length === 0) return
+
+    const elRect = el.getBoundingClientRect()
+    const prefetchMargin = 200
+    const nodes = el.querySelectorAll('.chat-list__item')
+    const nearViewport = []
+
+    nodes.forEach((node, index) => {
+      if (index >= chatList.length) return
+      const rect = node.getBoundingClientRect()
+      if (
+        rect.bottom >= elRect.top - prefetchMargin &&
+        rect.top <= elRect.bottom + prefetchMargin
+      ) {
+        nearViewport.push(chatList[index])
+      }
+    })
+
+    const slice = nearViewport.slice(0, PRELOAD_VIEWPORT_PRIORITY)
+    if (slice.length > 0) {
+      enqueueChatsForPreload(slice, { priority: true })
+    }
+  }, [enqueueChatsForPreload])
 
   useEffect(() => {
     const el = listRef.current
@@ -748,22 +1495,44 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       const distanceToBottom = scrollHeight - scrollTop - clientHeight
       const threshold = 80
 
-      if (!pageInfo.hasNextPage || loadingMoreRef.current) return
-      if (distanceToBottom < threshold) loadMore()
+      if (pageInfo.hasNextPage && !loadingMoreRef.current && distanceToBottom < threshold) {
+        loadMore()
+      }
+      preloadChatsNearViewport()
     }
     el.addEventListener('scroll', handleScroll)
     return () => {
       el.removeEventListener('scroll', handleScroll)
     }
-  }, [pageInfo.hasNextPage, pageInfo.endCursor, loadMore])
+  }, [pageInfo.hasNextPage, pageInfo.endCursor, loadMore, preloadChatsNearViewport])
 
-  const visibleChats = useMemo(() => {
-    if (chatFilter === 'hide-completed') {
-      const base = chats.filter((chat) => !chat.isHidden)
-      return base.filter((chat) => !isChatCompleted(chat))
+  useLayoutEffect(() => {
+    const saved = chatListScrollAnchorRef.current
+    if (!saved) return
+    const el = listRef.current
+    if (!el) return
+    if (saved.mode === 'prepend') {
+      const heightDelta = el.scrollHeight - saved.scrollHeight
+      el.scrollTop = saved.scrollTop + (heightDelta > 0 ? heightDelta : 0)
+    } else {
+      el.scrollTop = saved.scrollTop
     }
-    return chats
-  }, [chats, chatFilter, chatStateById])
+    chatListScrollAnchorRef.current = null
+  }, [chats, visibleChats])
+
+  useEffect(() => {
+    if (!token || !initialLoadDoneRef.current || loading || loadingMore) return
+    enqueueChatsForPreload(visibleChats.slice(0, PRELOAD_INITIAL_COUNT))
+    preloadChatsNearViewport()
+  }, [
+    token,
+    loading,
+    loadingMore,
+    visibleChats,
+    enqueueChatsForPreload,
+    preloadChatsNearViewport,
+    PRELOAD_INITIAL_COUNT,
+  ])
 
   useEffect(() => {
     if (!selectedChatId && visibleChats.length > 0) {
@@ -775,54 +1544,25 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     }
   }, [chatFilter, visibleChats, selectedChatId])
 
-  const loadMessagesForChat = async (chat) => {
-    if (!token || !chat?.id) return
-    const chatId = chat.id
-    const state = chatStateById[chatId]
-    if (state && state.loaded && !state.error) return
-    setChatStateById((prev) => ({
-      ...prev,
-      [chatId]: {
-        ...(prev[chatId] || {}),
-        loading: true,
-        error: null,
-        messages: prev[chatId]?.messages || [],
-        loaded: false,
-      },
-    }))
-    try {
-      chatDebugLog('loadMessagesForChat:start', {
-        chat: summarizeChatForLog(chat),
-      })
-      const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-        await fetchDealChatMessages(token, chat.dealId || null, chatId, {
-          buyerName: chat.buyerName || undefined,
-          category: chat.category || undefined,
-        })
+  const isListAheadOfLoadedMessages = (chat) => {
+    if (!chat?.id) return false
+    const listLastId = chat.lastMessageId != null ? String(chat.lastMessageId) : null
+    if (!listLastId) return false
+    const messages = chatStateById[chat.id]?.messages
+    if (!Array.isArray(messages) || messages.length === 0) return true
+    return !messages.some((m) => m?.id != null && String(m.id) === listLastId)
+  }
 
-      applyLoadedChatData(
-        chat,
-        list,
-        itemTitle,
-        itemImageUrl,
-        buyerSupercellEmail,
-        itemCategory
-      )
-    } catch (err) {
-      chatDebugLog('loadMessagesForChat:error', {
-        chat: summarizeChatForLog(chat),
-        message: err instanceof Error ? err.message : String(err),
-      })
-      setChatStateById((prev) => ({
-        ...prev,
-        [chatId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : 'Ошибка загрузки чата',
-          messages: [],
-          loaded: true,
-        },
-      }))
+  const loadMessagesForChat = async (chat, { force = false } = {}) => {
+    if (!token || !chat?.id) return
+    const state = chatStateByIdRef.current[chat.id]
+    const hasCachedMessages = Boolean(state?.messages?.length)
+    const listAhead = isListAheadOfLoadedMessages(chat)
+    if (!force && state?.loaded && !state?.error && !listAhead) return
+    if (!force && state?.error && !isPlayerokRateLimitMessage(state.error) && !listAhead) {
+      return
     }
+    await pullMessagesForChat(chat, { silent: hasCachedMessages && !listAhead })
   }
 
   const markChatAsRead = useCallback((chatId) => {
@@ -835,6 +1575,26 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       )
     )
   }, [])
+
+  useEffect(() => {
+    if (!selectedChatId) return
+    setChatStateById((prev) => {
+      const cur = prev[selectedChatId]
+      if (cur?.messages?.length > 0) return prev
+      if (cur?.loading) return prev
+      return {
+        ...prev,
+        [selectedChatId]: {
+          ...(cur || {}),
+          loading: true,
+          error: null,
+          messages: cur?.messages || [],
+          loaded: false,
+          backgroundLoading: false,
+        },
+      }
+    })
+  }, [selectedChatId])
 
   useEffect(() => {
     if (!token || !selectedChatId) return
@@ -858,7 +1618,23 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   }
 
   const selectedChat = chats.find((c) => c.id === selectedChatId) || null
-  const selectedChatState = selectedChat ? chatStateById[selectedChat.id] || { loading: false, error: null, messages: [] } : null
+  const selectedChatState = selectedChat
+    ? chatStateById[selectedChat.id] || {
+        loading: Boolean(selectedChat.lastMessageId || String(selectedChat.lastMessageText || '').trim()),
+        error: null,
+        messages: [],
+        loaded: false,
+      }
+    : null
+  const selectedChatHasPreviewMessage = Boolean(
+    selectedChat?.lastMessageId || String(selectedChat?.lastMessageText || '').trim()
+  )
+  const selectedChatMessagesPending =
+    (selectedChatState?.messages || []).length === 0 &&
+    (Boolean(selectedChatState?.loading || selectedChatState?.backgroundLoading) ||
+      (!selectedChatState?.loaded &&
+        selectedChatHasPreviewMessage))
+  const selectedChatDeals = Array.isArray(selectedChatState?.deals) ? selectedChatState.deals : []
   const selectedChatDetectedEmail = String(selectedChatState?.buyerSupercellEmail || '').trim()
   const selectedChatManualEmail = selectedChat
     ? String(manualEmailByChatId[selectedChat.id] || '').trim()
@@ -871,16 +1647,35 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     : ''
   const selectedChatEmailIsValid = isEmailValid(selectedChatEmail)
   const selectedChatEmailDraftIsValid = isEmailValid(selectedChatEmailDraft)
-  const selectedChatIsSupercell = isSupercellCategory(selectedChat?.category || '')
-  const selectedChatCanUseSupercell = selectedChatIsSupercell && moduleSupercellEnabled
   const currentItemImageUrl =
     selectedChat && (selectedChatState?.itemImageUrl || selectedChat.itemImageUrl || null)
   const currentItemTitle =
     selectedChat && (selectedChatState?.itemTitle || selectedChat.itemTitle || '')
+  const selectedChatIsSupercell = chatSupportsSupercell(selectedChat, {
+    itemTitle: currentItemTitle,
+    deals: selectedChatDeals,
+  })
+  const selectedChatCanUseSupercell = selectedChatIsSupercell && moduleSupercellEnabled
+  const selectedChatSupercellCategory = resolveSupercellCategoryForRequest(selectedChat, {
+    itemTitle: currentItemTitle,
+    deals: selectedChatDeals,
+  })
+
+  const selectedChatApprouteEnabled = useMemo(() => {
+    if (!selectedChat) return false
+    const s = resolveSettingsForChat(selectedChat, currentItemTitle)
+    return Boolean(s?.autodeliveryApi?.enabled)
+  }, [selectedChat, currentItemTitle, resolveSettingsForChat])
 
   useEffect(() => {
-    stickToBottomRef.current = true
+    setApprouteRescanState({ loading: false, error: null, notice: null })
+    setShowChatExtraInfo(false)
   }, [selectedChatId])
+
+  useLayoutEffect(() => {
+    stickToBottomRef.current = true
+    scrollMessagesToBottom()
+  }, [selectedChatId, scrollMessagesToBottom])
 
   useEffect(() => {
     const el = messagesRef.current
@@ -892,16 +1687,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [selectedChatId, selectedChatState?.messages?.length])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedChatId) return
     const state = chatStateById[selectedChatId]
     if (!state || state.loading) return
     if (!(state.messages?.length > 0)) return
     if (!stickToBottomRef.current) return
-    const frameId = requestAnimationFrame(() => {
-      requestAnimationFrame(() => scrollMessagesToBottom())
-    })
-    return () => cancelAnimationFrame(frameId)
+    scrollMessagesToBottom()
   }, [
     selectedChatId,
     selectedChatState?.loading,
@@ -910,103 +1702,137 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   ])
 
   useEffect(() => {
-    if (!token || !selectedChat?.id) return
+    if (!token || !selectedChat?.id || !isPageActive) return
     let cancelled = false
     let timerId = null
+    let errorStreak = 0
+
+    const scheduleNext = (delayMs) => {
+      if (cancelled) return
+      if (timerId) clearTimeout(timerId)
+      timerId = setTimeout(() => {
+        void refreshSelectedChat()
+      }, delayMs)
+    }
 
     const refreshSelectedChat = async () => {
+      if (cancelled) return
+      const chatId = selectedChatIdRef.current
+      const chat = chatId ? chatsRef.current.find((c) => c.id === chatId) : null
+      if (!chat) {
+        scheduleNext(pollDelayAfterErrors(CHAT_MESSAGES_POLL_MS, errorStreak))
+        return
+      }
+      if (typeof document !== 'undefined' && document.hidden) {
+        scheduleNext(pollDelayAfterErrors(CHAT_MESSAGES_POLL_MS, errorStreak))
+        return
+      }
       try {
-        const { list, itemTitle, itemImageUrl, buyerSupercellEmail, itemCategory } =
-          await fetchDealChatMessages(token, selectedChat.dealId || null, selectedChat.id, {
-            buyerName: selectedChat.buyerName || undefined,
-            category: selectedChat.category || undefined,
+        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals } =
+          await fetchChatDbMessages(token, {
+            dealId: chat.dealId || null,
+            chatId: chat.id,
           })
         if (cancelled) return
+        errorStreak = 0
         applyLoadedChatData(
-          selectedChat,
+          chat,
           list,
           itemTitle,
           itemImageUrl,
-          buyerSupercellEmail,
-          itemCategory
+          buyerSupercellEmail || null,
+          itemCategory,
+          deals
         )
-      } catch (_err) {
+      } catch (err) {
         if (cancelled) return
+        if (isPlayerokRateLimitMessage(err instanceof Error ? err.message : String(err))) {
+          errorStreak += 1
+        }
       } finally {
         if (!cancelled) {
-          timerId = setTimeout(refreshSelectedChat, 3000)
+          scheduleNext(pollDelayAfterErrors(CHAT_MESSAGES_POLL_MS, errorStreak))
         }
       }
     }
 
-    void refreshSelectedChat()
+    scheduleNext(CHAT_MESSAGES_POLL_MS)
     return () => {
       cancelled = true
       if (timerId) clearTimeout(timerId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, selectedChat?.id, selectedChat?.dealId])
+  }, [token, isPageActive, selectedChat?.id, selectedChat?.dealId])
 
   useEffect(() => {
-    if (!token) return
+    if (!token || !isPageActive) return
     let cancelled = false
     let timerId = null
+    let errorStreak = 0
 
-    const mergeChats = (prevChats, incomingChats) => {
-      const isPoorCategory = (value) => {
-        const s = String(value || '').trim()
-        return !s || s === 'Категория не определена'
-      }
-      const prevById = new Map((prevChats || []).map((chat) => [chat.id, chat]))
-      const next = []
-      for (const incoming of incomingChats || []) {
-        const prev = prevById.get(incoming.id)
-        if (!prev) {
-          next.push({
-            ...incoming,
-            unreadCount: resolveUnreadCount(null, incoming, selectedChatIdRef.current),
-          })
-          continue
-        }
-        const incCat = String(incoming.category || '').trim()
-        const prevCat = String(prev.category || '').trim()
-        const incPoor = isPoorCategory(incCat)
-        const prevPoor = isPoorCategory(prevCat)
-        const mergedCategory = incPoor ? (prevPoor ? incCat : prevCat) : incCat
-        next.push({
-          ...prev,
-          ...incoming,
-          category: mergedCategory,
-          itemImageUrl: incoming.itemImageUrl || prev.itemImageUrl || null,
-          itemTitle: incoming.itemTitle || prev.itemTitle || null,
-          unreadCount: resolveUnreadCount(prev, incoming, selectedChatIdRef.current),
-        })
-      }
-      return next
+    const scheduleNext = (delayMs) => {
+      if (cancelled) return
+      if (timerId) clearTimeout(timerId)
+      timerId = setTimeout(() => {
+        void refreshChatsList()
+      }, delayMs)
     }
 
     const refreshChatsList = async () => {
+      if (cancelled) return
+      if (typeof document !== 'undefined' && document.hidden) {
+        scheduleNext(pollDelayAfterErrors(CHAT_LIST_POLL_MS, errorStreak))
+        return
+      }
       try {
-        const { list, pageInfo: info } = await fetchUserChats(token, { limit: 24 })
+        const selectedId = selectedChatIdRef.current
+        const prevSelected = selectedId
+          ? chatsRef.current.find((c) => c.id === selectedId)
+          : null
+
+        const { list } = await fetchChatDbList(token, { limit: 24, offset: 0 })
         if (cancelled) return
 
-        setChats((prev) => mergeChats(prev, list))
-        setPageInfo(info || { hasNextPage: false, endCursor: null })
-      } catch (_err) {
+        const nextSelected = selectedId ? list.find((c) => c.id === selectedId) : null
+        const selectedHasNewListMessage =
+          Boolean(nextSelected?.lastMessageId) &&
+          String(prevSelected?.lastMessageId || '') !== String(nextSelected.lastMessageId)
+
+        saveChatListScrollAnchor('prepend')
+        setChats((prev) => mergeChatsWithRefresh(prev, list))
+        errorStreak = 0
+        enqueueChatsForPreload(list)
+        requestAnimationFrame(() => preloadChatsNearViewport())
+
+        if (selectedHasNewListMessage && nextSelected) {
+          void pullMessagesForChat(nextSelected)
+        }
+      } catch (err) {
         if (cancelled) return
+        if (isPlayerokRateLimitMessage(err instanceof Error ? err.message : String(err))) {
+          errorStreak += 1
+        }
       } finally {
         if (!cancelled) {
-          timerId = setTimeout(refreshChatsList, 5000)
+          scheduleNext(pollDelayAfterErrors(CHAT_LIST_POLL_MS, errorStreak))
         }
       }
     }
 
-    void refreshChatsList()
+    scheduleNext(CHAT_LIST_POLL_MS)
     return () => {
       cancelled = true
       if (timerId) clearTimeout(timerId)
     }
-  }, [token])
+  }, [
+    token,
+    isPageActive,
+    mergeChatsWithRefresh,
+    saveChatListScrollAnchor,
+    enqueueChatsForPreload,
+    preloadChatsNearViewport,
+    pullMessagesForChat,
+  ])
 
   // Получаем команды для категории выбранного чата
   const currentCategoryCommands = useMemo(() => {
@@ -1024,7 +1850,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
   }, [selectedChat, categoryCommands])
 
   useEffect(() => {
-    chatDebugLog('chat-state-snapshot', {
+    logChatLogging('chat-state-snapshot', {
       chatsCount: chats.length,
       visibleChatsCount: visibleChats.length,
       selectedChatId,
@@ -1037,19 +1863,21 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         .map(summarizeChatForLog)
         .slice(0, 30),
     })
-  }, [chats, visibleChats, selectedChatId, selectedChat, chatDebugLog, summarizeChatForLog])
+  }, [chats, visibleChats, selectedChatId, selectedChat, summarizeChatForLog])
 
   useEffect(() => {
     if (!selectedChat || !moduleSupercellEnabled) return
     const category = String(selectedChat.category || '').trim()
-    chatDebugLog('supercell:selectedChat', {
+    logChatLogging('supercell:selectedChat', {
       chat: summarizeChatForLog(selectedChat),
       isSupercellCategory: isSupercellCategory(category),
       isSuperSellWrapper: isSuperSellMarketplaceLabel(category),
       detectedEmail: selectedChatDetectedEmail || null,
       manualEmail: selectedChatManualEmail || null,
       itemTitle: currentItemTitle || null,
+      resolvedCategory: selectedChatSupercellCategory || null,
       canUseSupercell: selectedChatCanUseSupercell,
+      moduleSupercellEnabled,
     })
   }, [
     selectedChat,
@@ -1058,7 +1886,6 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     selectedChatManualEmail,
     currentItemTitle,
     selectedChatCanUseSupercell,
-    chatDebugLog,
     summarizeChatForLog,
   ])
 
@@ -1084,43 +1911,31 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     return { icon: '•', label: s, tone: 'muted' }
   }
 
-  const handleSendMessage = async (chat) => {
-    if (!token || !chat?.id) return
-    const chatId = chat.id
-    const text = (draftByChatId[chatId] || '').trim()
-    if (!text) return
-    await sendDealChatMessage(token, {
-      dealId: chat.dealId || null,
-      chatId,
-      text,
+  const sortChatsByLastMessageDesc = (list) =>
+    [...(list || [])].sort((a, b) => {
+      const aTs = parseTimestamp(a?.lastMessageCreatedAt)
+      const bTs = parseTimestamp(b?.lastMessageCreatedAt)
+      if (bTs !== aTs) return bTs - aTs
+      return String(b?.id || '').localeCompare(String(a?.id || ''))
     })
-    const newMessage = {
-      id: `local-${Date.now()}`,
-      text,
-      createdAt: new Date().toISOString(),
-      imageUrl: null,
-      user: { username: 'Levkaster' },
-    }
-    setChatStateById((prev) => ({
-      ...prev,
-      [chatId]: {
-        ...(prev[chatId] || { loading: false, error: null, loaded: true, messages: [] }),
-        messages: [...(prev[chatId]?.messages || []), newMessage],
-      },
-    }))
-    setDraftByChatId((prev) => ({ ...prev, [chatId]: '' }))
-  }
 
-  const appendLocalMessageForChat = (chat, text) => {
+  const appendLocalMessageForChat = (chat, text, options = {}) => {
     if (!chat?.id) return
     const trimmed = String(text || '').trim()
-    if (!trimmed) return
+    if (!trimmed) return null
+    const createdAt = options.createdAt || new Date().toISOString()
+    const messageId =
+      options.messageId || `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+    const fromBuyer = options.fromBuyer === true
     const newMessage = {
-      id: `local-${Date.now()}`,
+      id: messageId,
       text: trimmed,
-      createdAt: new Date().toISOString(),
+      createdAt,
       imageUrl: null,
-      user: { username: OUR_USERNAME },
+      user: {
+        username: fromBuyer ? String(chat.buyerName || '').trim() || null : OUR_USERNAME,
+      },
+      ...(options.optimistic ? { _optimisticOutgoing: true } : {}),
     }
     setChatStateById((prev) => ({
       ...prev,
@@ -1129,6 +1944,142 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         messages: [...(prev[chat.id]?.messages || []), newMessage],
       },
     }))
+    setChats((prev) =>
+      sortChatsByLastMessageDesc(
+        prev.map((c) =>
+          c.id === chat.id
+            ? {
+                ...c,
+                lastMessageId: messageId,
+                lastMessageText: trimmed,
+                lastMessageCreatedAt: createdAt,
+                dealId: c.dealId || chat.dealId || null,
+                unreadCount: fromBuyer ? Number(c.unreadCount || 0) : 0,
+                lastMessageFromBuyer: fromBuyer,
+              }
+            : c
+        )
+      )
+    )
+    return {
+      id: messageId,
+      createdAt,
+      text: trimmed,
+    }
+  }
+
+  const handleSendMessage = async (chat) => {
+    if (!token || !chat?.id) return
+    const chatId = chat.id
+    const text = (draftByChatId[chatId] || '').trim()
+    if (!text) return
+    const previousChatPreview = {
+      lastMessageId: chat.lastMessageId || null,
+      lastMessageText: chat.lastMessageText || null,
+      lastMessageCreatedAt: chat.lastMessageCreatedAt || null,
+      unreadCount: Number(chat.unreadCount || 0),
+      lastMessageFromBuyer:
+        typeof chat.lastMessageFromBuyer === 'boolean' ? chat.lastMessageFromBuyer : null,
+    }
+    const optimisticMessage = appendLocalMessageForChat(chat, text, { optimistic: true })
+    if (!optimisticMessage) return
+    setDraftByChatId((prev) => ({ ...prev, [chatId]: '' }))
+    logChatLogging('action:sendMessage', { chat: summarizeChatForLog(chat), textLength: text.length }, 'action')
+    try {
+      const sendResult = await sendChatDbMessage(token, {
+        dealId: chat.dealId || null,
+        chatId,
+        text,
+        clientMessageId: String(optimisticMessage.id),
+        clientCreatedAt: optimisticMessage.createdAt,
+      })
+      const serverMessage =
+        sendResult && typeof sendResult.message === 'object' && sendResult.message !== null
+          ? sendResult.message
+          : null
+      const resolvedId =
+        serverMessage?.id != null ? String(serverMessage.id) : String(optimisticMessage.id)
+      const resolvedText =
+        serverMessage?.text != null ? String(serverMessage.text).trim() : optimisticMessage.text
+      const resolvedCreatedAt = serverMessage?.createdAt || optimisticMessage.createdAt
+
+      setChatStateById((prev) => {
+        const current = prev[chatId] || {}
+        const currentMessages = Array.isArray(current.messages) ? current.messages : []
+        const nextMessages = currentMessages.map((m) =>
+          String(m?.id || '') === String(optimisticMessage.id)
+            ? {
+                ...m,
+                id: resolvedId,
+                text: resolvedText,
+                createdAt: resolvedCreatedAt,
+                user: { ...(m.user || {}), username: OUR_USERNAME },
+                _optimisticOutgoing: false,
+              }
+            : m
+        )
+        return {
+          ...prev,
+          [chatId]: {
+            ...current,
+            messages: nextMessages,
+          },
+        }
+      })
+      setChats((prev) =>
+        sortChatsByLastMessageDesc(
+          prev.map((c) =>
+            c.id === chatId && String(c.lastMessageId || '') === String(optimisticMessage.id)
+              ? {
+                  ...c,
+                  lastMessageId: resolvedId,
+                  lastMessageText: resolvedText,
+                  lastMessageCreatedAt: resolvedCreatedAt,
+                  unreadCount: 0,
+                  lastMessageFromBuyer: false,
+                }
+              : c
+          )
+        )
+      )
+      logChatLogging('action:sendMessage:success', { chatId }, 'action')
+    } catch (err) {
+      setChatStateById((prev) => {
+        const current = prev[chatId] || {}
+        const currentMessages = Array.isArray(current.messages) ? current.messages : []
+        return {
+          ...prev,
+          [chatId]: {
+            ...current,
+            messages: currentMessages.filter(
+              (m) => String(m?.id || '') !== String(optimisticMessage.id)
+            ),
+          },
+        }
+      })
+      setChats((prev) =>
+        sortChatsByLastMessageDesc(
+          prev.map((c) =>
+            c.id === chatId && String(c.lastMessageId || '') === String(optimisticMessage.id)
+              ? {
+                  ...c,
+                  lastMessageId: previousChatPreview.lastMessageId,
+                  lastMessageText: previousChatPreview.lastMessageText,
+                  lastMessageCreatedAt: previousChatPreview.lastMessageCreatedAt,
+                  unreadCount: previousChatPreview.unreadCount,
+                  lastMessageFromBuyer: previousChatPreview.lastMessageFromBuyer,
+                }
+              : c
+          )
+        )
+      )
+      setDraftByChatId((prev) => ({ ...prev, [chatId]: text }))
+      logChatLogging(
+        'action:sendMessage:error',
+        { chatId, message: err instanceof Error ? err.message : String(err) },
+        'error'
+      )
+    }
   }
 
   const openRequestCodeModal = (chat) => {
@@ -1183,19 +2134,26 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       return
     }
     setRequestCodeState({ loading: true, error: null })
+    logChatLogging('action:requestSupercellCode', { chat: summarizeChatForLog(selectedChat), email }, 'action')
     try {
       const data = await requestSupercellCode(token, {
         dealId: selectedChat.dealId || null,
         chatId: selectedChat.id,
         email,
-        category: selectedChat.category || '',
+        category: selectedChatSupercellCategory || selectedChat.category || '',
       })
       saveManualEmailForChat(selectedChat.id, email)
       if (data?.chatMessage) {
         appendLocalMessageForChat(selectedChat, data.chatMessage)
       }
       closeRequestCodeModal()
+      logChatLogging('action:requestSupercellCode:success', { chatId: selectedChat.id }, 'action')
     } catch (err) {
+      logChatLogging(
+        'action:requestSupercellCode:error',
+        { chatId: selectedChat.id, message: err instanceof Error ? err.message : String(err) },
+        'error'
+      )
       setRequestCodeState({
         loading: false,
         error: err instanceof Error ? err.message : 'Не удалось запросить код',
@@ -1214,10 +2172,77 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
     closeRequestCodeModal()
   }
 
+  const pickDealIdFromMessages = (messages) => {
+    const list = Array.isArray(messages) ? messages : []
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const m = list[i]
+      const id = m?.dealId != null ? String(m.dealId).trim() : m?.deal?.id != null ? String(m.deal.id).trim() : ''
+      if (id) return id
+    }
+    return null
+  }
+
+  const handleApprouteRescan = async () => {
+    if (!token || !selectedChat?.id) return
+    setApprouteRescanState({ loading: true, error: null, notice: 'Отправляем запрос Api…' })
+    const messages = selectedChatState?.messages || []
+    const dealIdForRescan =
+      selectedChat.dealId || pickDealIdFromMessages(messages) || undefined
+    try {
+      await rescanApprouteChat(token, {
+        chatId: selectedChat.id,
+        dealId: dealIdForRescan,
+        dealItemId: selectedChat.itemId || undefined,
+      })
+      try {
+        const { list, itemTitle, itemImageUrl, itemCategory, deals } =
+          await fetchChatDbMessages(token, {
+            dealId: selectedChat.dealId || null,
+            chatId: selectedChat.id,
+          })
+        applyLoadedChatData(
+          selectedChat,
+          list,
+          itemTitle,
+          itemImageUrl,
+          null,
+          itemCategory,
+          deals
+        )
+      } catch (refreshErr) {
+        const refreshMessage =
+          refreshErr instanceof Error ? refreshErr.message : 'не удалось обновить чат'
+        setApprouteRescanState({
+          loading: false,
+          error: null,
+          notice: `Запрос Api отправлен, но чат не обновился: ${refreshMessage}`,
+        })
+        return
+      }
+      setApprouteRescanState({
+        loading: false,
+        error: null,
+        notice: 'Готово: запрос Api отправлен.',
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Не удалось выполнить рескан'
+      if (err && err.pending) {
+        setApprouteRescanState({ loading: false, error: null, notice: message })
+      } else {
+        setApprouteRescanState({ loading: false, error: message, notice: null })
+      }
+    }
+  }
+
   const toggleHiddenForChat = async (chat) => {
     if (!token || !chat?.id) return
     const chatId = chat.id
     const currentlyHidden = Boolean(chat.isHidden)
+    logChatLogging(
+      'action:toggleHidden',
+      { chat: summarizeChatForLog(chat), nextHidden: !currentlyHidden },
+      'action'
+    )
     try {
       if (!currentlyHidden) {
         await hideChat(token, chatId)
@@ -1231,7 +2256,14 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             : c
         )
       )
-    } catch (err) { }
+      logChatLogging('action:toggleHidden:success', { chatId, hidden: !currentlyHidden }, 'action')
+    } catch (err) {
+      logChatLogging(
+        'action:toggleHidden:error',
+        { chatId, message: err instanceof Error ? err.message : String(err) },
+        'error'
+      )
+    }
   }
 
   const closeDealActionModal = () => {
@@ -1241,6 +2273,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
 
   const openDealActionModal = (kind) => {
     if (!token || !selectedChat) return
+    logChatLogging('action:openDealModal', { kind, chat: summarizeChatForLog(selectedChat) }, 'action')
     setDealActionState({ loading: false, error: null })
     setDealActionModal({ open: true, kind, chatId: selectedChat.id })
   }
@@ -1257,6 +2290,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       return
     }
     setDealActionState({ loading: true, error: null })
+    logChatLogging('action:dealAction', { kind, chat: summarizeChatForLog(chat) }, 'action')
     try {
       if (kind === 'refund') {
         await cancelDeal(token, chat.dealId)
@@ -1264,33 +2298,66 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
         await confirmDeal(token, chat.dealId)
       }
       closeDealActionModal()
+      logChatLogging('action:dealAction:success', { kind, chatId, dealId: chat.dealId }, 'action')
       if (selectedChatId === chatId) {
         void loadMessagesForChat(chat)
       }
       try {
-        const { list, pageInfo: info } = await fetchUserChats(token, {
+        const { list, pageInfo: info } = await fetchChatDbList(token, {
           limit: 24,
-          preferCache: false,
+          offset: 0,
         })
-        setChats((prev) => {
-          const prevById = new Map((prev || []).map((c) => [c.id, c]))
-          return (list || []).map((incoming) => {
-            const prevChat = prevById.get(incoming.id) || null
-            return {
-              ...incoming,
-              unreadCount: resolveUnreadCount(prevChat, incoming, selectedChatIdRef.current),
-            }
-          })
-        })
+        saveChatListScrollAnchor('prepend')
+        setChats((prev) => mergeChatsWithRefresh(prev, list || []))
         setPageInfo(info || { hasNextPage: false, endCursor: null })
       } catch (_e) {
         // список обновится по таймеру
       }
     } catch (err) {
+      logChatLogging(
+        'action:dealAction:error',
+        { kind, chatId, message: err instanceof Error ? err.message : String(err) },
+        'error'
+      )
       setDealActionState({
         loading: false,
         error: err instanceof Error ? err.message : 'Не удалось выполнить действие',
       })
+    }
+  }
+
+  const handleStartFullScan = async () => {
+    if (!token) return
+    setFullScanState((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      await startChatDbFullScan(token)
+      setFullScanState((prev) => ({ ...prev, loading: false }))
+    } catch (err) {
+      setFullScanState((prev) => ({
+        ...prev,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      }))
+    }
+  }
+
+  const handleResetFullScan = async () => {
+    setFullScanState((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      await resetChatDbFullScan()
+      const data = await fetchChatDbFullScanStatus()
+      setFullScanState((prev) => ({
+        ...prev,
+        loading: false,
+        status: data?.state || null,
+        error: null,
+      }))
+    } catch (err) {
+      setFullScanState((prev) => ({
+        ...prev,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      }))
     }
   }
 
@@ -1303,6 +2370,75 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
       <div className={`tab-grid ${isMobileChatLayout ? `tab-grid--chat-mobile-${mobileChatView}` : ''}`}>
         <section className="card">
           <h2 className="card-title">Список чатов</h2>
+          {hasToken && (
+            <div className="ddos-guard-actions" style={{ marginBottom: '0.6rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleStartFullScan}
+                disabled={fullScanState.loading || Number(fullScanState.status?.scan_in_progress || 0) === 1}
+              >
+                {fullScanState.loading || Number(fullScanState.status?.scan_in_progress || 0) === 1
+                  ? 'Прогружаем чаты...'
+                  : 'Прогрузить чаты'}
+              </button>
+            </div>
+          )}
+          {hasToken && fullScanState.status && (
+            <>
+              {fullScanInProgress ? (
+                <div className="profit-sync-progress" role="status" aria-live="polite" data-scan-tick={fullScanTick}>
+                  <div className="profit-sync-progress__bar-wrap">
+                    <div
+                      className="profit-sync-progress__bar"
+                      style={{ width: `${fullScanProgressPercent || 8}%` }}
+                    />
+                  </div>
+                  <p className="profit-sync-progress__text">
+                    Прогрузка: {fullScanDone} из {fullScanTotal || '...'} ({fullScanProgressPercent}%)
+                    {' · '}
+                    Время: {Math.floor(fullScanElapsedSec / 60)}м {String(fullScanElapsedSec % 60).padStart(2, '0')}с
+                    {fullScanCurrentLabel ? (
+                      <>
+                        {' · '}
+                        Чат: {fullScanCurrentLabel}
+                        {fullScanCurrentStep === 'messages' ? ' (история)' : ''}
+                      </>
+                    ) : null}
+                  </p>
+                  {fullScanLastError && fullScanCurrentStep === 'skip' && (
+                    <p className="card-text card-text--error" style={{ marginTop: '0.35rem' }}>
+                      {fullScanLastError}
+                    </p>
+                  )}
+                  {fullScanUpdateLagSec >= 75 && fullScanCurrentStep === 'messages' && (
+                    <p className="card-text" style={{ marginTop: '0.35rem' }}>
+                      Долгая загрузка истории — через ~{Math.max(0, 90 - fullScanUpdateLagSec)}с чат будет пропущен.
+                    </p>
+                  )}
+                  <div className="ddos-guard-actions" style={{ marginTop: '0.4rem' }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={handleResetFullScan}
+                      disabled={fullScanState.loading}
+                    >
+                      Сбросить зависшую прогрузку
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="card-text" style={{ marginTop: 0 }}>
+                  {Number(fullScanState.status.full_scan_completed_at || 0) > 0
+                    ? 'Полная прогрузка чатов уже выполнена.'
+                    : 'Полная прогрузка ещё не запускалась.'}
+                </p>
+              )}
+            </>
+          )}
+          {hasToken && fullScanState.error && (
+            <p className="card-text card-text--error">{fullScanState.error}</p>
+          )}
 
           {!hasToken && (
             <p className="card-text">
@@ -1310,11 +2446,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             </p>
           )}
 
-          {hasToken && loading && (
+          {hasToken && loading && chats.length === 0 && (
             <p className="card-text">Загружаем чаты с Playerok…</p>
           )}
 
-          {hasToken && !loading && error && (
+          {hasToken && error && (
             <p className="card-text card-text--error">{error}</p>
           )}
 
@@ -1324,7 +2460,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
             </p>
           )}
 
-          {hasToken && !loading && !error && chats.length > 0 && (
+          {hasToken && !error && chats.length > 0 && (
             <>
               <div className="chat-filter-toggle">
                 <button
@@ -1376,7 +2512,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                             ? '#f59e0b'
                             : 'var(--text-muted)'
 
-                  const displayName = String(chat.buyerName || '').trim() || 'Покупатель'
+                  const displayName = String(chat.buyerName || '').trim() || 'Имя покупателя'
                   const lastMessagePreview = getLastChatMessagePreviewInfo(chat)
                   const hasUnread =
                     unread != null &&
@@ -1393,8 +2529,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                         (hasUnread ? ' chat-list__item--unread' : '')
                       }
                       onClick={() => {
+                        logChatLogging('action:selectChat', { chat: summarizeChatForLog(chat) }, 'action')
                         setSelectedChatId(chat.id)
-                        void loadMessagesForChat(chat)
+                        void loadMessagesForChat(chat, { force: true })
                         markChatAsRead(chat.id)
                         if (isMobileChatLayout) {
                           setMobileChatView('chat')
@@ -1517,6 +2654,16 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                   ) : null}
                 </div>
                 <div className="chat-header-row__actions">
+                  {selectedChatApprouteEnabled && (
+                    <button
+                      type="button"
+                      className="chat-header-row__hide-btn"
+                      disabled={!token || approuteRescanState.loading}
+                      onClick={() => void handleApprouteRescan()}
+                    >
+                      {approuteRescanState.loading ? 'Проверяем Api…' : 'Повтор Api'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="chat-header-row__hide-btn"
@@ -1524,8 +2671,25 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                   >
                     {selectedChat.isHidden ? 'Показать чат' : 'Скрыть чат'}
                   </button>
+                  <button
+                    type="button"
+                    className="chat-header-row__hide-btn"
+                    onClick={() => setShowChatExtraInfo((v) => !v)}
+                  >
+                    {showChatExtraInfo ? 'Скрыть доп инфо' : 'Доп инфо'}
+                  </button>
                 </div>
               </div>
+              {selectedChatApprouteEnabled && approuteRescanState.error && (
+                <p className="card-text card-text--error" role="status" aria-live="polite">
+                  {approuteRescanState.error}
+                </p>
+              )}
+              {selectedChatApprouteEnabled && approuteRescanState.notice && (
+                <p className="card-text" role="status" aria-live="polite">
+                  {approuteRescanState.notice}
+                </p>
+              )}
               <div className="chat-item-card">
                 <div className="chat-item-card__image-wrap">
                   {currentItemImageUrl ? (
@@ -1551,6 +2715,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                       Покупатель: {selectedChat.buyerName}
                     </div>
                   ) : null}
+                  {selectedChatDeals.length > 0 && (
+                    <div className="chat-item-card__buyer">
+                      Покупки в чате: {selectedChatDeals.map((d) => d.itemCategory || 'Без категории').join(' · ')}
+                    </div>
+                  )}
                   {selectedChatCanUseSupercell && (
                     <div
                       className={
@@ -1577,35 +2746,49 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                   )}
                 </div>
               </div>
-              {selectedChatState?.loading && (
+              {showChatExtraInfo && (
+                <div className="card-text" style={{ marginTop: '0.6rem' }}>
+                  <div>Chat ID: {selectedChat.id || '—'}</div>
+                  <div>Deal ID: {selectedChat.dealId || '—'}</div>
+                  <div>Item ID: {selectedChat.itemId || '—'}</div>
+                  <div>Buyer: {selectedChat.buyerName || '—'}</div>
+                  <div>Category: {selectedChat.category || '—'}</div>
+                  <div>Last message ID: {selectedChat.lastMessageId || '—'}</div>
+                  {selectedChatDeals.length > 0 && (
+                    <div>
+                      Deals in chat: {selectedChatDeals.map((d) => d.dealId || '—').join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+              {selectedChatMessagesPending && (
                 <p className="card-text">Загружаем чат…</p>
               )}
-              {!selectedChatState?.loading && selectedChatState?.error && (
+              {!selectedChatMessagesPending && selectedChatState?.error && (
                 <p className="card-text card-text--error">
                   {selectedChatState.error}
                 </p>
               )}
-              {!selectedChatState?.loading &&
+              {!selectedChatMessagesPending &&
                 !selectedChatState?.error &&
                 (selectedChatState?.messages || []).length === 0 && (
                   <p className="card-text">
                     Сообщений в этом чате пока нет.
                   </p>
                 )}
-              {!selectedChatState?.loading &&
+              {!selectedChatMessagesPending &&
                 !selectedChatState?.error &&
                 (selectedChatState?.messages || []).length > 0 && (
                   <div ref={messagesRef} className="chat-messages">
                     {(() => {
-                      const messagesToRender = selectedChatState.messages || []
+                      const messagesToRender = mergeListAheadMessage(
+                        selectedChat,
+                        selectedChatState.messages || []
+                      )
                       return messagesToRender.map((m) => {
                         const timeText = formatTime(m.createdAt)
                         const isSystem = m.text ? isSystemMessage(m.text) : false
-                        const messageUsername = String(m.user?.username || '').trim()
-                        const buyerName = String(selectedChat?.buyerName || '').trim()
-                        const fromBuyer = buyerName && messageUsername
-                          ? messageUsername === buyerName
-                          : isFromBuyer(m)
+                        const fromBuyer = isFromBuyer(m)
                         // Для системных сообщений используем только класс system, иначе определяем по автору
                         const messageClass = isSystem
                           ? 'chat-message chat-message--system'
@@ -1677,7 +2860,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                   </div>
                 )}
 
-              {!selectedChatState?.loading && !selectedChatState?.error && (
+              {!selectedChatState?.error && (
                 <>
                   {(currentCategoryCommands.length > 0 || selectedChatCanUseSupercell) && (
                     <div className="chat-commands-buttons" style={{ marginBottom: '1rem' }}>
@@ -1732,7 +2915,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false }) {
                               onClick={async () => {
                                 if (!selectedChat || !token) return
                                 try {
-                                  await sendDealChatMessage(token, {
+                                  await sendChatDbMessage(token, {
                                     dealId: selectedChat.dealId || null,
                                     chatId: selectedChat.id,
                                     text: cmd.text,

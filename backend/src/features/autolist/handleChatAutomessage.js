@@ -1,54 +1,60 @@
 'use strict'
 
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
+const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
 const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
+  autolistMarkProcessed,
+  CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
 const ITEM_SENT_MARKER = '{{ITEM_SENT}}'
 const DEAL_CONFIRMED_MARKERS = ['{{DEAL_CONFIRMED}}', '{{DEAL_CONFIRMED_AUTOMATICALLY}}']
 
-function normalizeComparableUsername(value) {
-  return String(value || '').trim().toLowerCase()
+function messageDealIdForMarkerMatch(m) {
+  if (m?.dealId != null) return String(m.dealId).trim()
+  if (m?.deal?.id != null) return String(m.deal.id).trim()
+  return ''
 }
 
-function hasSystemMarkerForDeal(messages, dealId, markers) {
+function findLatestSystemMarkerMessage(messages, dealId, markers) {
   const targetDealId = dealId != null ? String(dealId).trim() : ''
   const markerList = Array.isArray(markers) ? markers : []
-  if (markerList.length === 0) return false
+  if (markerList.length === 0) return null
 
   const list = Array.isArray(messages) ? messages : []
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const m = list[i]
     const text = String(m?.text || '')
     if (!markerList.some((marker) => text.includes(marker))) continue
-    if (!targetDealId) return true
-    const msgDealId =
-      m?.dealId != null
-        ? String(m.dealId).trim()
-        : m?.deal?.id != null
-          ? String(m.deal.id).trim()
-          : ''
-    if (!msgDealId || msgDealId === targetDealId) return true
+    if (targetDealId) {
+      const msgDealId = messageDealIdForMarkerMatch(m)
+      if (msgDealId && msgDealId !== targetDealId) continue
+    }
+    return m
   }
-  return false
+  return null
 }
 
-function hasSellerMessageText(messages, text, viewerUsername) {
+function hasSystemMarkerForDeal(messages, dealId, markers) {
+  return findLatestSystemMarkerMessage(messages, dealId, markers) != null
+}
+
+function getSystemMarkerTriggerUnixTs(messages, dealId, markers, toUnixTsFn = defaultToUnixTs) {
+  const tu = typeof toUnixTsFn === 'function' ? toUnixTsFn : defaultToUnixTs
+  const m = findLatestSystemMarkerMessage(messages, dealId, markers)
+  if (!m) return 0
+  return tu(m.createdAt) || 0
+}
+
+function hasSellerMessageText(messages, text, _viewerUsername) {
   const expected = String(text || '').trim()
   if (!expected) return false
-  const normalizedViewer = normalizeComparableUsername(viewerUsername)
   const list = Array.isArray(messages) ? messages : []
-  return list.some((msg) => {
-    const msgText = String(msg?.text || '').trim()
-    if (msgText !== expected) return false
-    const username = normalizeComparableUsername(msg?.user?.username || msg?.user?.name || '')
-    if (!normalizedViewer) return true
-    return !username || username === normalizedViewer
-  })
+  return list.some((msg) => String(msg?.text || '').trim() === expected)
 }
 
 function lastMessageHasAnyMarker(text, markers) {
@@ -82,6 +88,7 @@ async function runChatAutomessage({
   createChatMessage,
   normalizeKeyPart,
   buildProductKey,
+  toUnixTs = defaultToUnixTs,
 }) {
   if (!token || !chatId) return { sent: false, reason: 'missing_chat' }
 
@@ -94,6 +101,21 @@ async function runChatAutomessage({
 
   if (!hasSystemMarkerForDeal(messages, effectiveDealId || null, systemMarkers)) {
     return { sent: false, reason: 'no_system_marker' }
+  }
+
+  const effectiveNowTs = Number(nowTs) > 0 ? Number(nowTs) : Math.floor(Date.now() / 1000)
+  const triggerTs = getSystemMarkerTriggerUnixTs(
+    messages,
+    effectiveDealId || null,
+    systemMarkers,
+    toUnixTs
+  )
+  if (
+    triggerTs > 0 &&
+    effectiveNowTs - triggerTs > CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC
+  ) {
+    autolistMarkProcessed(tokenHash, eventKey, effectiveNowTs)
+    return { sent: false, reason: 'trigger_expired' }
   }
 
   if (!tryBeginChatAutomessageSend(tokenHash, eventKey)) {
@@ -230,7 +252,9 @@ async function handleDealConfirmedAutomessage(params) {
 module.exports = {
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
+  hasSellerMessageText,
   hasSystemMarkerForDeal,
+  getSystemMarkerTriggerUnixTs,
   lastMessageHasAnyMarker,
   ITEM_SENT_MARKER,
   DEAL_CONFIRMED_MARKERS,

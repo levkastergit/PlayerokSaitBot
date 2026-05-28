@@ -1,6 +1,9 @@
 'use strict'
 
-const { logSupercellDebug } = require('./supercellHelpers')
+const {
+  logSupercellDebug,
+  resolveEffectiveDealIdForChat,
+} = require('./supercellHelpers')
 
 function createProcessSingleSupercellFlow({
   autolistGetSupercellFlowMap,
@@ -18,16 +21,36 @@ function createProcessSingleSupercellFlow({
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+  const skipResult = (chatId, dealId, reason, extra = {}) => ({
+    ran: true,
+    action: 'skipped',
+    reason,
+    chatId: String(chatId),
+    dealId: dealId || null,
+    category: extra.category || null,
+    ...extra,
+  })
+
   return async function processSingleSupercellFlow(chatId, token, userAgent, viewerUsername, nowTs) {
     const tokenHash = token
     const flowMap = autolistGetSupercellFlowMap(tokenHash)
     const state = flowMap[String(chatId)]
-    if (!state || !state.active) return false
+    if (!state || !state.active) {
+      return {
+        ran: false,
+        action: 'skipped',
+        reason: 'flow_inactive',
+        chatId: String(chatId),
+        dealId: state?.dealId || null,
+        category: state?.category || null,
+      }
+    }
 
     let category = String(state.category || '').trim()
+    const dealId = state.dealId || null
     logSupercellDebug('flow:start', {
       chatId,
-      dealId: state.dealId || null,
+      dealId,
       categoryFromState: category,
       requestCodeRequested: Boolean(state.requestCodeRequested),
       hasLatestEmail: Boolean(state.latestEmail),
@@ -41,7 +64,7 @@ function createProcessSingleSupercellFlow({
         chatData = await fetchDealChatMessagesFromPlayerok(
           token,
           userAgent,
-          state.dealId || null,
+          dealId,
           chatId,
           { viewerUsername: viewerUsername || null, categoryHint: category || null }
         )
@@ -60,27 +83,12 @@ function createProcessSingleSupercellFlow({
         if (candidateEmail) break
         if (emailFetchAttempt < EMAIL_FETCH_RETRIES) {
           emailRetryReason = 'email_missing_from_deal_or_messages'
-          console.warn('[processSingleSupercellFlow] повтор получения email', {
-            reason: emailRetryReason,
-            chatId,
-            dealId: state.dealId || null,
-            attempt: emailFetchAttempt + 1,
-            maxAttempts: EMAIL_FETCH_RETRIES + 1,
-            category,
-          })
           await sleep(EMAIL_FETCH_DELAY_MS * (emailFetchAttempt + 1))
         }
       }
 
       const game = getSupercellGameByCategory(category)
       if (!game) {
-        console.warn('[processSingleSupercellFlow] пропуск: категория не Supercell', {
-          chatId,
-          category,
-          categoryFromState: state.category,
-          itemCategoryFromFetch: chatData?.itemCategory || null,
-          dealId: state.dealId || null,
-        })
         logSupercellDebug('flow:skipInvalidCategory', {
           chatId,
           category,
@@ -92,42 +100,44 @@ function createProcessSingleSupercellFlow({
           active: false,
           updatedAt: nowTs,
         }
-        return false
+        return skipResult(chatId, dealId, 'invalid_category', { category })
       }
 
       const messages = Array.isArray(chatData?.messages) ? chatData.messages : []
+      const effectiveDealId =
+        resolveEffectiveDealIdForChat({
+          dealIdFromRequest: dealId,
+          messages,
+        }) || dealId
 
       const alreadyRequested = hasSupercellCodeRequestedMessage(
         messages,
         viewerUsername || null,
-        game.gameName
+        game.gameName,
+        effectiveDealId
       )
 
       if (alreadyRequested) {
-        console.warn('[processSingleSupercellFlow] пропуск', {
-          reason: 'already_requested_message_found',
-          chatId,
-          dealId: state.dealId || null,
-          category,
-          gameName: game.gameName,
-        })
         flowMap[String(chatId)] = {
           ...state,
           requestCodeRequested: true,
           active: false,
           updatedAt: nowTs,
         }
-        return false
+        return skipResult(chatId, dealId, 'already_requested_message_found', {
+          category,
+          gameKey: game.gameKey,
+        })
       }
 
       const invalidEmailMessage = String(state.invalidEmailMessage || '').trim()
-      // Используем email из чата/сделки; если в chatData нет — берём из state (был сохранён при создании flow из полей сделки)
       const emailFromChat = String(chatData?.buyerSupercellEmail || '').trim() || null
       const nextState = {
         ...state,
         latestEmail: emailFromChat || state.latestEmail || null,
       }
 
+      let invalidEmailSent = false
       if (!nextState.invalidMessageSent && invalidEmailMessage) {
         await withRetry(
           () => createChatMessage(token, userAgent, chatId, invalidEmailMessage),
@@ -140,30 +150,30 @@ function createProcessSingleSupercellFlow({
         nextState.invalidMessageSent = true
         nextState.updatedAt = nowTs
         flowMap[String(chatId)] = nextState
+        invalidEmailSent = true
       }
 
       const effectiveEmail = String(nextState.latestEmail || '').trim()
       const emailIsValid = isEmailValid(effectiveEmail)
       if (!emailIsValid) {
-        console.warn('[processSingleSupercellFlow] пропуск: нет или неверный email', {
-          reason: emailRetryReason || 'email_invalid_or_missing',
-          chatId,
-          dealId: state.dealId || null,
-          category,
-          emailFetchAttempts: emailFetchAttempt + 1,
-          hasEmailFromChat: Boolean(emailFromChat),
-          hasEmailInState: Boolean(state.latestEmail),
-        })
         flowMap[String(chatId)] = {
           ...nextState,
           updatedAt: nowTs,
         }
-        return false
+        return {
+          ran: true,
+          action: invalidEmailSent ? 'invalid_email_sent' : 'skipped',
+          reason: emailRetryReason || 'email_invalid_or_missing',
+          chatId: String(chatId),
+          dealId,
+          category,
+          invalidEmailSent,
+        }
       }
 
       logSupercellDebug('flow:requestingCode', {
         chatId,
-        dealId: state.dealId || null,
+        dealId,
         category,
         gameKey: game.gameKey,
         emailDomain: effectiveEmail.includes('@') ? effectiveEmail.split('@')[1] : null,
@@ -172,7 +182,7 @@ function createProcessSingleSupercellFlow({
       await requestSupercellCodeForChat({
         token,
         userAgent,
-        dealId: state.dealId || null,
+        dealId,
         chatId,
         email: effectiveEmail,
         category,
@@ -188,19 +198,26 @@ function createProcessSingleSupercellFlow({
       }
 
       logSupercellDebug('flow:codeRequestedOk', { chatId, category, gameKey: game.gameKey })
-      return true
-    } catch (err) {
-      console.warn('[processSingleSupercellFlow] ошибка', {
-        reason: 'supercell_request_flow_failed',
-        chatId,
-        dealId: state.dealId || null,
+      return {
+        ran: true,
+        action: 'code_requested',
+        reason: null,
+        chatId: String(chatId),
+        dealId,
         category,
-        error: err?.message || String(err),
-      })
-      return false
+        gameKey: game.gameKey,
+      }
+    } catch (err) {
+      return {
+        ran: true,
+        action: 'error',
+        reason: err?.message || String(err),
+        chatId: String(chatId),
+        dealId,
+        category,
+      }
     }
   }
 }
 
 module.exports = { createProcessSingleSupercellFlow }
-

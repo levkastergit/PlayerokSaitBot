@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Бот">
+  <rect width="32" height="32" rx="7" fill="#0f172a"/>
+  <line x1="16" y1="6" x2="16" y2="10" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="16" cy="5" r="2.5" fill="#22c55e"/>
+  <rect x="7" y="10" width="18" height="14" rx="4" fill="#059669"/>
+  <rect x="10" y="14" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="18" y="14" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="12" y="21" width="8" height="2" rx="1" fill="#0f172a" opacity="0.85"/>
+</svg>

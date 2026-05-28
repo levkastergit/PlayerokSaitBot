@@ -14,6 +14,7 @@ import { RegisterPage } from './features/auth/RegisterPage.jsx'
 import { AutoListingTab } from './features/auto-listing/AutoListingTab.jsx'
 import { LotBoostTab } from './features/lot-boost/LotBoostTab.jsx'
 import { AutoDeliveryTab } from './features/auto-delivery/AutoDeliveryTab.jsx'
+import { AutoDeliveryApiTab } from './features/auto-delivery-api/AutoDeliveryApiTab.jsx'
 import { GroupTab } from './features/group/GroupTab.jsx'
 import { ActiveLotsTab } from './features/active/ActiveLotsTab.jsx'
 import { CompletedLotsTab } from './features/completed/CompletedLotsTab.jsx'
@@ -23,10 +24,12 @@ import { ChatTab } from './features/chat/ChatTab.jsx'
 import { PartnersTab } from './features/partners/PartnersTab.jsx'
 import { SettingsTab } from './features/settings/SettingsTab.jsx'
 import { DdosTab } from './features/ddos/DdosTab.jsx'
+import { ChatLoggingTab } from './features/chat-logging/ChatLoggingTab.jsx'
 import { ProfitTab } from './features/profit/ProfitTab.jsx'
 import { ActionsTab } from './features/actions/ActionsTab.jsx'
 import { BalanceTab } from './features/balance/BalanceTab.jsx'
-const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'lot-boost'])
+import { TestTab } from './features/test/TestTab.jsx'
+const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'auto-delivery-api', 'lot-boost'])
 
 const TabIcon = ({ id }) => {
   const common = {
@@ -86,6 +89,18 @@ const TabIcon = ({ id }) => {
           <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" />
           <path d="M14.8 13.2h4.2" />
           <path d="M17.7 11.1l2.1 2.1-2.1 2.1" />
+        </svg>
+      )
+    case 'auto-delivery-api':
+      return (
+        <svg {...common}>
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" opacity="0.2" fill="currentColor" stroke="none" />
+          <path d="M5.4 8.1V16l6.6 3.2V11.4L5.4 8.1z" opacity="0.14" fill="currentColor" stroke="none" />
+          <path d="M18.6 8.1V16L12 19.2v-7.8l6.6-3.3z" />
+          <path d="M12 4.8l6.6 3.3L12 11.4 5.4 8.1 12 4.8z" />
+          <path d="M7.8 13.8h2.4" />
+          <path d="M13.8 13.8h2.4" />
+          <path d="M19.2 13.8h1" />
         </svg>
       )
     case 'chat':
@@ -149,6 +164,15 @@ const TabIcon = ({ id }) => {
           <circle cx="12" cy="15.6" r="0.9" fill="currentColor" stroke="none" />
         </svg>
       )
+    case 'chat-logging':
+      return (
+        <svg {...common}>
+          <rect x="5" y="4.5" width="14" height="15" rx="2.5" opacity="0.18" fill="currentColor" stroke="none" />
+          <path d="M8.2 9h7.6" />
+          <path d="M8.2 12h5.8" />
+          <path d="M8.2 15h4.2" />
+        </svg>
+      )
     case 'balance':
       return (
         <svg {...common}>
@@ -178,6 +202,15 @@ const TabIcon = ({ id }) => {
           <path d="M12 18.4v1.8" />
         </svg>
       )
+    case 'test':
+      return (
+        <svg {...common}>
+          <path d="M8.5 6.2h7v1.8h-7z" opacity="0.2" fill="currentColor" stroke="none" />
+          <path d="M7.8 9.4h8.4" />
+          <path d="M9.2 12.2h5.6" />
+          <path d="M10.6 15h2.8" />
+        </svg>
+      )
     default:
       return null
   }
@@ -189,15 +222,18 @@ const TABS = [
   { id: 'auto-listing', label: 'Автовыставление' },
   { id: 'lot-boost', label: 'Поднятие лотов' },
   { id: 'auto-delivery', label: 'Автовыдача' },
+  { id: 'auto-delivery-api', label: 'Автовыдача Api' },
   { id: 'group', label: 'Группа' },
   { id: 'chat', label: 'Чаты' },
   { id: 'partners', label: 'Напарники' },
   { id: 'commands', label: 'Команды' },
   { id: 'settings', label: 'Настройки' },
   { id: 'ddos', label: 'Ddos' },
+  { id: 'chat-logging', label: 'Логирование Чата' },
   { id: 'balance', label: 'Баланс' },
   { id: 'profit', label: 'Статистика' },
   { id: 'actions', label: 'Действия' },
+  { id: 'test', label: 'Тест' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -354,6 +390,7 @@ function App() {
       activeTab === 'completed' ||
       activeTab === 'lot-boost' ||
       activeTab === 'auto-delivery' ||
+      activeTab === 'auto-delivery-api' ||
       activeTab === 'auto-listing' ||
       pathParts[0] === 'lot'
     if (!needCompleted) return
@@ -562,6 +599,15 @@ function App() {
               errorLots={errorLots || errorCompletedLots}
             />
           )}
+          {activeTab === 'auto-delivery-api' && (
+            <AutoDeliveryApiTab
+              token={token}
+              lots={lots}
+              completedLots={completedLots}
+              loadingLots={loadingLots || loadingCompletedLots}
+              errorLots={errorLots || errorCompletedLots}
+            />
+          )}
           {activeTab === 'group' && (
             <GroupTab
               token={token}
@@ -587,7 +633,13 @@ function App() {
               errorLots={errorCompletedLots}
             />
           )}
-          {activeTab === 'chat' && <ChatTab token={token} moduleSupercellEnabled={moduleSupercellEnabled} />}
+          <div className="app-content-panel" hidden={activeTab !== 'chat'}>
+            <ChatTab
+              token={token}
+              moduleSupercellEnabled={moduleSupercellEnabled}
+              isPageActive={activeTab === 'chat'}
+            />
+          </div>
           {activeTab === 'partners' && <PartnersTab token={token} />}
           {activeTab === 'commands' && (
             <CommandsTab
@@ -601,9 +653,11 @@ function App() {
             <SettingsTab token={token} onTokenChange={handleTokenChange} onLogout={handleLogout} />
           )}
           {activeTab === 'ddos' && <DdosTab />}
+          {activeTab === 'chat-logging' && <ChatLoggingTab />}
           {activeTab === 'balance' && <BalanceTab token={token} />}
           {activeTab === 'profit' && <ProfitTab token={token} />}
           {activeTab === 'actions' && <ActionsTab token={token} />}
+          {activeTab === 'test' && <TestTab token={token} />}
         </section>
       </main>
     </div>

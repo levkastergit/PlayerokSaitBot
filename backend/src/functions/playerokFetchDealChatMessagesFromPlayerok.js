@@ -8,6 +8,7 @@ const {
   collectDeepScanEmailCandidates,
   getLatestPlausibleEmailFromNonViewerMessages,
   resolveEffectiveDealIdForChat,
+  scopeMessagesToDeal,
   logSupercellDebug,
   isEmailValid,
 } = require('./supercellHelpers')
@@ -197,7 +198,8 @@ function createFetchDealChatMessagesFromPlayerok({
     const referer = dealId ? `https://playerok.com/deal/${dealId}` : undefined
     const allMessages = []
     let afterCursor = null
-    const maxPages = 10
+    const maxPagesRaw = Number(opts && opts.maxPages)
+    const maxPages = Number.isFinite(maxPagesRaw) && maxPagesRaw > 0 ? Math.floor(maxPagesRaw) : 10
     let pageCount = 0
 
     do {
@@ -249,17 +251,13 @@ function createFetchDealChatMessagesFromPlayerok({
       dealIdFromRequest: dealId,
       messages: allMessages,
     })
+    let effectiveItemId = null
     if (dealIdBeforeResolve && effectiveDealId && String(dealIdBeforeResolve) !== String(effectiveDealId)) {
       logSupercellDebug('effectiveDealId:overriddenFromMessages', {
         chatId,
         dealIdFromRequest: dealIdBeforeResolve,
         effectiveDealId,
         messageCount: allMessages.length,
-      })
-      console.warn('[PLAYEROK_DEAL_EMAIL] dealId из списка чатов заменён на актуальный из сообщений', {
-        chatId,
-        dealIdFromRequest: dealIdBeforeResolve,
-        effectiveDealId,
       })
     }
     const refererDealEarly =
@@ -328,8 +326,21 @@ function createFetchDealChatMessagesFromPlayerok({
         })
 
         const item = fullDeal && fullDeal.item ? fullDeal.item : null
+        if (item && item.id != null) effectiveItemId = String(item.id).trim()
         if (fullDeal?.buyer && typeof fullDeal.buyer === 'object') {
           const bu = fullDeal.buyer.username || fullDeal.buyer.name
+          if (bu) dealBuyerUsername = String(bu).trim()
+        }
+        if (!dealBuyerUsername) {
+          const bu =
+            fullDeal?.buyerUsername ||
+            fullDeal?.buyerName ||
+            fullDeal?.contact?.username ||
+            fullDeal?.contact?.name ||
+            fullDeal?.buyer?.profile?.username ||
+            fullDeal?.buyer?.profile?.name ||
+            fullDeal?.buyer?.user?.username ||
+            fullDeal?.buyer?.user?.name
           if (bu) dealBuyerUsername = String(bu).trim()
         }
         itemTitle =
@@ -445,15 +456,19 @@ function createFetchDealChatMessagesFromPlayerok({
 
     const buyerUsernameForMsgs =
       (opts.buyerUsername && String(opts.buyerUsername).trim()) || dealBuyerUsername || null
+    const messagesForDeal = scopeMessagesToDeal(allMessages, effectiveDealId)
     logDealEmailDebug('messages:buyerUsernameForMsgs', {
       fromOpts: opts.buyerUsername || null,
       dealBuyerUsername,
       resolved: buyerUsernameForMsgs,
       viewerUsername: opts.viewerUsername || null,
+      effectiveDealId: effectiveDealId || null,
+      allMessageCount: allMessages.length,
+      scopedMessageCount: messagesForDeal.length,
     })
 
     let buyerMessageSupercellEmail = getLatestBuyerEmailFromMessages(
-      allMessages,
+      messagesForDeal,
       opts.viewerUsername || null,
       buyerUsernameForMsgs
     )
@@ -461,7 +476,7 @@ function createFetchDealChatMessagesFromPlayerok({
 
     if (!buyerMessageSupercellEmail && supercellGameForEmail) {
       buyerMessageSupercellEmail = getLatestPlausibleEmailFromNonViewerMessages(
-        allMessages,
+        messagesForDeal,
         opts.viewerUsername || null
       )
       logDealEmailDebug('step:getLatestPlausibleEmailFromNonViewerMessages', {
@@ -513,14 +528,17 @@ function createFetchDealChatMessagesFromPlayerok({
         if (fromChat) dealBuyerSupercellEmail = fromChat
         logDealEmailDebug('step:pickBuyerEmailFromDeepGraphqlScan(fullChat)', { result: fromChat })
       } catch (err) {
+        const errMsg = err && err.message ? String(err.message) : String(err)
+        const isBenignEmptyChatLookup =
+          allMessages.length === 0 &&
+          /status\s*500/i.test(errMsg) &&
+          /INTERNAL_SERVER_ERROR/i.test(errMsg)
         logDealEmailDebug('requestChatById:forEmail:FAILED', {
           chatId,
-          message: err && err.message ? String(err.message) : String(err),
+          message: errMsg,
+          ignoredAsEmptyChat: isBenignEmptyChatLookup,
         })
-        console.warn('[PLAYEROK_DEAL_EMAIL] ошибка загрузки chat для почты', {
-          chatId,
-          message: err && err.message ? String(err.message) : String(err),
-        })
+        // Не шумим в общем логе: этот фолбэк не критичен и часто падает 500 на стороне Playerok.
       }
     }
 
@@ -529,9 +547,16 @@ function createFetchDealChatMessagesFromPlayerok({
       ? String(buyerMessageSupercellEmail).trim()
       : ''
     let buyerSupercellEmail = null
-    if (isEmailValid(dealEmailTrimmed)) {
+    const dealEmailOk = isEmailValid(dealEmailTrimmed)
+    const msgEmailOk = isEmailValid(msgEmailTrimmed)
+    if (dealEmailOk && msgEmailOk) {
+      buyerSupercellEmail =
+        dealEmailTrimmed.toLowerCase() === msgEmailTrimmed.toLowerCase()
+          ? dealEmailTrimmed
+          : msgEmailTrimmed
+    } else if (dealEmailOk) {
       buyerSupercellEmail = dealEmailTrimmed
-    } else if (isEmailValid(msgEmailTrimmed)) {
+    } else if (msgEmailOk) {
       buyerSupercellEmail = msgEmailTrimmed
     } else {
       buyerSupercellEmail = dealEmailTrimmed || msgEmailTrimmed || null
@@ -577,6 +602,9 @@ function createFetchDealChatMessagesFromPlayerok({
       buyerSupercellEmail,
       dealBuyerSupercellEmail,
       buyerMessageSupercellEmail,
+      effectiveDealId: effectiveDealId || null,
+      effectiveItemId: effectiveItemId || null,
+      buyerUsername: dealBuyerUsername || null,
       itemTitle,
       itemImageUrl,
       itemCategory,

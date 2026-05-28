@@ -24,13 +24,6 @@ function createFetchCompletedItemsFromPlayerok({
       if (cached?.completed) {
         const now = Date.now()
         if (now < cached.completed.expiresAt) {
-          console.log('[cache] возврат завершённых лотов из кэша', {
-            token: token.substring(0, 10) + '...',
-            age:
-              Math.floor(
-                (now - (cached.completed.expiresAt - LOTS_CACHE_TTL_MS)) / 1000
-              ) + 's',
-          })
           return cached.completed.data
         }
       }
