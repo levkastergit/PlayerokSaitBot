@@ -22,6 +22,20 @@ function finishSupercellFlowRun(lockKey) {
   supercellFlowInFlightByKey.delete(lockKey)
 }
 
+const topupFlowInFlightByKey = new Set()
+
+function beginTopupFlowRun(tokenHash, chatId) {
+  const key = `${String(tokenHash || '')}::${String(chatId || '')}`
+  if (!tokenHash || !chatId || topupFlowInFlightByKey.has(key)) return null
+  topupFlowInFlightByKey.add(key)
+  return key
+}
+
+function finishTopupFlowRun(lockKey) {
+  if (!lockKey) return
+  topupFlowInFlightByKey.delete(lockKey)
+}
+
 async function resolveViewer({ token, userAgent, withRetry, isPlayerokRateLimitError, getViewer }) {
   try {
     return await withRetry(() => getViewer(token, userAgent), {
@@ -72,9 +86,12 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     fetchDealChatMessagesFromPlayerok,
     autolistGetSupercellFlowMap,
     processSingleSupercellFlow,
+    autolistGetTopupFlowMap,
+    processSingleTopupFlow,
     isSupercellModuleEnabled,
     handlePostPurchaseAutomessage: handlePostPurchaseAutomessageFn,
     handleDealConfirmedAutomessage: handleDealConfirmedAutomessageFn,
+    handlePurchaseWindowAutomessage: handlePurchaseWindowAutomessageFn,
     requestDealById,
     requestItemById,
     resolveEffectiveProductSettings,
@@ -117,12 +134,29 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
   const buyerUsername = pickEntryString(entryPayload, 'buyerName', 'buyerUsername')
   const categoryHint = pickEntryString(entryPayload, 'category', 'itemCategory')
 
-  const { messages, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory } =
-    await fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatId, {
-      viewerUsername: viewer?.username || null,
-      buyerUsername,
-      categoryHint,
-    })
+  // Если сообщения уже загружены на шаге синхронизации (фоновый авто-триггер),
+  // переиспользуем их и не делаем повторный запрос к Playerok.
+  const prefetched =
+    sharedPayload?.prefetched &&
+    typeof sharedPayload.prefetched === 'object' &&
+    Array.isArray(sharedPayload.prefetched.messages) &&
+    sharedPayload.prefetched.messages.length > 0
+      ? sharedPayload.prefetched
+      : null
+
+  const { messages, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory } = prefetched
+    ? {
+        messages: prefetched.messages,
+        buyerSupercellEmail: prefetched.buyerSupercellEmail ?? null,
+        itemTitle: prefetched.itemTitle ?? null,
+        itemImageUrl: prefetched.itemImageUrl ?? null,
+        itemCategory: prefetched.itemCategory ?? null,
+      }
+    : await fetchDealChatMessagesFromPlayerok(token, userAgent, dealId, chatId, {
+        viewerUsername: viewer?.username || null,
+        buyerUsername,
+        categoryHint,
+      })
 
   const effectiveChatId = chatId || entryPayload.chatId || null
   const dealItemId =
@@ -135,6 +169,7 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
   const automessageHandlers = [
     { fn: handlePostPurchaseAutomessageFn, logLabel: 'post-purchase-automessage' },
     { fn: handleDealConfirmedAutomessageFn, logLabel: 'deal-confirmed-automessage' },
+    { fn: handlePurchaseWindowAutomessageFn, logLabel: 'purchase-window-automessage' },
   ]
 
   const automationEvents = []
@@ -222,6 +257,32 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
       )
     } finally {
       finishSupercellFlowRun(lockKey)
+    }
+  }
+
+  const runTopupFlowIfActive = async () => {
+    if (messagesOnly || !chatId) return
+    if (typeof autolistGetTopupFlowMap !== 'function' || typeof processSingleTopupFlow !== 'function') return
+    const tokenHash = token
+    const flowMap = autolistGetTopupFlowMap(tokenHash)
+    const state = flowMap[String(chatId)]
+    if (!(state && state.active)) return
+    const lockKey = beginTopupFlowRun(tokenHash, chatId)
+    if (!lockKey) return
+    const nowTs = Math.floor(Date.now() / 1000)
+    try {
+      await processSingleTopupFlow(chatId, token, userAgent, viewer?.username || null, nowTs)
+    } catch (err) {
+      automationEvents.push(
+        buildAutomessageEvent({
+          logLabel: 'topup-flow',
+          chatId,
+          dealId,
+          result: { sent: false, reason: 'topup_flow_error', error: err?.message || String(err) },
+        })
+      )
+    } finally {
+      finishTopupFlowRun(lockKey)
     }
   }
 
@@ -313,6 +374,7 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
           autolistMarkProcessed,
           autolistClearProcessed,
           autolistGetSupercellFlowMap,
+          autolistGetTopupFlowMap,
           extractSupercellEmailFromFields,
           getSupercellGameByCategory,
           pickSupercellCategoryFromItemHints,
@@ -332,6 +394,8 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
 
   // Flow может активироваться внутри handlePaidChat; повторно проверяем в этом же цикле.
   await runSupercellFlowIfActive('after_paid_chat')
+
+  await runTopupFlowIfActive()
 
   return {
     chatId: effectiveChatId ? String(effectiveChatId) : chatId ? String(chatId) : null,
@@ -359,7 +423,13 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
   }
 
   try {
-    const viewer = await resolveViewer({ token, userAgent, withRetry, isPlayerokRateLimitError, getViewer })
+    const prefetched =
+      payload.prefetched && typeof payload.prefetched === 'object' ? payload.prefetched : null
+    // Если в синхронизации уже определён viewer — не дёргаем getViewer повторно.
+    const viewer =
+      prefetched && prefetched.viewerUsername
+        ? { username: String(prefetched.viewerUsername) }
+        : await resolveViewer({ token, userAgent, withRetry, isPlayerokRateLimitError, getViewer })
     const result = await processDealChatMessagesEntry({
       entryPayload: payload,
       currentUserId,
@@ -369,6 +439,7 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
         token,
         userAgent,
         messagesOnly: payload.messagesOnly === true,
+        prefetched,
       },
     })
 

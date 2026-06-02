@@ -50,6 +50,7 @@ function createRequestItemById({ ITEM_PERSISTED_HASH }) {
 
       const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
         let data = ''
+        resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })

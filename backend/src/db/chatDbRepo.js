@@ -29,13 +29,35 @@ function setupChatDbRepo(db) {
     WHERE user_id = ?
   `)
 
+  const listThreadsWithoutHistoryOldest = db.prepare(`
+    SELECT t.*
+    FROM chat_threads t
+    WHERE t.user_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM chat_messages m
+        WHERE m.user_id = t.user_id AND m.chat_id = t.chat_id
+      )
+    ORDER BY t.last_message_created_at ASC, t.id ASC
+    LIMIT ?
+  `)
+
+  const countThreadsWithoutHistory = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM chat_threads t
+    WHERE t.user_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM chat_messages m
+        WHERE m.user_id = t.user_id AND m.chat_id = t.chat_id
+      )
+  `)
+
   const upsertThread = db.prepare(`
     INSERT INTO chat_threads (
       user_id, chat_id, buyer_name, item_title, item_image_url, category, status,
       last_message_id, last_message_text, last_message_created_at, last_deal_id, last_item_id,
-      unread_count, updated_at, synced_at
+      unread_count, last_message_sender_username, last_message_from_buyer, updated_at, synced_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, chat_id) DO UPDATE SET
       buyer_name = excluded.buyer_name,
       item_title = excluded.item_title,
@@ -48,6 +70,8 @@ function setupChatDbRepo(db) {
       last_deal_id = excluded.last_deal_id,
       last_item_id = excluded.last_item_id,
       unread_count = excluded.unread_count,
+      last_message_sender_username = excluded.last_message_sender_username,
+      last_message_from_buyer = excluded.last_message_from_buyer,
       updated_at = excluded.updated_at,
       synced_at = excluded.synced_at
   `)
@@ -83,6 +107,31 @@ function setupChatDbRepo(db) {
     ORDER BY created_ts DESC, id DESC
     LIMIT 1
   `)
+  const countMessagesByChatId = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM chat_messages
+    WHERE user_id = ? AND chat_id = ?
+  `)
+
+  // Кол-во НЕпрочитанных сообщений от покупателя: пришедшие после метки прочтения
+  // (created_ts > last_read_ts), не от нас (sender != viewer) и не системные ({{...}}).
+  const countUnreadBuyerMessages = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM chat_messages
+    WHERE user_id = ? AND chat_id = ? AND created_ts > ?
+      AND sender_username IS NOT NULL
+      AND lower(sender_username) <> lower(?)
+      AND (text IS NULL OR text NOT LIKE '{{%')
+  `)
+
+  // Отметить чат прочитанным «на нашем сайте»: метка прочтения = последнее сообщение/текущий момент.
+  const markThreadReadStmt = db.prepare(`
+    UPDATE chat_threads
+    SET last_read_message_id = last_message_id,
+        last_read_ts = ?,
+        unread_count = 0
+    WHERE user_id = ? AND chat_id = ?
+  `)
   const deleteMessageById = db.prepare(`
     DELETE FROM chat_messages
     WHERE user_id = ? AND chat_id = ? AND message_id = ?
@@ -114,12 +163,55 @@ function setupChatDbRepo(db) {
     WHERE user_id = ? AND chat_id = ?
     ORDER BY last_seen_at DESC, id DESC
   `)
+  // Состояние «проблемы» по сделке: время последнего открытия проблемы и последнего её закрытия.
+  // Проблему закрывает не только {{DEAL_PROBLEM_RESOLVED}}, но и терминальные статусы сделки:
+  // отмена/возврат ({{DEAL_ROLLED_BACK}}) и подтверждение ({{DEAL_CONFIRMED*}}).
+  const getDealProblemState = db.prepare(`
+    SELECT
+      MAX(CASE WHEN text = '{{DEAL_HAS_PROBLEM}}' THEN created_ts END) AS last_problem_ts,
+      MAX(CASE WHEN text IN (
+        '{{DEAL_PROBLEM_RESOLVED}}',
+        '{{DEAL_ROLLED_BACK}}',
+        '{{DEAL_CONFIRMED}}',
+        '{{DEAL_CONFIRMED_AUTOMATICALLY}}'
+      ) THEN created_ts END) AS last_resolved_ts
+    FROM chat_messages
+    WHERE user_id = ? AND chat_id = ?
+  `)
   const getDealById = db.prepare(`
     SELECT *
     FROM chat_deals
     WHERE user_id = ? AND deal_id = ?
     LIMIT 1
   `)
+
+  const updateDealTestimonial = db.prepare(`
+    UPDATE chat_deals
+    SET testimonial_status = ?,
+        testimonial_rating = ?,
+        testimonial_left = ?,
+        testimonial_checked_at = ?,
+        testimonial_created_at = ?,
+        updated_at = ?
+    WHERE user_id = ? AND deal_id = ?
+  `)
+
+  function setDealTestimonial(userId, dealId, { status = null, rating = null, left = null, checkedAt = Date.now(), createdAt = null } = {}) {
+    const uid = Number(userId)
+    const id = dealId != null ? String(dealId).trim() : ''
+    if (!Number.isFinite(uid) || uid <= 0 || !id) return
+    const now = Date.now()
+    updateDealTestimonial.run(
+      status != null ? String(status) : null,
+      rating != null && Number.isFinite(Number(rating)) ? Math.trunc(Number(rating)) : null,
+      left == null ? null : left ? 1 : 0,
+      Number(checkedAt || now),
+      createdAt != null ? String(createdAt) : null,
+      now,
+      uid,
+      id
+    )
+  }
 
   const getSyncState = db.prepare(`
     SELECT *
@@ -131,9 +223,10 @@ function setupChatDbRepo(db) {
     INSERT INTO chat_sync_state (
       user_id, poll_cursor, last_poll_at, last_success_at, scan_in_progress,
       scan_progress_total, scan_progress_done, full_scan_completed_at, full_scan_requested_at,
-      last_error, scan_current_chat_id, scan_current_label, scan_step, updated_at
+      last_error, scan_current_chat_id, scan_current_label, scan_step,
+      scan_phase, scan_paused, list_cursor, list_scan_completed_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       poll_cursor = excluded.poll_cursor,
       last_poll_at = excluded.last_poll_at,
@@ -147,6 +240,10 @@ function setupChatDbRepo(db) {
       scan_current_chat_id = excluded.scan_current_chat_id,
       scan_current_label = excluded.scan_current_label,
       scan_step = excluded.scan_step,
+      scan_phase = excluded.scan_phase,
+      scan_paused = excluded.scan_paused,
+      list_cursor = excluded.list_cursor,
+      list_scan_completed_at = excluded.list_scan_completed_at,
       updated_at = excluded.updated_at
   `)
 
@@ -172,6 +269,12 @@ function setupChatDbRepo(db) {
       fields.scanCurrentChatId !== undefined ? fields.scanCurrentChatId : prev.scan_current_chat_id ?? null,
       fields.scanCurrentLabel !== undefined ? fields.scanCurrentLabel : prev.scan_current_label ?? null,
       fields.scanStep !== undefined ? fields.scanStep : prev.scan_step ?? null,
+      fields.scanPhase !== undefined ? fields.scanPhase : prev.scan_phase ?? null,
+      fields.scanPaused !== undefined ? (fields.scanPaused ? 1 : 0) : Number(prev.scan_paused || 0),
+      fields.listCursor !== undefined ? fields.listCursor : prev.list_cursor ?? null,
+      fields.listScanCompletedAt !== undefined
+        ? fields.listScanCompletedAt
+        : Number(prev.list_scan_completed_at || 0),
       now
     )
   }
@@ -243,6 +346,33 @@ function setupChatDbRepo(db) {
       ? null
       : pickNonemptyString(chat?.buyerName, prev?.buyer_name)
 
+    // Кто отправил последнее сообщение. Привязано к last_message_id: если
+    // входящая синхронизация не знает отправителя, но id того же сообщения —
+    // сохраняем прошлое значение, иначе сбрасываем в неизвестно (NULL).
+    const incomingSender =
+      chat?.lastMessageSenderUsername != null
+        ? String(chat.lastMessageSenderUsername).trim() || null
+        : null
+    const incomingFromBuyer =
+      typeof chat?.lastMessageFromBuyer === 'boolean' ? chat.lastMessageFromBuyer : null
+    const incomingHasSenderInfo = incomingSender != null || incomingFromBuyer != null
+    const sameMessageAsPrev =
+      prev?.last_message_id != null && lastMessageId === String(prev.last_message_id)
+
+    let senderUsernameValue
+    let fromBuyerValue
+    if (incomingHasSenderInfo) {
+      senderUsernameValue = incomingSender
+      fromBuyerValue = incomingFromBuyer == null ? null : incomingFromBuyer ? 1 : 0
+    } else if (sameMessageAsPrev) {
+      senderUsernameValue = prev?.last_message_sender_username || null
+      fromBuyerValue =
+        prev?.last_message_from_buyer == null ? null : Number(prev.last_message_from_buyer)
+    } else {
+      senderUsernameValue = null
+      fromBuyerValue = null
+    }
+
     upsertThread.run(
       uid,
       chatId,
@@ -257,6 +387,8 @@ function setupChatDbRepo(db) {
       pickNonemptyString(chat?.dealId, prev?.last_deal_id),
       pickNonemptyString(chat?.itemId, prev?.last_item_id),
       unreadCount,
+      senderUsernameValue,
+      fromBuyerValue,
       now,
       Number(syncedAt || now)
     )
@@ -294,15 +426,30 @@ function setupChatDbRepo(db) {
     clearViewerAsDealBuyer.run(Number(updatedAt || Date.now()), uid, viewer)
   }
 
+  function markThreadRead(userId, chatId, { readTs = Math.floor(Date.now() / 1000) } = {}) {
+    const uid = Number(userId)
+    const cid = String(chatId || '').trim()
+    if (!Number.isFinite(uid) || uid <= 0 || !cid) return false
+    const res = markThreadReadStmt.run(Math.floor(Number(readTs) || Date.now() / 1000), uid, cid)
+    return Number(res?.changes || 0) > 0
+  }
+
   return {
     getThreadByChatId,
     listThreads,
     countThreads,
+    listThreadsWithoutHistoryOldest,
+    countThreadsWithoutHistory,
     listMessages,
     getLatestMessageByChatId,
+    countMessagesByChatId,
+    countUnreadBuyerMessages,
+    markThreadRead,
     deleteMessageById,
     listDealsByChatId,
+    getDealProblemState,
     getDealById,
+    setDealTestimonial,
     getSyncState,
     upsertSyncState,
     writeSyncState,

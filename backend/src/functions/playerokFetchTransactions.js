@@ -61,6 +61,7 @@ function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
         },
         (resp) => {
           let data = ''
+          resp.setEncoding('utf8')
           resp.on('data', (chunk) => { data += chunk })
           resp.on('end', () => {
             if (resp.statusCode !== 200) {

@@ -65,6 +65,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
         }
         const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
           let data = ''
+          resp.setEncoding('utf8')
           resp.on('data', (chunk) => {
             data += chunk
           })
@@ -109,6 +110,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
         }
         const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
           let data = ''
+          resp.setEncoding('utf8')
           resp.on('data', (chunk) => {
             data += chunk
           })

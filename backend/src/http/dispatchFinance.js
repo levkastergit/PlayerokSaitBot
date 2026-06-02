@@ -165,6 +165,7 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
         getListingFees: deps.getListingFees,
         computeProfitAnalyticsList: deps.computeProfitAnalyticsList,
         parseIntSafe: deps.parseIntSafe,
+        usdRateService: deps.usdRateService,
       },
     })
     sendJson(res, result.statusCode, result.data)

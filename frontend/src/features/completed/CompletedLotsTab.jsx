@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   autolistTick,
   getProductKey,
   getGroupSettingsKey,
   loadProductSettingsList,
+  relistItem,
 } from '../../services/playerokApi'
 
 const AUTOLOG = '[Playerok autolist]'
@@ -18,6 +19,35 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
   const clickTimeoutRef = useRef(null)
 
   const hasToken = Boolean(token)
+
+  // Состояние ручного выставления: map lotId → 'loading' | 'ok' | 'error:<msg>'
+  const [relistState, setRelistState] = useState({})
+
+  const handleRelist = useCallback(
+    async (e, lot) => {
+      e.stopPropagation()
+      const id = lot.id
+      if (!id || !token) return
+      setRelistState((prev) => ({ ...prev, [id]: 'loading' }))
+      try {
+        await relistItem(token, { itemId: id })
+        setRelistState((prev) => ({ ...prev, [id]: 'ok' }))
+        // Сбросить «ok» через 4 с
+        setTimeout(() => setRelistState((prev) => {
+          if (prev[id] === 'ok') { const n = { ...prev }; delete n[id]; return n }
+          return prev
+        }), 4000)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setRelistState((prev) => ({ ...prev, [id]: `error:${msg}` }))
+        setTimeout(() => setRelistState((prev) => {
+          if (String(prev[id] || '').startsWith('error:')) { const n = { ...prev }; delete n[id]; return n }
+          return prev
+        }), 6000)
+      }
+    },
+    [token]
+  )
 
   const categories = useMemo(() => {
     const names = new Set()
@@ -359,6 +389,37 @@ export function CompletedLotsTab({ token, lots = [], loadingLots = false, errorL
                           {[lot.game, lot.tags].filter(Boolean).join(' · ')}
                         </p>
                       )}
+                      {(() => {
+                        const rs = relistState[lot.id]
+                        const isLoading = rs === 'loading'
+                        const isOk = rs === 'ok'
+                        const isError = typeof rs === 'string' && rs.startsWith('error:')
+                        const errMsg = isError ? rs.slice(6) : ''
+                        return (
+                          <div
+                            className="lot-card__relist-wrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className={
+                                'lot-card__relist-btn' +
+                                (isOk ? ' lot-card__relist-btn--ok' : '') +
+                                (isError ? ' lot-card__relist-btn--error' : '')
+                              }
+                              disabled={isLoading || !token}
+                              onClick={(e) => handleRelist(e, lot)}
+                            >
+                              {isLoading ? 'Выставляю…' : isOk ? '✓ Выставлено' : isError ? '✗ Ошибка' : 'Выставить'}
+                            </button>
+                            {isError && (
+                              <span className="lot-card__relist-error" title={errMsg}>
+                                {errMsg.length > 50 ? errMsg.slice(0, 50) + '…' : errMsg}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </div>
                   </article>
                 ))}

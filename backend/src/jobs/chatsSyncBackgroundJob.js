@@ -14,6 +14,8 @@ function setupChatsSyncBackgroundJob({
 
   chatDbRepo = null,
 
+  isAllActionsStopped = () => false,
+
   intervalMs = 500,
 
 }) {
@@ -51,6 +53,8 @@ function setupChatsSyncBackgroundJob({
 
 
   setInterval(async () => {
+
+    if (isAllActionsStopped()) return
 
     const rows = getAllStoredTokens.all()
 

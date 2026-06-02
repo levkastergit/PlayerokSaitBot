@@ -3,6 +3,7 @@ function setupChatsWarmupBackgroundJob({
   getAllStoredTokens,
   loadStoredTokenPlain,
   getUserAgent,
+  isAllActionsStopped = () => false,
   intervalMs = 60000,
   pageLimit = 24,
   maxPagesPerUser = 6,
@@ -11,6 +12,7 @@ function setupChatsWarmupBackgroundJob({
   let inFlight = false
 
   setInterval(async () => {
+    if (isAllActionsStopped()) return
     if (inFlight) return
     try {
       inFlight = true

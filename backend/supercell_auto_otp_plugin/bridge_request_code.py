@@ -54,6 +54,7 @@ BIN_STATE_FILE = os.path.join(CACHE_FOLDER, "last_bin.json")
 
 recaptcha_url = "https://www.recaptcha.net/recaptcha/api3/mrr"
 sc_api_url = "https://id.supercell.com/api/account/v2/pinAuthentication.start"
+LAST_RECAPTCHA_ERROR = None
 
 PHONE_MODELS = [
     "iPhone14,5",
@@ -176,8 +177,11 @@ def generate_sig(data, method, useragent, did, game):
 
 
 def get_recaptcha(game):
+    global LAST_RECAPTCHA_ERROR
+    LAST_RECAPTCHA_ERROR = None
     data = get_next_bin(game)
     if not data:
+        LAST_RECAPTCHA_ERROR = "Нет данных в cache/*.pkl"
         return None
     headers = {
         "User-Agent": UserAgent().random,
@@ -187,11 +191,15 @@ def get_recaptcha(game):
         "Content-Type": "application/x-protobuffer",
     }
     try:
-        r = httpx.post(recaptcha_url, headers=headers, data=data, timeout=20)
+        r = httpx.post(recaptcha_url, headers=headers, data=data, timeout=20, trust_env=False)
         content = str(r.content)
         start = content.find("0cAFcW")
-        return content[start:].split("\\x")[0] if start != -1 else None
-    except Exception:
+        if start == -1:
+            LAST_RECAPTCHA_ERROR = "reCAPTCHA token не найден в ответе сервера"
+            return None
+        return content[start:].split("\\x")[0]
+    except Exception as e:
+        LAST_RECAPTCHA_ERROR = str(e) or "Ошибка HTTP-запроса к reCAPTCHA"
         return None
 
 
@@ -210,7 +218,8 @@ def send_request(email, game):
     did = secrets.token_hex(8)
     recaptcha = get_recaptcha(game)
     if not recaptcha:
-        return None, did, None, "Не удалось получить reCAPTCHA (проверьте cache/*.pkl)"
+        reason = LAST_RECAPTCHA_ERROR or "Неизвестная причина"
+        return None, did, None, f"Не удалось получить reCAPTCHA: {reason}"
 
     ua, model, os_version = _build_ua(game)
     ua_info = {"ua": ua, "model": model, "os_version": os_version}
@@ -239,7 +248,7 @@ def send_request(email, game):
         ),
     }
     try:
-        r = httpx.post(sc_api_url, headers=headers, data=encoded_data, timeout=20)
+        r = httpx.post(sc_api_url, headers=headers, data=encoded_data, timeout=20, trust_env=False)
         try:
             resp_json = r.json()
             state_token = (resp_json.get("data") or {}).get("state")

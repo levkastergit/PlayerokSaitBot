@@ -63,6 +63,7 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
 
       const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
         let data = ''
+        resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })

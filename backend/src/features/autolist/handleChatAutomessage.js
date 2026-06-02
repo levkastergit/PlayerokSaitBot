@@ -5,14 +5,46 @@ const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
 const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
+  buildPurchaseWindowAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   autolistMarkProcessed,
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
+const ITEM_PAID_MARKER = '{{ITEM_PAID}}'
 const ITEM_SENT_MARKER = '{{ITEM_SENT}}'
 const DEAL_CONFIRMED_MARKERS = ['{{DEAL_CONFIRMED}}', '{{DEAL_CONFIRMED_AUTOMATICALLY}}']
+
+// Окно времени автосообщения по покупке считаем в МСК (Europe/Moscow, UTC+3),
+// как и расписание автоподнятия — независимо от часового пояса сервера.
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000
+
+/** "HH:MM" -> минуты от начала суток, либо null если формат неверный. */
+function parseHmToMinutes(value) {
+  const s = String(value == null ? '' : value).trim()
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s)
+  if (!m) return null
+  const h = parseInt(m[1], 10)
+  const min = parseInt(m[2], 10)
+  if (!(h >= 0 && h <= 23) || !(min >= 0 && min <= 59)) return null
+  return h * 60 + min
+}
+
+/**
+ * Покупка (момент маркера {{ITEM_PAID}}) попала в окно [start, end) по МСК?
+ * Поддерживает окна через полночь (start > end). Пустое окно (start === end) — нет.
+ */
+function isWithinPurchaseWindow(cfg, triggerTs) {
+  const ts = Number(triggerTs)
+  if (!Number.isFinite(ts) || ts <= 0) return false
+  const start = parseHmToMinutes(cfg?.start)
+  const end = parseHmToMinutes(cfg?.end)
+  if (start == null || end == null || start === end) return false
+  const msk = new Date(ts * 1000 + MSK_OFFSET_MS)
+  const mins = msk.getUTCHours() * 60 + msk.getUTCMinutes()
+  return start < end ? mins >= start && mins < end : mins >= start || mins < end
+}
 
 function messageDealIdForMarkerMatch(m) {
   if (m?.dealId != null) return String(m.dealId).trim()
@@ -89,6 +121,7 @@ async function runChatAutomessage({
   normalizeKeyPart,
   buildProductKey,
   toUnixTs = defaultToUnixTs,
+  shouldSendForConfig = null,
 }) {
   if (!token || !chatId) return { sent: false, reason: 'missing_chat' }
 
@@ -201,6 +234,21 @@ async function runChatAutomessage({
       return { sent: false, reason: 'empty_message' }
     }
 
+    // Доп. условие отправки (например, окно времени покупки). Если оно не выполнено —
+    // считаем задание выполненным (помечаем processed) и сообщение не отправляем.
+    if (typeof shouldSendForConfig === 'function') {
+      let pass = false
+      try {
+        pass = shouldSendForConfig(cfg, { triggerTs, nowTs: effectiveNowTs })
+      } catch (_) {
+        pass = false
+      }
+      if (!pass) {
+        finishSuccess = true
+        return { sent: false, reason: 'condition_not_met' }
+      }
+    }
+
     if (hasSellerMessageText(messages, text, viewerUsername)) {
       finishSuccess = true
       return { sent: false, reason: 'already_in_chat' }
@@ -249,13 +297,28 @@ async function handleDealConfirmedAutomessage(params) {
   })
 }
 
+async function handlePurchaseWindowAutomessage(params) {
+  return runChatAutomessage({
+    ...params,
+    kind: 'purchase_window',
+    settingsField: 'purchaseWindowAutomessage',
+    systemMarkers: [ITEM_PAID_MARKER],
+    buildEventKey: buildPurchaseWindowAutomessageEventKey,
+    logLabel: 'purchase-window-automessage',
+    shouldSendForConfig: (cfg, { triggerTs }) => isWithinPurchaseWindow(cfg, triggerTs),
+  })
+}
+
 module.exports = {
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
+  handlePurchaseWindowAutomessage,
   hasSellerMessageText,
   hasSystemMarkerForDeal,
   getSystemMarkerTriggerUnixTs,
   lastMessageHasAnyMarker,
+  isWithinPurchaseWindow,
+  ITEM_PAID_MARKER,
   ITEM_SENT_MARKER,
   DEAL_CONFIRMED_MARKERS,
 }

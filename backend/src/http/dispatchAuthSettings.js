@@ -28,6 +28,20 @@ const { handleGetApprouteSettings } = require('../features/approute/handleGetApp
 const { handleSetApprouteSettings } = require('../features/approute/handleSetApprouteSettings')
 const { handleGetApprouteServices } = require('../features/approute/handleGetApprouteServices')
 const { handleGetApprouteServiceVariants } = require('../features/approute/handleGetApprouteServiceVariants')
+const { handleDockerBuildPush, getDockerBuildPushStatus } = require('../features/docker/handleDockerBuildPush')
+const { handleDockerPullDeploy } = require('../features/docker/handleDockerPullDeploy')
+const { isAllActionsStopped, stopAllActions, resumeAllActions } = require('../infra/runtimeControl')
+
+function isLocalHostName(value) {
+  const lower = String(value || '').toLowerCase()
+  return lower.includes('localhost') || lower.includes('127.0.0.1') || lower.includes('::1')
+}
+
+function isLocalUiRequest(req) {
+  const origin = String(req?.headers?.origin || '')
+  const host = String(req?.headers?.host || '')
+  return isLocalHostName(origin) || isLocalHostName(host)
+}
 
 async function dispatchPublicAuth({ req, res, pathname, deps }) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -265,6 +279,59 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
 
   if (req.method === 'GET' && pathname === '/api/approute/services') {
     const result = await handleGetApprouteServices({ currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/runtime/actions-state') {
+    sendJson(res, 200, { ok: true, stopped: isAllActionsStopped() })
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/runtime/actions/stop') {
+    stopAllActions()
+    sendJson(res, 200, { ok: true, stopped: true })
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/runtime/actions/resume') {
+    resumeAllActions()
+    sendJson(res, 200, { ok: true, stopped: false })
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/docker/build-push/status') {
+    if (!isLocalUiRequest(req)) {
+      sendJson(res, 403, { ok: false, error: 'Доступно только с localhost' })
+      return true
+    }
+    sendJson(res, 200, getDockerBuildPushStatus())
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/docker/build-push') {
+    if (!isLocalUiRequest(req)) {
+      sendJson(res, 403, { ok: false, error: 'Доступно только с localhost' })
+      return true
+    }
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handleDockerBuildPush({ payload })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/docker/pull-deploy') {
+    if (isLocalUiRequest(req)) {
+      sendJson(res, 403, { ok: false, error: 'Доступно только на проде' })
+      return true
+    }
+    const result = await handleDockerPullDeploy()
     sendJson(res, result.statusCode, result.data)
     return true
   }

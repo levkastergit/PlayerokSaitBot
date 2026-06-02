@@ -3,12 +3,14 @@ function setupAutolistBackgroundJob({
   getAllStoredTokens,
   loadStoredTokenPlain,
   getUserAgent,
+  isAllActionsStopped = () => false,
   intervalMs = 15000,
 }) {
   // Важно: не допускаем наложения вызовов, иначе легко ловим rate limit Playerok.
   let autolistInFlight = false
 
   setInterval(async () => {
+    if (isAllActionsStopped()) return
     if (autolistInFlight) return
     try {
       autolistInFlight = true

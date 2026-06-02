@@ -6,6 +6,7 @@ import {
   fetchChatDbList,
   fetchChatDbMessages,
   fetchChatDbMessagesBatch,
+  markChatDbRead,
   sendChatDbMessage,
   hideChat,
   unhideChat,
@@ -14,13 +15,86 @@ import {
   cancelDeal,
   confirmDeal,
   rescanApprouteChat,
+  recheckChatDbChat,
   loadProductSettingsList,
   getProductKey,
   getGroupSettingsKey,
   startChatDbFullScan,
   fetchChatDbFullScanStatus,
-  resetChatDbFullScan,
+  pauseChatDbScan,
+  stopChatDbScan,
 } from '../../services/playerokApi'
+
+function renderReviewBadge(review, { variant = 'list' } = {}) {
+  const reviewObj = review && typeof review === 'object' ? review : null
+  const left = reviewObj?.left === true
+  const ratingNum = Number(reviewObj?.rating)
+  const hasRating = Number.isFinite(ratingNum) && ratingNum > 0
+  const cls = 'chat-review-badge chat-review-badge--' + variant + (left ? ' chat-review-badge--left' : ' chat-review-badge--none')
+  if (!left) {
+    return (
+      <span className={cls} title="Покупатель не оставил отзыв">
+        Без отзыва
+      </span>
+    )
+  }
+  return (
+    <span className={cls} title={hasRating ? `Отзыв: ${ratingNum} из 5` : 'Отзыв оставлен'}>
+      <span aria-hidden="true">★</span>
+      {hasRating ? ` ${ratingNum}` : ' Отзыв'}
+    </span>
+  )
+}
+
+/** Денежная сумма в рублях для блока финансов по сделке. */
+function formatRub(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return `${n.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽`
+}
+
+/** Карточка финансов по сделке (цена/себестоимость/поднятия/прибыль). */
+function renderDealFinCard(deal, { showTitle = false } = {}) {
+  const f = deal && deal.financials
+  if (!f) return null
+  const profitPositive = Number(f.profit) >= 0
+  return (
+    <div className="chat-deal-fin">
+      {showTitle && (
+        <div className="chat-deal-fin__title">
+          {deal.itemTitle ||
+            deal.itemCategory ||
+            `Сделка #${String(deal.dealId || '').slice(0, 8)}`}
+        </div>
+      )}
+      <div className="chat-deal-fin__rows">
+        <span className="chat-deal-fin__cell">
+          <span className="chat-deal-fin__label">Стоимость</span>
+          <span className="chat-deal-fin__value">{formatRub(f.salePrice)}</span>
+        </span>
+        <span className="chat-deal-fin__cell">
+          <span className="chat-deal-fin__label">Себестоимость</span>
+          <span className="chat-deal-fin__value">{formatRub(f.cost)}</span>
+        </span>
+        <span className="chat-deal-fin__cell">
+          <span className="chat-deal-fin__label">Поднятия</span>
+          <span className="chat-deal-fin__value">{formatRub(f.bumpCost)}</span>
+        </span>
+        <span className="chat-deal-fin__cell">
+          <span className="chat-deal-fin__label">Прибыль</span>
+          <span
+            className={
+              'chat-deal-fin__value ' +
+              (profitPositive ? 'chat-deal-fin__value--pos' : 'chat-deal-fin__value--neg')
+            }
+          >
+            {formatRub(f.profit)}
+          </span>
+        </span>
+      </div>
+    </div>
+  )
+}
 
 export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = true }) {
   const summarizeChatForLog = useCallback((chat) => ({
@@ -43,14 +117,24 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const [selectedChatId, setSelectedChatId] = useState(null)
   const [chatStateById, setChatStateById] = useState({})
   const [draftByChatId, setDraftByChatId] = useState({})
-  const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed'
+  const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment'
   const [categoryCommands, setCategoryCommands] = useState([]) // [{ category, commands }]
   const [loadingCommands, setLoadingCommands] = useState(false)
   const [requestCodeModal, setRequestCodeModal] = useState({ open: false, chatId: null })
   const [requestCodeState, setRequestCodeState] = useState({ loading: false, error: null })
   const [dealActionModal, setDealActionModal] = useState({ open: false, kind: null, chatId: null })
-  const [dealActionState, setDealActionState] = useState({ loading: false, error: null })
+  const [dealActionState, setDealActionState] = useState({
+    loading: false,
+    error: null,
+    candidates: [],
+    selectedDealId: null,
+  })
   const [approuteRescanState, setApprouteRescanState] = useState({
+    loading: false,
+    error: null,
+    notice: null,
+  })
+  const [recheckState, setRecheckState] = useState({
     loading: false,
     error: null,
     notice: null,
@@ -64,6 +148,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     return window.matchMedia('(max-width: 900px)').matches
   })
   const [mobileChatView, setMobileChatView] = useState('list')
+  // На мобильном детали карточки товара (финансы/почта) свёрнуты по умолчанию,
+  // чтобы лента сообщений была крупнее и читаемее.
+  const [mobileCardExpanded, setMobileCardExpanded] = useState(false)
   const CHAT_EMAIL_OVERRIDE_STORAGE_KEY = 'playerok-chat-supercell-email-overrides'
   const [manualEmailByChatId, setManualEmailByChatId] = useState(() => {
     try {
@@ -89,6 +176,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const initialLoadDoneRef = useRef(false)
   const visibleChatsRef = useRef([])
   const chatsRef = useRef([])
+  // Последний message_id, по которому мы уже отметили чат прочитанным на бэкенде.
+  const lastMarkedReadByChatRef = useRef({})
 
   const hasToken = Boolean(token)
   const normalizeBuyerName = (value) => String(value || '').trim()
@@ -167,6 +256,14 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const fullScanCurrentLabel = String(fullScanState.status?.scan_current_label || '').trim()
   const fullScanCurrentStep = String(fullScanState.status?.scan_step || '').trim()
   const fullScanLastError = String(fullScanState.status?.last_error || '').trim()
+  const fullScanPhase = String(fullScanState.status?.scan_phase || '').trim()
+  const fullScanPaused = Number(fullScanState.status?.scan_paused || 0) === 1
+  const fullScanPhaseLabel =
+    fullScanPhase === 'list'
+      ? 'Сбор списка чатов'
+      : fullScanPhase === 'history'
+        ? 'Добор истории сообщений'
+        : ''
 
   useEffect(() => {
     if (!fullScanInProgress) return
@@ -200,9 +297,22 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     [settingsByKey]
   )
 
-  const OUR_USERNAME = 'Levkaster'
-  const OUR_USERNAME_LOWER = OUR_USERNAME.toLowerCase()
-  const isOwnUsername = (value) => String(value || '').trim().toLowerCase() === OUR_USERNAME_LOWER
+  const DEFAULT_OUR_USERNAME = 'Levkaster'
+  // Ник владельца токена приходит с бэкенда (getViewer); 'Levkaster' — запасной вариант.
+  const [, setViewerUsername] = useState(null)
+  const viewerUsernameRef = useRef(null)
+  const getOurUsername = () => viewerUsernameRef.current || DEFAULT_OUR_USERNAME
+  const noteViewerUsername = useCallback((value) => {
+    const next = String(value || '').trim()
+    if (!next || viewerUsernameRef.current === next) return
+    viewerUsernameRef.current = next
+    setViewerUsername(next)
+  }, [])
+  const isOwnUsername = (value) => {
+    const v = String(value || '').trim().toLowerCase()
+    if (!v) return false
+    return v === getOurUsername().toLowerCase()
+  }
   const SUPERCELL_EMAIL_GAMES = [
     'brawl stars',
     'clash royale',
@@ -537,11 +647,22 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     return String(chat.status || '').toUpperCase()
   }
 
+  // Статус только из стабильных полей строки списка (без загруженных сообщений),
+  // чтобы членство в фильтрах не «прыгало», пока чаты подгружаются.
+  const getStableChatStatus = (chat) => {
+    if (!chat) return ''
+    const lastMarker = String(chat.lastMessageText || '').trim()
+    if (SYSTEM_STATUS_BY_MARKER[lastMarker]) {
+      return SYSTEM_STATUS_BY_MARKER[lastMarker]
+    }
+    return String(chat.status || '').toUpperCase()
+  }
+
   const extractBuyerNameFromMessages = (messages) => {
     if (!Array.isArray(messages) || messages.length === 0) return null
     for (const msg of messages) {
       const msgUser = msg.user
-      if (msgUser && msgUser.username && msgUser.username !== OUR_USERNAME) {
+      if (msgUser && msgUser.username && !isOwnUsername(msgUser.username)) {
         return msgUser.username
       }
     }
@@ -595,7 +716,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       user: {
         username: fromBuyer
           ? String(chat.buyerName || '').trim() || null
-          : OUR_USERNAME,
+          : getOurUsername(),
       },
       _fromListPreview: true,
     })
@@ -621,7 +742,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     itemImageUrl,
     buyerSupercellEmail,
     itemCategory = null,
-    dealSummaries = null
+    dealSummaries = null,
+    review = null
   ) => {
     const chatId = chat.id
     const prevMessagesSnapshot = Array.isArray(chatStateByIdRef.current[chatId]?.messages)
@@ -816,9 +938,15 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           itemImageUrl: prevState.itemImageUrl || chat.itemImageUrl || itemImageUrl || null,
           deals: Array.isArray(dealSummaries) ? dealSummaries : prevState.deals || [],
           buyerSupercellEmail: buyerSupercellEmail ?? prevState.buyerSupercellEmail ?? null,
+          review: review != null ? review : (prevState.review != null ? prevState.review : null),
         },
       }
     })
+    if (review != null) {
+      setChats((prev) =>
+        prev.map((c) => (c.id === chatId ? { ...c, review } : c))
+      )
+    }
     logChatLogging('applyLoadedChatData', {
       chat: summarizeChatForLog(chat),
       messagesCount: Array.isArray(list) ? list.length : 0,
@@ -861,11 +989,12 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         }))
       }
       try {
-        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals } =
+        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
           await fetchChatDbMessages(token, {
             dealId: chat.dealId || null,
             chatId,
           })
+        noteViewerUsername(viewerUsername)
         applyLoadedChatData(
           chat,
           list,
@@ -873,7 +1002,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           itemImageUrl,
           buyerSupercellEmail || null,
           itemCategory,
-          deals
+          deals,
+          review || null
         )
       } catch (_err) {
         if (isSelected && !silent && !hasCachedMessages) {
@@ -960,6 +1090,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         ...incomingChat,
         buyerName: isGenericBuyerName(incomingBuyer) ? null : incomingBuyer,
         lastMessageFromBuyer: incomingLastMessageFromBuyer,
+        review: incomingChat?.review != null ? incomingChat.review : null,
+        hasOpenProblem: incomingChat?.hasOpenProblem === true,
         unreadCount: resolveUnreadCount(null, incomingChat, selectedChatIdRef.current),
       }
     }
@@ -991,6 +1123,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       itemImageUrl: prevChat.itemImageUrl || incomingChat.itemImageUrl || null,
       itemTitle: incomingChat.itemTitle || prevChat.itemTitle || null,
       lastMessageFromBuyer: mergedLastMessageFromBuyer,
+      review: incomingChat?.review != null ? incomingChat.review : (prevChat?.review != null ? prevChat.review : null),
+      hasOpenProblem:
+        typeof incomingChat?.hasOpenProblem === 'boolean'
+          ? incomingChat.hasOpenProblem
+          : prevChat?.hasOpenProblem === true,
       unreadCount: resolveUnreadCount(prevChat, incomingChat, selectedChatIdRef.current),
     }
   }, [])
@@ -1123,6 +1260,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           continue
         }
 
+        noteViewerUsername(result.viewerUsername)
         applyLoadedChatData(
           chat,
           result.list,
@@ -1130,7 +1268,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           result.itemImageUrl,
           result.buyerSupercellEmail,
           result.itemCategory,
-          result.deals
+          result.deals,
+          result.review || null
         )
       }
 
@@ -1245,6 +1384,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     return COMPLETED_MARKERS.has(trimmed)
   }
 
+  // «Только выполнение»: статус PAID (Выполните заказ) либо есть открытая проблема по сделке.
+  const isFulfillmentChat = (chat) => {
+    if (!chat) return false
+    if (getStableChatStatus(chat) === 'PAID') return true
+    return chat.hasOpenProblem === true
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return undefined
     const media = window.matchMedia('(max-width: 900px)')
@@ -1318,7 +1464,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
             prevSelected && list.some((c) => c.id === prevSelected) ? prevSelected : null
           if (!nextSelectedId) {
             const firstVisible = list.find((c) =>
-              chatFilter === 'hide-completed' ? !isChatCompleted(c) : true
+              chatFilter === 'hide-completed'
+                ? !isChatCompleted(c)
+                : chatFilter === 'only-fulfillment'
+                  ? isFulfillmentChat(c)
+                  : true
             )
             nextSelectedId = firstVisible ? firstVisible.id : null
           }
@@ -1404,7 +1554,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       }
       const { list, pageInfo: info } = await fetchChatDbList(token, {
         limit: requestParams.limit,
-        offset: chats.length,
+        offset: chatsRef.current.length,
       })
 
       if (!list || list.length === 0) {
@@ -1450,6 +1600,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     if (chatFilter === 'hide-completed') {
       const base = chats.filter((chat) => !chat.isHidden)
       return base.filter((chat) => !isChatCompleted(chat))
+    }
+    if (chatFilter === 'only-fulfillment') {
+      const base = chats.filter((chat) => !chat.isHidden)
+      return base.filter((chat) => isFulfillmentChat(chat))
     }
     return chats
   }, [chats, chatFilter, chatStateById])
@@ -1508,16 +1662,18 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   useLayoutEffect(() => {
     const saved = chatListScrollAnchorRef.current
+    chatListScrollAnchorRef.current = null
     if (!saved) return
     const el = listRef.current
     if (!el) return
     if (saved.mode === 'prepend') {
       const heightDelta = el.scrollHeight - saved.scrollHeight
-      el.scrollTop = saved.scrollTop + (heightDelta > 0 ? heightDelta : 0)
+      if (heightDelta > 0) {
+        el.scrollTop = saved.scrollTop + heightDelta
+      }
     } else {
       el.scrollTop = saved.scrollTop
     }
-    chatListScrollAnchorRef.current = null
   }, [chats, visibleChats])
 
   useEffect(() => {
@@ -1567,6 +1723,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   const markChatAsRead = useCallback((chatId) => {
     if (!chatId) return
+    // Оптимистично гасим бейдж локально...
     setChats((prev) =>
       prev.map((chat) =>
         chat.id === chatId && Number(chat.unreadCount || 0) > 0
@@ -1574,7 +1731,12 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           : chat
       )
     )
-  }, [])
+    // ...и сохраняем метку прочтения на бэкенде, чтобы непрочитанность не вернулась
+    // после перезагрузки/следующего опроса (читаем мы только на своём сайте).
+    if (token) {
+      void markChatDbRead(token, chatId).catch(() => {})
+    }
+  }, [token])
 
   useEffect(() => {
     if (!selectedChatId) return
@@ -1635,6 +1797,18 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       (!selectedChatState?.loaded &&
         selectedChatHasPreviewMessage))
   const selectedChatDeals = Array.isArray(selectedChatState?.deals) ? selectedChatState.deals : []
+  // Текущая (последняя по ленте) сделка — её финансы показываем в шапке,
+  // финансы предыдущих сделок показываем инлайн в ленте у начала каждой сделки.
+  const selectedChatPrimaryDealId = (() => {
+    const msgs = selectedChatState?.messages || []
+    let last = null
+    for (const m of msgs) {
+      if (m && m.dealId) last = String(m.dealId)
+    }
+    if (last) return last
+    if (selectedChat?.dealId) return String(selectedChat.dealId)
+    return selectedChatDeals[0]?.dealId ? String(selectedChatDeals[0].dealId) : null
+  })()
   const selectedChatDetectedEmail = String(selectedChatState?.buyerSupercellEmail || '').trim()
   const selectedChatManualEmail = selectedChat
     ? String(manualEmailByChatId[selectedChat.id] || '').trim()
@@ -1669,6 +1843,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   useEffect(() => {
     setApprouteRescanState({ loading: false, error: null, notice: null })
+    setRecheckState({ loading: false, error: null, notice: null })
     setShowChatExtraInfo(false)
   }, [selectedChatId])
 
@@ -1728,13 +1903,14 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         return
       }
       try {
-        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals } =
+        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
           await fetchChatDbMessages(token, {
             dealId: chat.dealId || null,
             chatId: chat.id,
           })
         if (cancelled) return
         errorStreak = 0
+        noteViewerUsername(viewerUsername)
         applyLoadedChatData(
           chat,
           list,
@@ -1742,8 +1918,19 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           itemImageUrl,
           buyerSupercellEmail || null,
           itemCategory,
-          deals
+          deals,
+          review || null
         )
+        // Чат открыт у нас на экране — двигаем метку прочтения на бэкенде, чтобы
+        // сообщения, пришедшие во время просмотра, не вернулись «новыми» после выхода.
+        const latestId =
+          Array.isArray(list) && list.length > 0 && list[list.length - 1]?.id != null
+            ? String(list[list.length - 1].id)
+            : ''
+        if (latestId && lastMarkedReadByChatRef.current[chat.id] !== latestId) {
+          lastMarkedReadByChatRef.current[chat.id] = latestId
+          if (token) void markChatDbRead(token, chat.id).catch(() => {})
+        }
       } catch (err) {
         if (cancelled) return
         if (isPlayerokRateLimitMessage(err instanceof Error ? err.message : String(err))) {
@@ -1933,7 +2120,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       createdAt,
       imageUrl: null,
       user: {
-        username: fromBuyer ? String(chat.buyerName || '').trim() || null : OUR_USERNAME,
+        username: fromBuyer ? String(chat.buyerName || '').trim() || null : getOurUsername(),
       },
       ...(options.optimistic ? { _optimisticOutgoing: true } : {}),
     }
@@ -1968,11 +2155,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     }
   }
 
-  const handleSendMessage = async (chat) => {
-    if (!token || !chat?.id) return
+  // Единая отправка с оптимистичным сообщением и откатом при ошибке.
+  // Используется и для обычного ввода, и для кнопок быстрых команд.
+  const deliverChatMessage = async (chat, rawText, { onError } = {}) => {
+    if (!token || !chat?.id) return false
     const chatId = chat.id
-    const text = (draftByChatId[chatId] || '').trim()
-    if (!text) return
+    const text = String(rawText || '').trim()
+    if (!text) return false
     const previousChatPreview = {
       lastMessageId: chat.lastMessageId || null,
       lastMessageText: chat.lastMessageText || null,
@@ -1982,8 +2171,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         typeof chat.lastMessageFromBuyer === 'boolean' ? chat.lastMessageFromBuyer : null,
     }
     const optimisticMessage = appendLocalMessageForChat(chat, text, { optimistic: true })
-    if (!optimisticMessage) return
-    setDraftByChatId((prev) => ({ ...prev, [chatId]: '' }))
+    if (!optimisticMessage) return false
     logChatLogging('action:sendMessage', { chat: summarizeChatForLog(chat), textLength: text.length }, 'action')
     try {
       const sendResult = await sendChatDbMessage(token, {
@@ -2013,7 +2201,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                 id: resolvedId,
                 text: resolvedText,
                 createdAt: resolvedCreatedAt,
-                user: { ...(m.user || {}), username: OUR_USERNAME },
+                user: { ...(m.user || {}), username: getOurUsername() },
                 _optimisticOutgoing: false,
               }
             : m
@@ -2043,6 +2231,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         )
       )
       logChatLogging('action:sendMessage:success', { chatId }, 'action')
+      return true
     } catch (err) {
       setChatStateById((prev) => {
         const current = prev[chatId] || {}
@@ -2073,13 +2262,28 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           )
         )
       )
-      setDraftByChatId((prev) => ({ ...prev, [chatId]: text }))
       logChatLogging(
         'action:sendMessage:error',
         { chatId, message: err instanceof Error ? err.message : String(err) },
         'error'
       )
+      if (typeof onError === 'function') onError(err, text)
+      return false
     }
+  }
+
+  const handleSendMessage = async (chat) => {
+    if (!token || !chat?.id) return
+    const chatId = chat.id
+    const text = (draftByChatId[chatId] || '').trim()
+    if (!text) return
+    setDraftByChatId((prev) => ({ ...prev, [chatId]: '' }))
+    await deliverChatMessage(chat, text, {
+      onError: (_err, failedText) => {
+        // Возвращаем неотправленный текст обратно в поле ввода.
+        setDraftByChatId((prev) => ({ ...prev, [chatId]: failedText }))
+      },
+    })
   }
 
   const openRequestCodeModal = (chat) => {
@@ -2195,11 +2399,12 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         dealItemId: selectedChat.itemId || undefined,
       })
       try {
-        const { list, itemTitle, itemImageUrl, itemCategory, deals } =
+        const { list, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
           await fetchChatDbMessages(token, {
             dealId: selectedChat.dealId || null,
             chatId: selectedChat.id,
           })
+        noteViewerUsername(viewerUsername)
         applyLoadedChatData(
           selectedChat,
           list,
@@ -2207,7 +2412,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
           itemImageUrl,
           null,
           itemCategory,
-          deals
+          deals,
+          review || null
         )
       } catch (refreshErr) {
         const refreshMessage =
@@ -2231,6 +2437,46 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
       } else {
         setApprouteRescanState({ loading: false, error: message, notice: null })
       }
+    }
+  }
+
+  const handleRecheckChat = async () => {
+    if (!token || !selectedChat?.id) return
+    setRecheckState({ loading: true, error: null, notice: 'Загружаем чат с Playerok…' })
+    try {
+      const result = await recheckChatDbChat(token, {
+        chatId: selectedChat.id,
+        dealId: selectedChat.dealId || undefined,
+      })
+      try {
+        const { list, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
+          await fetchChatDbMessages(token, {
+            dealId: selectedChat.dealId || null,
+            chatId: selectedChat.id,
+          })
+        noteViewerUsername(viewerUsername)
+        applyLoadedChatData(
+          selectedChat,
+          list,
+          itemTitle,
+          itemImageUrl,
+          null,
+          itemCategory,
+          deals,
+          review || null
+        )
+      } catch (_refreshErr) {
+        // данные перепроверены в БД, но обновить чат на экране не удалось — не критично
+      }
+      const added = Number(result?.added || 0)
+      setRecheckState({
+        loading: false,
+        error: null,
+        notice: added > 0 ? `Готово: добавлено новых сообщений — ${added}.` : 'Готово: новых сообщений не найдено.',
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Не удалось выполнить перепроверку'
+      setRecheckState({ loading: false, error: message, notice: null })
     }
   }
 
@@ -2268,13 +2514,37 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   const closeDealActionModal = () => {
     setDealActionModal({ open: false, kind: null, chatId: null })
-    setDealActionState({ loading: false, error: null })
+    setDealActionState({ loading: false, error: null, candidates: [], selectedDealId: null })
   }
 
   const openDealActionModal = (kind) => {
     if (!token || !selectedChat) return
-    logChatLogging('action:openDealModal', { kind, chat: summarizeChatForLog(selectedChat) }, 'action')
-    setDealActionState({ loading: false, error: null })
+    const allDeals = Array.isArray(selectedChatDeals) ? selectedChatDeals : []
+    const seen = new Set()
+    const activeDeals = []
+    for (const d of allDeals) {
+      const id = d?.dealId != null ? String(d.dealId).trim() : ''
+      if (!id || seen.has(id)) continue
+      const st = String(d?.status || '').toUpperCase()
+      if (st === 'CONFIRMED' || st === 'ROLLED_BACK') continue
+      seen.add(id)
+      activeDeals.push(d)
+    }
+    const multiple = activeDeals.length > 1
+    const defaultDealId = multiple
+      ? null
+      : activeDeals[0]?.dealId || selectedChat.dealId || null
+    logChatLogging(
+      'action:openDealModal',
+      { kind, multiple, activeCount: activeDeals.length, chat: summarizeChatForLog(selectedChat) },
+      'action'
+    )
+    setDealActionState({
+      loading: false,
+      error: null,
+      candidates: multiple ? activeDeals : [],
+      selectedDealId: defaultDealId,
+    })
     setDealActionModal({ open: true, kind, chatId: selectedChat.id })
   }
 
@@ -2282,23 +2552,35 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     const { kind, chatId } = dealActionModal
     const chat = chats.find((c) => c.id === chatId)
     if (!token || !kind) return
-    if (!chat?.dealId) {
-      setDealActionState({
-        loading: false,
-        error: 'У этого чата нет ID сделки — запрос на Playerok отправить нельзя.',
-      })
+    const needsPick = dealActionState.candidates.length > 1
+    if (needsPick && !dealActionState.selectedDealId) {
+      setDealActionState((prev) => ({
+        ...prev,
+        error: 'Выберите сделку, с которой выполнить действие.',
+      }))
       return
     }
-    setDealActionState({ loading: true, error: null })
-    logChatLogging('action:dealAction', { kind, chat: summarizeChatForLog(chat) }, 'action')
+    const effectiveDealId =
+      (dealActionState.selectedDealId != null ? String(dealActionState.selectedDealId).trim() : '') ||
+      (chat?.dealId != null ? String(chat.dealId).trim() : '')
+    if (!effectiveDealId) {
+      setDealActionState((prev) => ({
+        ...prev,
+        loading: false,
+        error: 'У этого чата нет ID сделки — запрос на Playerok отправить нельзя.',
+      }))
+      return
+    }
+    setDealActionState((prev) => ({ ...prev, loading: true, error: null }))
+    logChatLogging('action:dealAction', { kind, dealId: effectiveDealId, chat: summarizeChatForLog(chat) }, 'action')
     try {
       if (kind === 'refund') {
-        await cancelDeal(token, chat.dealId)
+        await cancelDeal(token, effectiveDealId)
       } else {
-        await confirmDeal(token, chat.dealId)
+        await confirmDeal(token, effectiveDealId)
       }
       closeDealActionModal()
-      logChatLogging('action:dealAction:success', { kind, chatId, dealId: chat.dealId }, 'action')
+      logChatLogging('action:dealAction:success', { kind, chatId, dealId: effectiveDealId }, 'action')
       if (selectedChatId === chatId) {
         void loadMessagesForChat(chat)
       }
@@ -2319,10 +2601,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
         { kind, chatId, message: err instanceof Error ? err.message : String(err) },
         'error'
       )
-      setDealActionState({
+      setDealActionState((prev) => ({
+        ...prev,
         loading: false,
         error: err instanceof Error ? err.message : 'Не удалось выполнить действие',
-      })
+      }))
     }
   }
 
@@ -2341,17 +2624,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     }
   }
 
-  const handleResetFullScan = async () => {
+  const handlePauseFullScan = async () => {
     setFullScanState((prev) => ({ ...prev, loading: true, error: null }))
     try {
-      await resetChatDbFullScan()
-      const data = await fetchChatDbFullScanStatus()
-      setFullScanState((prev) => ({
-        ...prev,
-        loading: false,
-        status: data?.state || null,
-        error: null,
-      }))
+      await pauseChatDbScan()
+      setFullScanState((prev) => ({ ...prev, loading: false }))
     } catch (err) {
       setFullScanState((prev) => ({
         ...prev,
@@ -2361,8 +2638,23 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     }
   }
 
+  const handleStopFullScan = async () => {
+    setFullScanState((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      await stopChatDbScan()
+      setFullScanState((prev) => ({ ...prev, loading: false }))
+    } catch (err) {
+      setFullScanState((prev) => ({
+        ...prev,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      }))
+    }
+  }
+
+  const selectedChatDerivedStatus = selectedChat ? getDerivedChatStatus(selectedChat) : ''
   const selectedChatOrderStatusLabel = selectedChat
-    ? getOrderStatusLabel(getDerivedChatStatus(selectedChat))
+    ? getOrderStatusLabel(selectedChatDerivedStatus)
     : ''
 
   return (
@@ -2376,11 +2668,13 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                 type="button"
                 className="btn-secondary"
                 onClick={handleStartFullScan}
-                disabled={fullScanState.loading || Number(fullScanState.status?.scan_in_progress || 0) === 1}
+                disabled={fullScanState.loading || fullScanInProgress}
               >
-                {fullScanState.loading || Number(fullScanState.status?.scan_in_progress || 0) === 1
+                {fullScanInProgress
                   ? 'Прогружаем чаты...'
-                  : 'Прогрузить чаты'}
+                  : fullScanPaused
+                    ? 'Продолжить прогрузку'
+                    : 'Прогрузить чаты'}
               </button>
             </div>
           )}
@@ -2395,14 +2689,16 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                     />
                   </div>
                   <p className="profit-sync-progress__text">
-                    Прогрузка: {fullScanDone} из {fullScanTotal || '...'} ({fullScanProgressPercent}%)
+                    {fullScanPhaseLabel ? `${fullScanPhaseLabel}: ` : 'Прогрузка: '}
+                    {fullScanPhase === 'list'
+                      ? `найдено ${fullScanDone}`
+                      : `${fullScanDone} из ${fullScanTotal || '...'} (${fullScanProgressPercent}%)`}
                     {' · '}
                     Время: {Math.floor(fullScanElapsedSec / 60)}м {String(fullScanElapsedSec % 60).padStart(2, '0')}с
                     {fullScanCurrentLabel ? (
                       <>
                         {' · '}
-                        Чат: {fullScanCurrentLabel}
-                        {fullScanCurrentStep === 'messages' ? ' (история)' : ''}
+                        {fullScanCurrentLabel}
                       </>
                     ) : null}
                   </p>
@@ -2420,13 +2716,27 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                     <button
                       type="button"
                       className="btn-secondary"
-                      onClick={handleResetFullScan}
+                      onClick={handlePauseFullScan}
                       disabled={fullScanState.loading}
                     >
-                      Сбросить зависшую прогрузку
+                      Пауза
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={handleStopFullScan}
+                      disabled={fullScanState.loading}
+                    >
+                      Стоп
                     </button>
                   </div>
                 </div>
+              ) : fullScanPaused ? (
+                <p className="card-text" style={{ marginTop: 0 }}>
+                  Прогрузка на паузе
+                  {fullScanPhaseLabel ? ` (${fullScanPhaseLabel.toLowerCase()})` : ''}
+                  {fullScanDone > 0 ? ` · обработано ${fullScanDone}` : ''}. Нажмите «Продолжить прогрузку».
+                </p>
               ) : (
                 <p className="card-text" style={{ marginTop: 0 }}>
                   {Number(fullScanState.status.full_scan_completed_at || 0) > 0
@@ -2488,6 +2798,19 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   title="Только в работе"
                 >
                   <span aria-hidden="true">🛠️</span>
+                </button>
+                <button
+                  type="button"
+                  className={
+                    chatFilter === 'only-fulfillment'
+                      ? 'chat-filter-toggle__btn chat-filter-toggle__btn--active'
+                      : 'chat-filter-toggle__btn'
+                  }
+                  onClick={() => setChatFilter('only-fulfillment')}
+                  aria-label="Только выполнение заказов и чаты с проблемой"
+                  title="Только выполнение"
+                >
+                  <span aria-hidden="true">📦</span>
                 </button>
               </div>
               <div
@@ -2556,6 +2879,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                           <span className="chat-list__buyer">
                             {category}
                           </span>
+                          {derivedStatus === 'CONFIRMED' ? renderReviewBadge(chat.review, { variant: 'list' }) : null}
                         </div>
                         {lastMessagePreview ? (
                           <div className="chat-list__buyer-last-msg">
@@ -2602,7 +2926,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
             className="chat-mobile-back-btn"
             onClick={() => setMobileChatView('list')}
           >
-            ← К списку чатов
+            ← Чаты
           </button>
           <h2 className="card-title">Сообщения</h2>
           {!hasToken && (
@@ -2629,31 +2953,42 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   </div>
                 </div>
                 <div className="chat-header-row__center">
-                  <div className="chat-header-row__deal-btns" aria-label="Быстрые действия со сделкой">
-                    <button
-                      type="button"
-                      className="chat-header-row__deal-btn chat-header-row__deal-btn--refund"
-                      disabled={!token}
-                      title="Оформить возврат на Playerok"
-                      onClick={() => openDealActionModal('refund')}
-                    >
-                      Возврат
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-header-row__deal-btn chat-header-row__deal-btn--confirm"
-                      disabled={!token}
-                      title="Подтвердить сделку на Playerok"
-                      onClick={() => openDealActionModal('confirm')}
-                    >
-                      Подтвердить сделку
-                    </button>
-                  </div>
+                  {selectedChatDerivedStatus !== 'CONFIRMED' ? (
+                    <div className="chat-header-row__deal-btns" aria-label="Быстрые действия со сделкой">
+                      <button
+                        type="button"
+                        className="chat-header-row__deal-btn chat-header-row__deal-btn--refund"
+                        disabled={!token}
+                        title="Оформить возврат на Playerok"
+                        onClick={() => openDealActionModal('refund')}
+                      >
+                        Возврат
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-header-row__deal-btn chat-header-row__deal-btn--confirm"
+                        disabled={!token}
+                        title="Подтвердить сделку на Playerok"
+                        onClick={() => openDealActionModal('confirm')}
+                      >
+                        Подтвердить сделку
+                      </button>
+                    </div>
+                  ) : null}
                   {selectedChatOrderStatusLabel ? (
                     <span className="chat-header-row__order-status">Статус: {selectedChatOrderStatusLabel}</span>
                   ) : null}
                 </div>
                 <div className="chat-header-row__actions">
+                  <button
+                    type="button"
+                    className="chat-header-row__hide-btn"
+                    disabled={!token || recheckState.loading}
+                    title="Загрузить чат с Playerok и добавить недостающие сообщения в БД"
+                    onClick={() => void handleRecheckChat()}
+                  >
+                    {recheckState.loading ? 'Перепроверяем…' : 'Перепроверка'}
+                  </button>
                   {selectedChatApprouteEnabled && (
                     <button
                       type="button"
@@ -2690,7 +3025,17 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   {approuteRescanState.notice}
                 </p>
               )}
-              <div className="chat-item-card">
+              {recheckState.error && (
+                <p className="card-text card-text--error" role="status" aria-live="polite">
+                  {recheckState.error}
+                </p>
+              )}
+              {recheckState.notice && (
+                <p className="card-text" role="status" aria-live="polite">
+                  {recheckState.notice}
+                </p>
+              )}
+              <div className={'chat-item-card' + (mobileCardExpanded ? ' chat-item-card--mexpanded' : '')}>
                 <div className="chat-item-card__image-wrap">
                   {currentItemImageUrl ? (
                     <img
@@ -2710,16 +3055,53 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                       {currentItemTitle}
                     </div>
                   )}
+                  <button
+                    type="button"
+                    className="chat-item-card__mtoggle"
+                    onClick={() => setMobileCardExpanded((v) => !v)}
+                  >
+                    {mobileCardExpanded ? 'Скрыть детали ▴' : 'Показать детали (финансы, почта) ▾'}
+                  </button>
                   {selectedChat.buyerName ? (
                     <div className="chat-item-card__buyer">
                       Покупатель: {selectedChat.buyerName}
                     </div>
                   ) : null}
+                  {selectedChatDerivedStatus === 'CONFIRMED' && (() => {
+                    const headerReview = selectedChatState?.review || selectedChat?.review || null
+                    return (
+                      <div className="chat-item-card__review">
+                        Отзыв покупателя: {renderReviewBadge(headerReview, { variant: 'header' })}
+                      </div>
+                    )
+                  })()}
                   {selectedChatDeals.length > 0 && (
                     <div className="chat-item-card__buyer">
                       Покупки в чате: {selectedChatDeals.map((d) => d.itemCategory || 'Без категории').join(' · ')}
                     </div>
                   )}
+                  {(() => {
+                    // В шапке — только текущая (последняя) сделка. Предыдущие сделки
+                    // показываются инлайн в ленте сообщений по мере прокрутки к ним.
+                    const primaryDeal = selectedChatDeals.find(
+                      (d) =>
+                        d &&
+                        d.financials &&
+                        selectedChatPrimaryDealId &&
+                        String(d.dealId) === String(selectedChatPrimaryDealId)
+                    )
+                    const headerDeal =
+                      primaryDeal ||
+                      (selectedChatDeals.length === 1
+                        ? selectedChatDeals.find((d) => d && d.financials)
+                        : null)
+                    if (!headerDeal) return null
+                    return (
+                      <div className="chat-item-card__financials">
+                        {renderDealFinCard(headerDeal, { showTitle: false })}
+                      </div>
+                    )
+                  })()}
                   {selectedChatCanUseSupercell && (
                     <div
                       className={
@@ -2761,31 +3143,101 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   )}
                 </div>
               )}
-              {selectedChatMessagesPending && (
-                <p className="card-text">Загружаем чат…</p>
-              )}
-              {!selectedChatMessagesPending && selectedChatState?.error && (
-                <p className="card-text card-text--error">
-                  {selectedChatState.error}
-                </p>
-              )}
-              {!selectedChatMessagesPending &&
-                !selectedChatState?.error &&
-                (selectedChatState?.messages || []).length === 0 && (
-                  <p className="card-text">
-                    Сообщений в этом чате пока нет.
-                  </p>
-                )}
-              {!selectedChatMessagesPending &&
-                !selectedChatState?.error &&
-                (selectedChatState?.messages || []).length > 0 && (
+              {(() => {
+                const baseMessages = mergeListAheadMessage(
+                  selectedChat,
+                  selectedChatState?.messages || []
+                )
+                const feedReview = selectedChatState?.review || selectedChat?.review || null
+                let messagesToRender = baseMessages
+                if (feedReview && feedReview.left === true) {
+                  const reviewMsg = {
+                    id: '__review__',
+                    createdAt: feedReview.createdAt || null,
+                    _reviewBadge: feedReview,
+                  }
+                  const reviewTs = feedReview.createdAt ? Date.parse(feedReview.createdAt) : NaN
+                  if (Number.isFinite(reviewTs)) {
+                    const next = [...baseMessages]
+                    let insertAt = next.findIndex((m) => {
+                      const ts = m?.createdAt ? Date.parse(m.createdAt) : NaN
+                      return Number.isFinite(ts) && ts > reviewTs
+                    })
+                    if (insertAt < 0) insertAt = next.length
+                    next.splice(insertAt, 0, reviewMsg)
+                    messagesToRender = next
+                  } else {
+                    messagesToRender = [...baseMessages, reviewMsg]
+                  }
+                }
+                if (messagesToRender.length === 0) {
+                  if (selectedChatMessagesPending) {
+                    return <p className="card-text">Загружаем чат…</p>
+                  }
+                  if (selectedChatState?.error) {
+                    return (
+                      <p className="card-text card-text--error">
+                        {selectedChatState.error}
+                      </p>
+                    )
+                  }
+                  return (
+                    <p className="card-text">Сообщений в этом чате пока нет.</p>
+                  )
+                }
+                // Финансы предыдущих сделок — инлайн в ленте у начала каждой сделки
+                // (первое сообщение с её deal_id). Текущую сделку показываем в шапке.
+                const financialsByDeal = new Map()
+                for (const d of selectedChatDeals) {
+                  if (d && d.dealId && d.financials) financialsByDeal.set(String(d.dealId), d)
+                }
+                const cardBeforeMessageId = new Map()
+                const seenFinDeals = new Set()
+                for (const m of messagesToRender) {
+                  const did = m && m.dealId ? String(m.dealId) : null
+                  if (!did || seenFinDeals.has(did)) continue
+                  seenFinDeals.add(did)
+                  if (selectedChatPrimaryDealId && did === String(selectedChatPrimaryDealId)) continue
+                  const deal = financialsByDeal.get(did)
+                  if (deal && m.id != null) cardBeforeMessageId.set(String(m.id), deal)
+                }
+                return (
                   <div ref={messagesRef} className="chat-messages">
-                    {(() => {
-                      const messagesToRender = mergeListAheadMessage(
-                        selectedChat,
-                        selectedChatState.messages || []
-                      )
-                      return messagesToRender.map((m) => {
+                    {selectedChatMessagesPending && (
+                      <p className="card-text chat-messages__loading-hint">
+                        Загружаем историю…
+                      </p>
+                    )}
+                    {messagesToRender.map((m) => {
+                        if (m._reviewBadge) {
+                          const rv = m._reviewBadge
+                          const ratingNum = Number(rv.rating)
+                          const hasRating = Number.isFinite(ratingNum) && ratingNum > 0
+                          const stars = hasRating
+                            ? '★'.repeat(ratingNum) + '☆'.repeat(Math.max(0, 5 - ratingNum))
+                            : ''
+                          const reviewTimeText = formatTime(m.createdAt)
+                          return (
+                            <div key={m.id} className="chat-message chat-message--system">
+                              <div className="chat-message__bubble">
+                                <div className="chat-message__system-header">
+                                  <span className="chat-message__system-icon" title="Системное сообщение">
+                                    ⚙️
+                                  </span>
+                                  <span className="chat-message__system-label">Системное сообщение</span>
+                                </div>
+                                <div className="chat-message__text">
+                                  {hasRating
+                                    ? `Покупатель оставил отзыв: ${stars} (${ratingNum} из 5)`
+                                    : 'Покупатель оставил отзыв'}
+                                </div>
+                                {reviewTimeText && (
+                                  <div className="chat-message__time">{reviewTimeText}</div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        }
                         const timeText = formatTime(m.createdAt)
                         const isSystem = m.text ? isSystemMessage(m.text) : false
                         const fromBuyer = isFromBuyer(m)
@@ -2793,7 +3245,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                         const messageClass = isSystem
                           ? 'chat-message chat-message--system'
                           : `chat-message ${fromBuyer ? 'chat-message--buyer' : 'chat-message--seller'}`
-                        return (
+                        const inlineFinDeal = cardBeforeMessageId.get(String(m.id))
+                        const messageNode = (
                           <div key={m.id} className={messageClass}>
                             <div className="chat-message__bubble">
                               {isSystem && (
@@ -2822,11 +3275,24 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                               ) : null}
                               {m.imageUrl ? (
                                 <div className="chat-message__image-wrap">
-                                  <img
-                                    src={m.imageUrl}
-                                    alt="Изображение в чате"
-                                    className="chat-message__image"
-                                  />
+                                  <a
+                                    href={m.imageUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="chat-message__image-btn"
+                                    title="Открыть изображение"
+                                  >
+                                    <img
+                                      src={m.imageUrl}
+                                      alt="Изображение в чате"
+                                      className="chat-message__image"
+                                    />
+                                  </a>
+                                </div>
+                              ) : null}
+                              {m.imageUrl && !m.text && timeText ? (
+                                <div className="chat-message__time">
+                                  {timeText}
                                 </div>
                               ) : null}
                               {!m.text && !m.imageUrl && (
@@ -2834,7 +3300,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                                   {!isSystem ? (
                                     <>
                                       <div className="chat-message__text chat-message__placeholder">
-                                        Картинка
+                                        Сообщение без текста
                                       </div>
                                       {timeText && (
                                         <div className="chat-message__time">
@@ -2843,7 +3309,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                                       )}
                                     </>
                                   ) : (
-                                    "Картинка"
+                                    "Сообщение без текста"
                                   )}
                                 </div>
                               )}
@@ -2855,10 +3321,19 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                             </div>
                           </div>
                         )
-                      })
-                    })()}
-                  </div>
-                )}
+                        if (inlineFinDeal) {
+                          return [
+                            <div className="chat-deal-fin-inline" key={`fin-${m.id}`}>
+                              {renderDealFinCard(inlineFinDeal, { showTitle: true })}
+                            </div>,
+                            messageNode,
+                          ]
+                        }
+                        return messageNode
+                      })}
+                    </div>
+                  )
+                })()}
 
               {!selectedChatState?.error && (
                 <>
@@ -2912,16 +3387,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                                 e.target.style.borderColor = buttonColor
                                 e.target.style.color = textColor
                               }}
-                              onClick={async () => {
+                              onClick={() => {
                                 if (!selectedChat || !token) return
-                                try {
-                                  await sendChatDbMessage(token, {
-                                    dealId: selectedChat.dealId || null,
-                                    chatId: selectedChat.id,
-                                    text: cmd.text,
-                                  })
-                                  appendLocalMessageForChat(selectedChat, cmd.text)
-                                } catch (err) { }
+                                void deliverChatMessage(selectedChat, cmd.text)
                               }}
                             >
                               {cmd.label}
@@ -3134,6 +3602,46 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   ? 'Вы уверены, что хотите оформить возврат товара? Сделка на Playerok будет отменена.'
                   : 'Вы уверены, что хотите подтвердить сделку? На Playerok будет зафиксировано, что товар отправлен покупателю.'}
               </p>
+              {dealActionState.candidates.length > 1 && (
+                <div className="deal-action-picker">
+                  <p className="card-text deal-action-picker__hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                    У покупателя несколько активных сделок. Выберите, с какой выполнить действие:
+                  </p>
+                  <div className="deal-action-picker__list">
+                    {dealActionState.candidates.map((d) => {
+                      const id = String(d.dealId)
+                      const checked = String(dealActionState.selectedDealId || '') === id
+                      return (
+                        <label
+                          key={id}
+                          className={
+                            'deal-action-picker__item' + (checked ? ' deal-action-picker__item--active' : '')
+                          }
+                        >
+                          <input
+                            type="radio"
+                            name="deal-action-pick"
+                            value={id}
+                            checked={checked}
+                            disabled={dealActionState.loading}
+                            onChange={() =>
+                              setDealActionState((prev) => ({ ...prev, selectedDealId: id, error: null }))
+                            }
+                          />
+                          <span className="deal-action-picker__item-text">
+                            <span className="deal-action-picker__item-title">
+                              {d.itemTitle || 'Без названия'}
+                            </span>
+                            <span className="deal-action-picker__item-meta">
+                              {getOrderStatusLabel(d.status) || 'Статус неизвестен'} · #{id.slice(0, 8)}
+                            </span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               {dealActionState.error && (
                 <p className="card-text card-text--error">{dealActionState.error}</p>
               )}
@@ -3167,7 +3675,10 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                       : undefined
                   }
                   onClick={handleDealActionConfirm}
-                  disabled={dealActionState.loading}
+                  disabled={
+                    dealActionState.loading ||
+                    (dealActionState.candidates.length > 1 && !dealActionState.selectedDealId)
+                  }
                 >
                   {dealActionState.loading
                     ? 'Выполняем…'

@@ -6,8 +6,6 @@ const { recordChatSyncStepLog } = require('../../debug/chatSyncStepLog')
 const FULL_SCAN_PER_CHAT_TIMEOUT_MS = 90_000
 const FULL_SCAN_DEFAULT_HISTORY_PAGES = 50
 
-const fullScanGenerationByUser = new Map()
-
 function withTimeout(promise, ms, label) {
   let timer
   const timeoutPromise = new Promise((_, reject) => {
@@ -75,6 +73,37 @@ function extractBuyerFromMessages(messages, viewerUsername) {
   return null
 }
 
+// Кто отправил последнее сообщение треда: ищем сообщение по lastMessageId,
+// иначе берём хронологически последнее. Сравниваем с viewer → fromBuyer.
+function deriveLastMessageSender({ messages, lastMessageId, viewerUsername }) {
+  const list = Array.isArray(messages) ? messages : []
+  const viewerLower = normalizeText(viewerUsername)?.toLowerCase() || null
+  const wantedId = lastMessageId != null ? String(lastMessageId) : null
+
+  let picked = null
+  if (wantedId) {
+    picked = list.find((m) => m?.id != null && String(m.id) === wantedId) || null
+  }
+  if (!picked) {
+    let bestTs = -1
+    for (const m of list) {
+      if (!m) continue
+      const ts = toCreatedTs(m.createdAt)
+      if (ts >= bestTs) {
+        bestTs = ts
+        picked = m
+      }
+    }
+  }
+
+  const senderUsername = normalizeText(picked?.user?.username || picked?.user?.name || null)
+  let fromBuyer = null
+  if (senderUsername && viewerLower) {
+    fromBuyer = senderUsername.toLowerCase() !== viewerLower
+  }
+  return { senderUsername: senderUsername || null, fromBuyer }
+}
+
 function resolveBuyerName({
   threadBuyerName,
   dataBuyerName,
@@ -132,8 +161,18 @@ function nodeToThread(node, opts = {}) {
     node?.category?.title ||
     (typeof deal?.category === 'string' ? deal.category : null) ||
     null
-  const unreadRaw = node?.unreadMessagesCount ?? node?.unreadCount ?? node?.unreadMessages
-  const unreadCount = Number.isFinite(Number(unreadRaw)) ? Math.max(0, Math.trunc(Number(unreadRaw))) : 0
+  // Счётчик непрочитанных Playerok намеренно НЕ используем: непрочитанность
+  // определяется прочтением на нашем сайте (см. computeLocalUnread в dispatchChatDb).
+  const unreadCount = 0
+
+  const lastMessageSenderUsername = normalizeText(
+    lastMessage?.user?.username || lastMessage?.user?.name || null
+  )
+  const viewerLower = normalizeText(opts?.viewerUsername)?.toLowerCase() || null
+  let lastMessageFromBuyer = null
+  if (lastMessageSenderUsername && viewerLower) {
+    lastMessageFromBuyer = lastMessageSenderUsername.toLowerCase() !== viewerLower
+  }
 
   return {
     id: node?.id != null ? String(node.id) : null,
@@ -145,6 +184,8 @@ function nodeToThread(node, opts = {}) {
     lastMessageId: lastMessage?.id != null ? String(lastMessage.id) : null,
     lastMessageText: normalizeText(lastMessage?.text || null),
     lastMessageCreatedAt: lastMessage?.createdAt || null,
+    lastMessageSenderUsername,
+    lastMessageFromBuyer,
     dealId: deal?.id != null ? String(deal.id) : null,
     itemId: item?.id != null ? String(item.id) : null,
     unreadCount,
@@ -373,6 +414,16 @@ function createChatDbSyncService({
           dealId: primaryDeal?.dealId || thread.dealId || null,
           dealItemId: primaryDeal?.itemId || effectiveItemId || null,
           node,
+          // Переиспользуем уже загруженные сообщения, чтобы не делать повторный
+          // запрос к Playerok в обработчике автоматизации (ускоряет автосообщения).
+          prefetched: {
+            messages,
+            buyerSupercellEmail: data?.buyerSupercellEmail ?? null,
+            itemTitle: data?.itemTitle ?? thread.itemTitle ?? null,
+            itemImageUrl: data?.itemImageUrl ?? thread.itemImageUrl ?? null,
+            itemCategory: data?.itemCategory ?? thread.category ?? null,
+            viewerUsername: viewerUsername || null,
+          },
         })
       }
 
@@ -442,7 +493,7 @@ function createChatDbSyncService({
     for (const edge of edges) {
       const node = edge?.node
       if (!node) continue
-      const thread = nodeToThread(node)
+      const thread = nodeToThread(node, { viewerUsername })
       if (!thread.id) continue
       const viewerLower = viewerUsername ? viewerUsername.toLowerCase() : null
       const threadBuyerIsViewer = Boolean(
@@ -645,57 +696,268 @@ function createChatDbSyncService({
     }
   }
 
-  function bumpFullScanGeneration(uid) {
-    const next = (fullScanGenerationByUser.get(uid) || 0) + 1
-    fullScanGenerationByUser.set(uid, next)
+  const scanGenerationByUser = new Map()
+  const pauseFlagByUser = new Map()
+  const activeRunByUser = new Map()
+
+  function bumpScanGeneration(uid) {
+    const next = (scanGenerationByUser.get(uid) || 0) + 1
+    scanGenerationByUser.set(uid, next)
     return next
   }
 
-  function isFullScanCancelled(uid, generation) {
-    return fullScanGenerationByUser.get(uid) !== generation
+  function isScanCancelled(uid, generation) {
+    return scanGenerationByUser.get(uid) !== generation
   }
 
-  function reportFullScanProgress(uid, startedAt, state, patch) {
-    chatDbRepo.writeSyncState(uid, {
-      scanInProgress: 1,
-      scanProgressTotal: patch.total,
-      scanProgressDone: patch.processed,
-      fullScanRequestedAt: startedAt,
-      fullScanCompletedAt: Number(state?.full_scan_completed_at || 0),
-      scanCurrentChatId: patch.currentChatId ?? null,
-      scanCurrentLabel: patch.currentLabel ?? null,
-      scanStep: patch.step ?? null,
-      lastError: patch.lastError !== undefined ? patch.lastError : undefined,
-      lastPollAt: Date.now(),
+  function threadRowToThread(row) {
+    if (!row) return null
+    return {
+      id: row.chat_id != null ? String(row.chat_id) : null,
+      buyerName: normalizeText(row.buyer_name),
+      itemTitle: normalizeText(row.item_title),
+      itemImageUrl: row.item_image_url || null,
+      category: normalizeText(row.category),
+      status: normalizeText(row.status),
+      lastMessageId: row.last_message_id != null ? String(row.last_message_id) : null,
+      lastMessageText: normalizeText(row.last_message_text),
+      lastMessageCreatedAt: row.last_message_created_at || null,
+      lastMessageSenderUsername: normalizeText(row.last_message_sender_username),
+      lastMessageFromBuyer:
+        row.last_message_from_buyer == null ? null : Number(row.last_message_from_buyer) === 1,
+      dealId: row.last_deal_id != null ? String(row.last_deal_id) : null,
+      itemId: row.last_item_id != null ? String(row.last_item_id) : null,
+      unreadCount: Number(row.unread_count || 0),
+    }
+  }
+
+  // Принудительная перепроверка одного чата: тянет историю с Playerok и доливает
+  // недостающие сообщения в БД (putMessages — upsert по message_id, ничего не удаляет).
+  async function recheckOneChat({ userId, token, userAgent, chatId, maxHistoryPages = 200 }) {
+    const uid = Number(userId)
+    const cid = chatId != null ? String(chatId).trim() : ''
+    if (!Number.isFinite(uid) || uid <= 0 || !cid) {
+      throw new Error('userId and chatId are required')
+    }
+    const row = chatDbRepo.getThreadByChatId.get(uid, cid)
+    const thread = threadRowToThread(row)
+    if (!thread) throw new Error('chat not found')
+    const ua = userAgent || (typeof userAgentProvider === 'function' ? userAgentProvider() : null)
+    const viewer = await getViewer(token, ua)
+    const viewerUsername = normalizeText(viewer?.username || null)
+    const before = Number(chatDbRepo.countMessagesByChatId.get(uid, cid)?.total || 0)
+    const result = await processChatHistoryForThread({
+      userId: uid,
+      token,
+      userAgent: ua,
+      thread,
+      viewerUsername,
+      maxHistoryPagesPerChat: maxHistoryPages,
+      runAutomation: false,
     })
+    const after = Number(chatDbRepo.countMessagesByChatId.get(uid, cid)?.total || 0)
+    return {
+      ok: true,
+      chatId: cid,
+      fetched: Number(result?.messagesCount || 0),
+      before,
+      after,
+      added: Math.max(0, after - before),
+    }
   }
 
-  function abortFullScan(userId, reason) {
+  // Выкачивает историю сообщений одного чата и сохраняет thread/deals/messages.
+  async function processChatHistoryForThread({
+    userId,
+    token,
+    userAgent,
+    thread,
+    viewerUsername,
+    node = null,
+    maxHistoryPagesPerChat = FULL_SCAN_DEFAULT_HISTORY_PAGES,
+    perChatTimeoutMs = FULL_SCAN_PER_CHAT_TIMEOUT_MS,
+    runAutomation = false,
+  }) {
+    const uid = Number(userId)
+    const ua = userAgent || (typeof userAgentProvider === 'function' ? userAgentProvider() : null)
+    const label = chatScanLabel(thread)
+    const data = await withTimeout(
+      fetchDealChatMessagesFromPlayerok(token, ua, thread.dealId || null, thread.id, {
+        buyerUsername: thread.buyerName || undefined,
+        categoryHint: thread.category || undefined,
+        maxPages: maxHistoryPagesPerChat,
+      }),
+      Number(perChatTimeoutMs) || FULL_SCAN_PER_CHAT_TIMEOUT_MS,
+      label
+    )
+    const messages = filterMessagesByAge(data?.messages, Date.now())
+    const senderForLast = deriveLastMessageSender({
+      messages,
+      lastMessageId: thread.lastMessageId,
+      viewerUsername,
+    })
+    const threadWithSender = {
+      ...thread,
+      lastMessageSenderUsername: senderForLast.senderUsername ?? thread.lastMessageSenderUsername ?? null,
+      lastMessageFromBuyer:
+        senderForLast.fromBuyer != null ? senderForLast.fromBuyer : thread.lastMessageFromBuyer ?? null,
+    }
+    const buyerNameFromMsgs = extractBuyerFromMessages(messages, viewerUsername)
+    const resolvedBuyerName = resolveBuyerName({
+      threadBuyerName: thread.buyerName,
+      dataBuyerName: data?.buyerUsername,
+      buyerNameFromMessages: buyerNameFromMsgs,
+      viewerUsername,
+    })
+    const forceBuyerNameNullPreDeal = shouldForceBuyerNameNull({
+      threadBuyerName: thread.buyerName,
+      resolvedBuyerName,
+      viewerUsername,
+    })
+    chatDbRepo.putMessages(uid, thread.id, messages, { syncedAt: Date.now() })
+    chatDbRepo.putThread(uid, {
+      ...threadWithSender,
+      buyerName: resolvedBuyerName,
+      itemTitle: data?.itemTitle || thread.itemTitle || null,
+      itemImageUrl: data?.itemImageUrl || thread.itemImageUrl || null,
+      category: data?.itemCategory || thread.category || null,
+    }, { syncedAt: Date.now(), forceBuyerNameNull: forceBuyerNameNullPreDeal })
+    const deals = buildDealRows({
+      userId: uid,
+      chatId: thread.id,
+      messages,
+      itemTitle: data?.itemTitle || thread.itemTitle || null,
+      itemCategory: data?.itemCategory || thread.category || null,
+      buyerName: resolvedBuyerName,
+      viewerUsername,
+      nowTs: Date.now(),
+    })
+    const effectiveDealId = data?.effectiveDealId || thread.dealId || null
+    const prevThread = chatDbRepo.getThreadByChatId.get(uid, thread.id)
+    const fallbackThreadItemId =
+      thread?.itemId != null && String(thread.itemId).trim()
+        ? String(thread.itemId).trim()
+        : prevThread?.last_item_id != null && String(prevThread.last_item_id).trim()
+          ? String(prevThread.last_item_id).trim()
+          : null
+    const effectiveItemId = data?.effectiveItemId || fallbackThreadItemId || null
+    if (deals.length === 0 && effectiveDealId) {
+      deals.push({
+        userId: uid,
+        dealId: String(effectiveDealId),
+        chatId: String(thread.id),
+        itemId: effectiveItemId || null,
+        itemTitle: data?.itemTitle || thread.itemTitle || null,
+        itemImageUrl: data?.itemImageUrl || thread.itemImageUrl || null,
+        category: data?.itemCategory || thread.category || null,
+        buyerName: resolvedBuyerName,
+        status: null,
+        isPaidMarkerSeen: 0,
+        lastMessageId: thread.lastMessageId || null,
+        lastMessageTs: toCreatedTs(thread.lastMessageCreatedAt),
+        lastSeenAt: toCreatedTs(thread.lastMessageCreatedAt) || Date.now(),
+        updatedAt: Date.now(),
+      })
+    }
+    const primaryDeal =
+      deals.length > 0
+        ? deals.reduce((best, d) => {
+            const bt = best ? Number(best.lastMessageTs || 0) : -1
+            const dt = Number(d.lastMessageTs || 0)
+            return dt >= bt ? d : best
+          }, null)
+        : null
+    if (primaryDeal) {
+      const finalBuyerName = primaryDeal.buyerName || resolvedBuyerName
+      const forceBuyerNameNull = shouldForceBuyerNameNull({
+        threadBuyerName: thread.buyerName,
+        resolvedBuyerName: finalBuyerName,
+        viewerUsername,
+      })
+      chatDbRepo.putThread(uid, {
+        ...threadWithSender,
+        buyerName: finalBuyerName,
+        dealId: primaryDeal.dealId || thread.dealId || null,
+        itemId: primaryDeal.itemId || effectiveItemId || null,
+        itemTitle: primaryDeal.itemTitle || data?.itemTitle || thread.itemTitle || null,
+        itemImageUrl: primaryDeal.itemImageUrl || data?.itemImageUrl || thread.itemImageUrl || null,
+        category: primaryDeal.category || data?.itemCategory || thread.category || null,
+      }, { syncedAt: Date.now(), forceBuyerNameNull })
+    }
+    for (const deal of deals) {
+      const dealItemIdForSave = deal.itemId || effectiveItemId || null
+      chatDbRepo.upsertDeal.run(
+        deal.userId,
+        deal.dealId,
+        deal.chatId,
+        dealItemIdForSave,
+        deal.itemTitle,
+        deal.itemImageUrl,
+        deal.category,
+        deal.buyerName,
+        deal.status,
+        deal.isPaidMarkerSeen,
+        deal.lastMessageId,
+        deal.lastSeenAt,
+        deal.updatedAt
+      )
+    }
+    if (runAutomation && typeof runAutomationForChat === 'function') {
+      await runAutomationForChat({
+        userId: uid,
+        token,
+        userAgent: ua,
+        chatId: thread.id,
+        dealId: primaryDeal?.dealId || thread.dealId || null,
+        dealItemId: primaryDeal?.itemId || effectiveItemId || null,
+        node,
+      })
+    }
+    return { messagesCount: messages.length }
+  }
+
+  // Пауза: останавливает текущий проход, но сохраняет прогресс для возобновления.
+  function pauseScan(userId) {
     const uid = Number(userId)
     if (!Number.isFinite(uid) || uid <= 0) throw new Error('invalid userId')
-    bumpFullScanGeneration(uid)
-    const state = chatDbRepo.getSyncState.get(uid)
+    pauseFlagByUser.set(uid, true)
+    bumpScanGeneration(uid)
+    return { ok: true }
+  }
+
+  // Стоп: полностью прекращает проход. Уже загруженные данные сохраняются.
+  // Флаг очищается всегда — это снимает и «зависшее» состояние после перезапуска сервера.
+  function stopScan(userId, reason) {
+    const uid = Number(userId)
+    if (!Number.isFinite(uid) || uid <= 0) throw new Error('invalid userId')
+    pauseFlagByUser.set(uid, false)
+    bumpScanGeneration(uid)
+    activeRunByUser.delete(uid)
     chatDbRepo.writeSyncState(uid, {
       scanInProgress: 0,
+      scanPaused: 0,
+      scanPhase: null,
+      listCursor: null,
       scanCurrentChatId: null,
       scanCurrentLabel: null,
       scanStep: null,
-      lastError: reason || 'Сканирование прервано',
+      lastError: reason || null,
     })
     return { ok: true }
   }
 
-  async function runFullScan({
+  // Двухфазный проход: (1) быстрый сбор всего списка чатов (только треды),
+  // (2) добор истории сообщений по самым старым чатам. Поддерживает паузу/стоп и возобновление.
+  async function runChatScan({
     userId,
     token,
     userAgent,
     force = false,
-    pageLimit = 24,
-    maxPages = 200,
+    listPageLimit = 50,
+    maxListPages = 600,
     maxHistoryPagesPerChat = FULL_SCAN_DEFAULT_HISTORY_PAGES,
     perChatTimeoutMs = FULL_SCAN_PER_CHAT_TIMEOUT_MS,
     runAutomation = false,
-    onProgress = null,
   }) {
     const uid = Number(userId)
     if (!Number.isFinite(uid) || uid <= 0) throw new Error('invalid userId')
@@ -705,266 +967,214 @@ function createChatDbSyncService({
     if (!force && Number(state?.scan_in_progress || 0) === 1) {
       return { ok: false, reason: 'scan_in_progress' }
     }
-    if (!force && Number(state?.full_scan_completed_at || 0) > 0) {
-      return { ok: false, reason: 'already_completed' }
-    }
 
-    const scanGeneration = bumpFullScanGeneration(uid)
+    const generation = bumpScanGeneration(uid)
+    pauseFlagByUser.set(uid, false)
     const runId = crypto.randomUUID()
+    activeRunByUser.set(uid, runId)
     const startedAt = Date.now()
-    chatDbRepo.startSyncRun.run(runId, uid, 'full_scan', 'running', 0, 0, startedAt)
-    reportFullScanProgress(uid, startedAt, state, {
-      total: 0,
-      processed: 0,
-      currentChatId: null,
-      currentLabel: null,
-      step: 'list',
-      lastError: null,
-    })
+    chatDbRepo.startSyncRun.run(runId, uid, 'chat_scan', 'running', 0, 0, startedAt)
 
-    let afterCursor = null
+    let finalError = null
+    let paused = false
+    let currentPhase = null
+    let listCount = 0
     let processed = 0
     let total = 0
-    let pageIndex = 0
-    let finalError = null
-    let skippedChats = 0
+
+    const isOwner = () => activeRunByUser.get(uid) === runId
+    const writeProgress = (fields) => {
+      if (!isOwner()) return
+      chatDbRepo.writeSyncState(uid, { scanInProgress: 1, lastPollAt: Date.now(), ...fields })
+    }
+    const checkInterrupt = () => {
+      if (isScanCancelled(uid, generation)) {
+        paused = pauseFlagByUser.get(uid) === true
+        finalError = paused ? null : 'stopped'
+        return true
+      }
+      return false
+    }
+
     try {
       const viewer = await getViewer(token, ua)
-      const viewerUsernameFS = normalizeText(viewer?.username || null)
-      do {
-        if (isFullScanCancelled(uid, scanGeneration)) {
-          finalError = 'Сканирование прервано'
-          break
-        }
-        const page = await requestUserChatsPage(token, ua, viewer.id, {
-          first: Number(pageLimit) || 24,
-          after: afterCursor || null,
+      const viewerUsername = normalizeText(viewer?.username || null)
+      if (viewerUsername && typeof chatDbRepo.clearViewerAsBuyer === 'function') {
+        chatDbRepo.clearViewerAsBuyer(uid, viewerUsername, { updatedAt: Date.now() })
+      }
+
+      // ---- Фаза 1: список чатов (только треды, быстро) ----
+      const listAlreadyDone = !force && Number(state?.list_scan_completed_at || 0) > 0
+      if (!listAlreadyDone) {
+        currentPhase = 'list'
+        let afterCursor = force ? null : state?.list_cursor || null
+        let listPages = 0
+        writeProgress({
+          scanPhase: 'list',
+          scanPaused: 0,
+          scanStep: 'list',
+          fullScanRequestedAt: startedAt,
+          lastError: null,
+          scanCurrentChatId: null,
+          scanCurrentLabel: 'Загрузка списка чатов…',
+          scanProgressTotal: 0,
+          scanProgressDone: 0,
+          listScanCompletedAt: force ? 0 : Number(state?.list_scan_completed_at || 0),
         })
-        const edges = Array.isArray(page?.edges) ? page.edges : []
-        const recentEntries = edges
-          .map((edge) => edge?.node || null)
-          .filter(Boolean)
-          .map((node) => ({ node, thread: nodeToThread(node) }))
-          .filter((x) => x.thread?.id)
-        total += recentEntries.length
-        reportFullScanProgress(uid, startedAt, state, {
-          total,
-          processed,
-          step: 'list',
-        })
-        for (const entry of recentEntries) {
-          if (isFullScanCancelled(uid, scanGeneration)) {
-            finalError = 'Сканирование прервано'
-            break
-          }
-          const node = entry.node
-          const thread = entry.thread
-          const label = chatScanLabel(thread)
-          chatDbRepo.putThread(uid, thread, { syncedAt: Date.now() })
-          reportFullScanProgress(uid, startedAt, state, {
-            total,
-            processed,
-            currentChatId: thread.id,
-            currentLabel: label,
-            step: 'messages',
-            lastError: null,
+        do {
+          if (checkInterrupt()) break
+          const page = await requestUserChatsPage(token, ua, viewer.id, {
+            first: Number(listPageLimit) || 50,
+            after: afterCursor || null,
           })
-
-          let chatError = null
-          let data = null
-          try {
-            data = await withTimeout(
-              fetchDealChatMessagesFromPlayerok(
-                token,
-                ua,
-                thread.dealId || null,
-                thread.id,
-                {
-                  buyerUsername: thread.buyerName || undefined,
-                  categoryHint: thread.category || undefined,
-                  maxPages: maxHistoryPagesPerChat,
-                }
-              ),
-              Number(perChatTimeoutMs) || FULL_SCAN_PER_CHAT_TIMEOUT_MS,
-              label
+          const edges = Array.isArray(page?.edges) ? page.edges : []
+          for (const edge of edges) {
+            const node = edge?.node
+            if (!node) continue
+            const thread = nodeToThread(node, { viewerUsername })
+            if (!thread.id) continue
+            const viewerLower = viewerUsername ? viewerUsername.toLowerCase() : null
+            const threadBuyerIsViewer = Boolean(
+              viewerUsername &&
+                normalizeText(thread.buyerName) &&
+                viewerLower &&
+                normalizeText(thread.buyerName).toLowerCase() === viewerLower
             )
-          } catch (err) {
-            chatError = err && err.message ? String(err.message) : String(err)
-            skippedChats += 1
+            if (threadBuyerIsViewer) thread.buyerName = null
+            chatDbRepo.putThread(uid, thread, {
+              syncedAt: Date.now(),
+              forceBuyerNameNull: threadBuyerIsViewer,
+            })
+            listCount += 1
           }
+          const pageInfo = page?.pageInfo || {}
+          afterCursor = pageInfo.hasNextPage ? pageInfo.endCursor || null : null
+          listPages += 1
+          writeProgress({
+            listCursor: afterCursor,
+            scanProgressTotal: listCount,
+            scanProgressDone: listCount,
+            scanCurrentLabel: `Загружено чатов: ${listCount}`,
+          })
+        } while (afterCursor && listPages < Number(maxListPages || 600))
 
-          if (data) {
-            const messages = filterMessagesByAge(data?.messages, Date.now())
-            const buyerNameFromMsgsFS = extractBuyerFromMessages(messages, viewerUsernameFS)
-            const resolvedBuyerNameFS = resolveBuyerName({
-              threadBuyerName: thread.buyerName,
-              dataBuyerName: data?.buyerUsername,
-              buyerNameFromMessages: buyerNameFromMsgsFS,
-              viewerUsername: viewerUsernameFS,
-            })
-            const forceBuyerNameNullPreDealFS = shouldForceBuyerNameNull({
-              threadBuyerName: thread.buyerName,
-              resolvedBuyerName: resolvedBuyerNameFS,
-              viewerUsername: viewerUsernameFS,
-            })
-            chatDbRepo.putMessages(uid, thread.id, messages, { syncedAt: Date.now() })
-            chatDbRepo.putThread(uid, {
-              ...thread,
-              buyerName: resolvedBuyerNameFS,
-              itemTitle: data?.itemTitle || thread.itemTitle || null,
-              itemImageUrl: data?.itemImageUrl || thread.itemImageUrl || null,
-              category: data?.itemCategory || thread.category || null,
-            }, { syncedAt: Date.now(), forceBuyerNameNull: forceBuyerNameNullPreDealFS })
-            const deals = buildDealRows({
-              userId: uid,
-              chatId: thread.id,
-              messages,
-              itemTitle: data?.itemTitle || thread.itemTitle || null,
-              itemCategory: data?.itemCategory || thread.category || null,
-              buyerName: resolvedBuyerNameFS,
-              viewerUsername: viewerUsernameFS,
-              nowTs: Date.now(),
-            })
-            const effectiveDealId = data?.effectiveDealId || thread.dealId || null
-            const prevThreadFs = chatDbRepo.getThreadByChatId.get(uid, thread.id)
-            const fallbackThreadItemIdFs =
-              thread?.itemId != null && String(thread.itemId).trim()
-                ? String(thread.itemId).trim()
-                : prevThreadFs?.last_item_id != null && String(prevThreadFs.last_item_id).trim()
-                  ? String(prevThreadFs.last_item_id).trim()
-                  : null
-            const effectiveItemId = data?.effectiveItemId || fallbackThreadItemIdFs || null
-            if (deals.length === 0 && effectiveDealId) {
-              deals.push({
-                userId: uid,
-                dealId: String(effectiveDealId),
-                chatId: String(thread.id),
-                itemId: effectiveItemId || null,
-                itemTitle: data?.itemTitle || thread.itemTitle || null,
-                itemImageUrl: data?.itemImageUrl || thread.itemImageUrl || null,
-                category: data?.itemCategory || thread.category || null,
-                buyerName: resolvedBuyerNameFS,
-                status: null,
-                isPaidMarkerSeen: 0,
-                lastMessageId: thread.lastMessageId || null,
-                lastMessageTs: toCreatedTs(thread.lastMessageCreatedAt),
-                lastSeenAt: toCreatedTs(thread.lastMessageCreatedAt) || Date.now(),
-                updatedAt: Date.now(),
-              })
-            }
+        if (!finalError && !isScanCancelled(uid, generation)) {
+          writeProgress({ listScanCompletedAt: Date.now(), listCursor: null })
+        }
+      }
 
-            const primaryDeal =
-              deals.length > 0
-                ? deals.reduce((best, d) => {
-                    const bt = best ? Number(best.lastMessageTs || 0) : -1
-                    const dt = Number(d.lastMessageTs || 0)
-                    return dt >= bt ? d : best
-                  }, null)
-                : null
-
-            if (primaryDeal) {
-              const finalBuyerNameFS = primaryDeal.buyerName || resolvedBuyerNameFS
-              const forceBuyerNameNullFS = shouldForceBuyerNameNull({
-                threadBuyerName: thread.buyerName,
-                resolvedBuyerName: finalBuyerNameFS,
-                viewerUsername: viewerUsernameFS,
-              })
-              chatDbRepo.putThread(uid, {
-                ...thread,
-                buyerName: finalBuyerNameFS,
-                dealId: primaryDeal.dealId || thread.dealId || null,
-                itemId: primaryDeal.itemId || effectiveItemId || null,
-                itemTitle: primaryDeal.itemTitle || data?.itemTitle || thread.itemTitle || null,
-                itemImageUrl:
-                  primaryDeal.itemImageUrl || data?.itemImageUrl || thread.itemImageUrl || null,
-                category: primaryDeal.category || data?.itemCategory || thread.category || null,
-              }, { syncedAt: Date.now(), forceBuyerNameNull: forceBuyerNameNullFS })
+      // ---- Фаза 2: добор истории сообщений (самые старые чаты первыми) ----
+      if (!finalError && !isScanCancelled(uid, generation)) {
+        currentPhase = 'history'
+        total = Number(chatDbRepo.countThreadsWithoutHistory.get(uid)?.total || 0)
+        writeProgress({
+          scanPhase: 'history',
+          scanStep: 'messages',
+          scanProgressTotal: total,
+          scanProgressDone: 0,
+          scanCurrentLabel: 'Добор истории сообщений…',
+        })
+        const attempted = new Set()
+        for (;;) {
+          if (checkInterrupt()) break
+          const batch = chatDbRepo.listThreadsWithoutHistoryOldest.all(uid, 100)
+          const fresh = batch.filter((r) => !attempted.has(String(r.chat_id)))
+          if (fresh.length === 0) break
+          let interrupted = false
+          for (const row of fresh) {
+            if (checkInterrupt()) {
+              interrupted = true
+              break
             }
-            for (const deal of deals) {
-              const dealItemIdForSave = deal.itemId || effectiveItemId || null
-              chatDbRepo.upsertDeal.run(
-                deal.userId,
-                deal.dealId,
-                deal.chatId,
-                dealItemIdForSave,
-                deal.itemTitle,
-                deal.itemImageUrl,
-                deal.category,
-                deal.buyerName,
-                deal.status,
-                deal.isPaidMarkerSeen,
-                deal.lastMessageId,
-                deal.lastSeenAt,
-                deal.updatedAt
-              )
-            }
-            if (runAutomation && typeof runAutomationForChat === 'function') {
-              await runAutomationForChat({
+            const thread = threadRowToThread(row)
+            attempted.add(String(row.chat_id))
+            const label = chatScanLabel(thread)
+            writeProgress({
+              scanCurrentChatId: thread.id,
+              scanCurrentLabel: label,
+              scanStep: 'messages',
+              lastError: null,
+            })
+            let chatError = null
+            try {
+              await processChatHistoryForThread({
                 userId: uid,
                 token,
                 userAgent: ua,
-                chatId: thread.id,
-                dealId: primaryDeal?.dealId || thread.dealId || null,
-                dealItemId: primaryDeal?.itemId || effectiveItemId || null,
-                node,
+                thread,
+                viewerUsername,
+                maxHistoryPagesPerChat,
+                perChatTimeoutMs,
+                runAutomation,
               })
+            } catch (err) {
+              chatError = err && err.message ? String(err.message) : String(err)
             }
+            processed += 1
+            writeProgress({
+              scanProgressDone: processed,
+              scanCurrentChatId: thread.id,
+              scanCurrentLabel: label,
+              scanStep: chatError ? 'skip' : 'done',
+              lastError: chatError,
+            })
           }
-
-          processed += 1
-          reportFullScanProgress(uid, startedAt, state, {
-            total,
-            processed,
-            currentChatId: thread.id,
-            currentLabel: label,
-            step: chatError ? 'skip' : 'done',
-            lastError: chatError,
-          })
-          if (typeof onProgress === 'function') {
-            onProgress({ runId, total, processed, skippedChats, chatError })
-          }
+          if (interrupted) break
         }
-        if (finalError) break
-        const pageInfo = page?.pageInfo || {}
-        afterCursor = pageInfo.hasNextPage ? pageInfo.endCursor || null : null
-        pageIndex += 1
-      } while (afterCursor && pageIndex < Number(maxPages || 200))
+      }
     } catch (err) {
       finalError = err && err.message ? String(err.message) : String(err)
     }
 
-    if (isFullScanCancelled(uid, scanGeneration) && !finalError) {
-      finalError = 'Сканирование прервано'
+    if (isScanCancelled(uid, generation) && !finalError && !paused) {
+      paused = pauseFlagByUser.get(uid) === true
+      finalError = paused ? null : 'stopped'
     }
 
     const finishedAt = Date.now()
-    const cancelled = finalError === 'Сканирование прервано'
-    const status = cancelled ? 'cancelled' : finalError ? 'failed' : 'done'
-    chatDbRepo.finishSyncRun.run(status, total, processed, finishedAt, finalError, runId)
-    chatDbRepo.writeSyncState(uid, {
-      lastPollAt: finishedAt,
-      lastSuccessAt: finalError && !cancelled ? Number(state?.last_success_at || 0) : finishedAt,
-      scanInProgress: 0,
-      scanProgressTotal: total,
-      scanProgressDone: processed,
-      fullScanCompletedAt:
-        finalError && !cancelled ? Number(state?.full_scan_completed_at || 0) : finishedAt,
-      fullScanRequestedAt: startedAt,
-      scanCurrentChatId: null,
-      scanCurrentLabel: null,
-      scanStep: null,
-      lastError: finalError,
-    })
-    if (finalError && !cancelled) throw new Error(finalError)
-    return { ok: !finalError, runId, total, processed, skippedChats, finishedAt, cancelled: Boolean(cancelled) }
+    const stopped = finalError === 'stopped'
+    const status = paused ? 'paused' : stopped ? 'cancelled' : finalError ? 'failed' : 'done'
+    const cleanDone = !finalError && !paused
+    chatDbRepo.finishSyncRun.run(
+      status,
+      total || listCount,
+      processed,
+      finishedAt,
+      finalError && !stopped ? finalError : null,
+      runId
+    )
+    if (isOwner()) {
+      chatDbRepo.writeSyncState(uid, {
+        lastPollAt: finishedAt,
+        lastSuccessAt: cleanDone ? finishedAt : Number(state?.last_success_at || 0),
+        scanInProgress: 0,
+        scanPaused: paused ? 1 : 0,
+        scanPhase: paused ? currentPhase : null,
+        scanProgressTotal: total || listCount,
+        scanProgressDone: processed,
+        fullScanCompletedAt: cleanDone ? finishedAt : Number(state?.full_scan_completed_at || 0),
+        fullScanRequestedAt: startedAt,
+        listCursor: paused ? undefined : null,
+        scanCurrentChatId: null,
+        scanCurrentLabel: null,
+        scanStep: null,
+        lastError: finalError && !stopped ? finalError : null,
+      })
+      activeRunByUser.delete(uid)
+    }
+    if (pauseFlagByUser.get(uid) === true) pauseFlagByUser.delete(uid)
+    if (finalError && !stopped && !paused) throw new Error(finalError)
+    return { ok: !finalError || paused, runId, listCount, total, processed, finishedAt, paused, stopped }
   }
 
   return {
     syncUserChatsStep,
     syncUserChatsListPoll,
     syncOneChangedChat,
-    runFullScan,
-    abortFullScan,
+    runChatScan,
+    recheckOneChat,
+    pauseScan,
+    stopScan,
   }
 }
 

@@ -1,4 +1,5 @@
 const {
+  ITEM_PAID_MARKER,
   ITEM_SENT_MARKER,
   DEAL_CONFIRMED_MARKERS,
   lastMessageHasAnyMarker,
@@ -14,6 +15,7 @@ const { resolvePaidChatDealFromChat } = require('../../functions/resolvePaidChat
 const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
+  buildPurchaseWindowAutomessageEventKey,
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
@@ -66,9 +68,14 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     sleep,
     processActiveSupercellFlows,
     processSingleSupercellFlow,
+    autolistGetTopupFlowMap,
+    autolistPruneTopupFlowMap,
+    processActiveTopupFlows,
+    processSingleTopupFlow,
     isSupercellModuleEnabled,
     handlePostPurchaseAutomessage,
     handleDealConfirmedAutomessage,
+    handlePurchaseWindowAutomessage,
     fetchDealChatMessagesFromPlayerok,
     loadApprouteApiKeyPlain,
     runApprouteAutodelivery,
@@ -114,6 +121,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistPruneSeenChatsMap(tokenHash, nowTs)
     autolistPruneItemStateMap(tokenHash, nowTs)
     autolistPruneSupercellFlowMap(tokenHash, nowTs)
+    if (typeof autolistPruneTopupFlowMap === 'function') autolistPruneTopupFlowMap(tokenHash, nowTs)
 
     let periodicResult = null
     const lastScanTs = Number(scanMeta?.lastScanTs || 0)
@@ -482,6 +490,12 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         buildEventKey: buildDealConfirmedAutomessageEventKey,
         logLabel: 'deal-confirmed-automessage',
       },
+      {
+        handler: handlePurchaseWindowAutomessage,
+        markers: [ITEM_PAID_MARKER],
+        buildEventKey: buildPurchaseWindowAutomessageEventKey,
+        logLabel: 'purchase-window-automessage',
+      },
     ]
 
     for (const scan of chatAutomessageScans) {
@@ -563,6 +577,18 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetSupercellFlowMap,
         processSingleSupercellFlow,
+      })
+    }
+
+    if (typeof processActiveTopupFlows === 'function' && typeof processSingleTopupFlow === 'function') {
+      await processActiveTopupFlows({
+        tokenHash,
+        token,
+        userAgent,
+        viewerUsername: viewer?.username || null,
+        nowTs,
+        autolistGetTopupFlowMap,
+        processSingleTopupFlow,
       })
     }
 

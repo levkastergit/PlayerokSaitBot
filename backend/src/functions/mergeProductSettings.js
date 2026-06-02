@@ -38,6 +38,9 @@ function mergeProductSettings(groupSettings, itemSettings) {
   const api = mergeAutodeliveryApi(itemSettings.autodeliveryApi, groupSettings.autodeliveryApi)
   if (api) merged.autodeliveryApi = api
 
+  const topupApi = mergeAutodeliveryApi(itemSettings.autotopupApi, groupSettings.autotopupApi)
+  if (topupApi) merged.autotopupApi = topupApi
+
   return merged
 }
 

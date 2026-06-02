@@ -26,10 +26,20 @@ function createChatDealsTable(db) {
     CREATE INDEX IF NOT EXISTS chat_deals_user_chat_idx
     ON chat_deals(user_id, chat_id)
   `)
-  try {
-    db.exec('ALTER TABLE chat_deals ADD COLUMN item_image_url TEXT')
-  } catch (_) {
-    // column already exists
+  const extraCols = [
+    ['item_image_url', 'TEXT'],
+    ['testimonial_status', 'TEXT'],
+    ['testimonial_rating', 'INTEGER'],
+    ['testimonial_left', 'INTEGER'],
+    ['testimonial_checked_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['testimonial_created_at', 'TEXT'],
+  ]
+  for (const [name, type] of extraCols) {
+    try {
+      db.exec(`ALTER TABLE chat_deals ADD COLUMN ${name} ${type}`)
+    } catch (_) {
+      // column already exists
+    }
   }
 }
 

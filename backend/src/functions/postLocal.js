@@ -23,6 +23,7 @@ function createPostLocal({ PORT, http }) {
         },
         (res) => {
           let chunks = ''
+          res.setEncoding('utf8')
           res.on('data', (c) => {
             chunks += c
           })

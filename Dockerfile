@@ -31,9 +31,9 @@ RUN npm ci --omit=dev
 FROM node:20-bullseye-slim
 WORKDIR /app/backend
 
-# Python runtime for supercell_auto_otp_plugin
+# Python runtime for supercell_auto_otp_plugin + docker cli for /docker deploy button
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates \
+  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates docker.io docker-compose \
   && rm -rf /var/lib/apt/lists/* \
   && python3 -m pip install --no-cache-dir --upgrade pip \
   && python3 -m pip install --no-cache-dir httpx fake-useragent

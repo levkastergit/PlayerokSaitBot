@@ -1,8 +1,11 @@
 {
     "laser": {
-        "last_index": 29
+        "last_index": 19
     },
     "scroll": {
-        "last_index": 18
+        "last_index": 47
+    },
+    "magic": {
+        "last_index": 2
     }
 }

@@ -62,6 +62,7 @@ function createCreateChatMessage() {
 
       const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
         let data = ''
+        resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })

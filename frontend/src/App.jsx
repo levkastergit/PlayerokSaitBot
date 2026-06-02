@@ -25,10 +25,9 @@ import { PartnersTab } from './features/partners/PartnersTab.jsx'
 import { SettingsTab } from './features/settings/SettingsTab.jsx'
 import { DdosTab } from './features/ddos/DdosTab.jsx'
 import { ChatLoggingTab } from './features/chat-logging/ChatLoggingTab.jsx'
-import { ProfitTab } from './features/profit/ProfitTab.jsx'
-import { ActionsTab } from './features/actions/ActionsTab.jsx'
-import { BalanceTab } from './features/balance/BalanceTab.jsx'
+import { BalanceHubTab } from './features/balance/BalanceHubTab.jsx'
 import { TestTab } from './features/test/TestTab.jsx'
+import { DockerTab } from './features/docker/DockerTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'auto-delivery-api', 'lot-boost'])
 
 const TabIcon = ({ id }) => {
@@ -211,6 +210,16 @@ const TabIcon = ({ id }) => {
           <path d="M10.6 15h2.8" />
         </svg>
       )
+    case 'docker':
+      return (
+        <svg {...common}>
+          <path d="M4.8 11.2h10.1v4.1H4.8z" opacity="0.16" fill="currentColor" stroke="none" />
+          <path d="M6 8.2h2.8V11H6z" />
+          <path d="M9.6 8.2h2.8V11H9.6z" />
+          <path d="M13.2 9.7h2.8" />
+          <path d="M5.2 15.3h9.8c3.2 0 4.9-1.7 5.2-4.2h-2.3" />
+        </svg>
+      )
     default:
       return null
   }
@@ -231,9 +240,8 @@ const TABS = [
   { id: 'ddos', label: 'Ddos' },
   { id: 'chat-logging', label: 'Логирование Чата' },
   { id: 'balance', label: 'Баланс' },
-  { id: 'profit', label: 'Статистика' },
-  { id: 'actions', label: 'Действия' },
   { id: 'test', label: 'Тест' },
+  { id: 'docker', label: 'Docker' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -303,6 +311,10 @@ function App() {
     const first = location.pathname.split('/').filter(Boolean)[0]
     if (first === 'token') {
       navigate('/settings', { replace: true })
+    }
+    // Вкладки «Статистика» и «Действия» объединены во вкладку «Баланс».
+    if (first === 'profit' || first === 'actions') {
+      navigate('/balance', { replace: true })
     }
   }, [location.pathname, navigate])
   const [darkTheme, setDarkTheme] = useState(false)
@@ -654,10 +666,9 @@ function App() {
           )}
           {activeTab === 'ddos' && <DdosTab />}
           {activeTab === 'chat-logging' && <ChatLoggingTab />}
-          {activeTab === 'balance' && <BalanceTab token={token} />}
-          {activeTab === 'profit' && <ProfitTab token={token} />}
-          {activeTab === 'actions' && <ActionsTab token={token} />}
+          {activeTab === 'balance' && <BalanceHubTab token={token} />}
           {activeTab === 'test' && <TestTab token={token} />}
+          {activeTab === 'docker' && <DockerTab />}
         </section>
       </main>
     </div>

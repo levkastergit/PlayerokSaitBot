@@ -39,6 +39,107 @@ function buildBlockingSyncKey(userId, chatId) {
   return `${Number(userId)}::${String(chatId || '')}`
 }
 
+// Отзыв покупателя (testimonial) на сделке Playerok.
+const REVIEW_RECHECK_MS = 2 * 60 * 1000
+
+function extractTestimonialFromDeal(deal) {
+  const t = deal && typeof deal === 'object' ? deal.testimonial : null
+  if (t == null || typeof t !== 'object') {
+    return { left: false, rating: null, status: null }
+  }
+  const ratingRaw = Number(t.rating)
+  return {
+    left: true,
+    rating: Number.isFinite(ratingRaw) ? Math.trunc(ratingRaw) : null,
+    status: t.status != null ? String(t.status) : null,
+    createdAt: t.createdAt != null ? String(t.createdAt) : (t.updatedAt != null ? String(t.updatedAt) : null),
+  }
+}
+
+// Есть ли у чата открытая (нерешённая) проблема по сделке: последний маркер
+// {{DEAL_HAS_PROBLEM}} новее последнего {{DEAL_PROBLEM_RESOLVED}}.
+function hasOpenDealProblem(chatDbRepo, userId, chatId) {
+  const id = chatId != null ? String(chatId).trim() : ''
+  if (!id) return false
+  const row = chatDbRepo.getDealProblemState.get(userId, id)
+  const problemTs = Number(row?.last_problem_ts || 0)
+  if (!problemTs) return false
+  const resolvedTs = Number(row?.last_resolved_ts || 0)
+  return problemTs > resolvedTs
+}
+
+function reviewFromDealRow(dealRow) {
+  if (!dealRow || dealRow.testimonial_left == null) return null
+  return {
+    left: Number(dealRow.testimonial_left) === 1,
+    rating:
+      dealRow.testimonial_rating != null && Number.isFinite(Number(dealRow.testimonial_rating))
+        ? Math.trunc(Number(dealRow.testimonial_rating))
+        : null,
+    createdAt: dealRow.testimonial_created_at != null ? String(dealRow.testimonial_created_at) : null,
+  }
+}
+
+// Возвращает {left, rating} для сделки. Берёт из БД, иначе тянет deal с Playerok и сохраняет.
+async function resolveDealReview({ chatDbRepo, requestDealById, token, userAgent, userId, dealId }) {
+  const id = dealId != null ? String(dealId).trim() : ''
+  if (!id) return null
+  const row = chatDbRepo.getDealById.get(userId, id)
+  const stored = reviewFromDealRow(row)
+  const checkedAt = Number(row?.testimonial_checked_at || 0)
+  // Отзыв уже оставлен и дата известна — он не изменится; сеть не дёргаем.
+  if (stored?.left && stored.createdAt) return stored
+  // Отзыв оставлен, но дата отсутствует (запись из БД до миграции) — разово дотягиваем createdAt.
+  // Недавно проверяли «нет отзыва» — отдаём кеш из БД.
+  if (!stored?.left && stored && Date.now() - checkedAt < REVIEW_RECHECK_MS) return stored
+  if (typeof requestDealById !== 'function' || !token) return stored
+  try {
+    const deal = await requestDealById(token, userAgent, id)
+    const t = extractTestimonialFromDeal(deal)
+    chatDbRepo.setDealTestimonial(userId, id, {
+      status: t.status,
+      rating: t.rating,
+      left: t.left,
+      checkedAt: Date.now(),
+      createdAt: t.createdAt || null,
+    })
+    return { left: t.left, rating: t.rating, createdAt: t.createdAt || null }
+  } catch (_) {
+    return stored
+  }
+}
+
+const VIEWER_USERNAME_CACHE_TTL_MS = 10 * 60 * 1000
+const viewerUsernameCache = new Map()
+
+function getCachedViewerUsername(token) {
+  if (!token) return null
+  const row = viewerUsernameCache.get(token)
+  if (!row) return null
+  if (Date.now() - Number(row.at || 0) > VIEWER_USERNAME_CACHE_TTL_MS) {
+    viewerUsernameCache.delete(token)
+    return null
+  }
+  return row.username || null
+}
+
+/** Ник владельца токена (с кешем), чтобы не хардкодить продавца и не дёргать getViewer на каждый запрос. */
+async function resolveViewerUsername(getViewer, token, userAgent) {
+  if (!token || typeof getViewer !== 'function') return null
+  const cachedRow = viewerUsernameCache.get(token)
+  if (cachedRow && Date.now() - Number(cachedRow.at || 0) <= VIEWER_USERNAME_CACHE_TTL_MS) {
+    return cachedRow.username || null
+  }
+  try {
+    const viewer = await getViewer(token, userAgent)
+    const username = viewer?.username ? String(viewer.username) : null
+    viewerUsernameCache.set(token, { username, at: Date.now() })
+    return username
+  } catch (_) {
+    return cachedRow?.username || null
+  }
+}
+
 function mapThreadToChat(row, hiddenSet) {
   return {
     id: row.chat_id != null ? String(row.chat_id) : null,
@@ -52,9 +153,42 @@ function mapThreadToChat(row, hiddenSet) {
     lastMessageId: row.last_message_id || null,
     lastMessageText: row.last_message_text || null,
     lastMessageCreatedAt: row.last_message_created_at || null,
+    lastMessageFromBuyer:
+      row.last_message_from_buyer == null ? null : Number(row.last_message_from_buyer) === 1,
     unreadCount: Number(row.unread_count || 0),
     isHidden: hiddenSet.has(String(row.chat_id || '')),
   }
+}
+
+// Локальная непрочитанность: «новым» считаем то, что мы не прочитали на нашем
+// сайте. Опираемся на метку прочтения (last_read_message_id/last_read_ts), а не
+// на счётчик Playerok. Возвращаем количество новых сообщений от покупателя.
+function computeLocalUnread(chatDbRepo, userId, row, viewerUsername) {
+  const lastId = row?.last_message_id != null ? String(row.last_message_id) : null
+  if (!lastId) return 0
+  const readId = row?.last_read_message_id != null ? String(row.last_read_message_id) : null
+  if (readId && readId === lastId) return 0 // последнее сообщение уже прочитано
+
+  // Считаем новые сообщения от покупателя после метки прочтения (нужен ник продавца).
+  if (viewerUsername) {
+    try {
+      const readTs = Number(row?.last_read_ts || 0)
+      const res = chatDbRepo.countUnreadBuyerMessages.get(
+        userId,
+        String(row.chat_id),
+        Number.isFinite(readTs) ? readTs : 0,
+        viewerUsername
+      )
+      const count = Number(res?.total || 0)
+      if (count > 0) return count
+    } catch (_) {
+      // ниже — запасной вариант по полю строки
+    }
+  }
+
+  // Запасной вариант (ник ещё не прогрет или истории нет в БД): если последнее
+  // сообщение от покупателя и оно ещё не прочитано — помечаем как одно новое.
+  return Number(row?.last_message_from_buyer) === 1 ? 1 : 0
 }
 
 function mapMessageRow(row) {
@@ -127,6 +261,73 @@ function pickLatestBuyerSupercellEmail(rows, buyerName) {
   return pickFromRows(list)
 }
 
+// Финансы по сделке (цена/себестоимость/расходы на поднятия) считаем тем же
+// алгоритмом, что и аналитика прибыли, и индексируем по dealId. Эндпоинт сообщений
+// опрашивается часто (раз ~1.2с), поэтому держим короткий кеш на пользователя.
+const DEAL_FINANCIALS_TTL_MS = 4000
+const dealFinancialsCache = new Map() // userId -> { at, byDeal: Map }
+
+async function getDealFinancialsMap(userId, deps) {
+  const { getSalesHistoryAll, getBumpHistory, getAllSettings, getListingFees, computeProfitAnalyticsList, usdRateService } = deps
+  if (
+    typeof getSalesHistoryAll?.all !== 'function' ||
+    typeof getBumpHistory?.all !== 'function' ||
+    typeof getAllSettings?.all !== 'function' ||
+    typeof getListingFees?.all !== 'function' ||
+    typeof computeProfitAnalyticsList !== 'function'
+  ) {
+    return null
+  }
+  const cached = dealFinancialsCache.get(userId)
+  if (cached && Date.now() - cached.at < DEAL_FINANCIALS_TTL_MS) return cached.byDeal
+
+  const salesRows = getSalesHistoryAll.all(userId)
+  const bumpsRows = getBumpHistory.all(userId)
+  const settingsRows = getAllSettings.all(userId)
+  const listingFeesRows = getListingFees.all(userId)
+
+  // Курсы USD→RUB на даты продаж (себестоимость в USD → рубли по дате сделки).
+  let usdRateByDate = null
+  let fallbackRate = 0
+  if (usdRateService && typeof usdRateService.ensureRatesForDates === 'function') {
+    const dates = [
+      ...new Set(salesRows.map((r) => usdRateService.ymdFromUnix(r.sold_at)).filter(Boolean)),
+    ]
+    usdRateByDate = await usdRateService.ensureRatesForDates(dates)
+    fallbackRate = usdRateService.getLatestCachedRate() || 0
+  }
+
+  const computed = computeProfitAnalyticsList({
+    salesRows,
+    bumpsRows,
+    settingsRows,
+    listingFeesRows,
+    usdRateByDate,
+    fallbackRate,
+  })
+
+  const byDeal = new Map()
+  for (const row of computed || []) {
+    if (row?.dealId) byDeal.set(String(row.dealId), row)
+  }
+  dealFinancialsCache.set(userId, { at: Date.now(), byDeal })
+  return byDeal
+}
+
+function financialsForDeal(byDeal, dealId) {
+  if (!byDeal || dealId == null) return null
+  const row = byDeal.get(String(dealId))
+  if (!row) return null
+  return {
+    salePrice: Number(row.salePrice) || 0,
+    cost: Number(row.cost) || 0,
+    bumpCost: Number(row.bumpCost) || 0,
+    listingCost: Number(row.listingCost) || 0,
+    profit: Number(row.profit) || 0,
+    isRefund: Boolean(row.isRefund),
+  }
+}
+
 async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
   const {
     chatDbRepo,
@@ -139,6 +340,11 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
     chatDbSyncService,
     loadStoredTokenPlain,
     getAllStoredTokens,
+    getSalesHistoryAll,
+    getBumpHistory,
+    getAllSettings,
+    getListingFees,
+    computeProfitAnalyticsList,
   } = deps
   if (req.method === 'POST' && pathname === '/api/chat-db/list') {
     try {
@@ -151,13 +357,28 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const totalRow = chatDbRepo.countThreads.get(currentUserId)
       const hiddenRows = getHiddenChats.all(currentUserId)
       const hiddenSet = new Set((hiddenRows || []).map((x) => String(x.chat_id || '')).filter(Boolean))
+      // Непрочитанность считаем сами по локальной метке прочтения. Для исключения
+      // наших же сообщений нужен ник владельца токена; берём из кеша, прогревая фоном.
+      let listViewerUsername = null
+      {
+        const { token: viewerToken } = getTokenFromBodyOrStored(currentUserId, payload)
+        listViewerUsername = getCachedViewerUsername(viewerToken)
+        if (!listViewerUsername && viewerToken) {
+          void resolveViewerUsername(getViewer, viewerToken, payload?.userAgent)
+        }
+      }
       const list = []
       for (const row of rows) {
         const mapped = mapThreadToChat(row, hiddenSet)
-        if ((!mapped.buyerName || String(mapped.buyerName).trim() === '') && row.last_deal_id) {
+        if (row.last_deal_id) {
           const dealRow = chatDbRepo.getDealById.get(currentUserId, row.last_deal_id)
-          if (dealRow?.buyer_name) mapped.buyerName = String(dealRow.buyer_name)
+          if ((!mapped.buyerName || String(mapped.buyerName).trim() === '') && dealRow?.buyer_name) {
+            mapped.buyerName = String(dealRow.buyer_name)
+          }
+          mapped.review = reviewFromDealRow(dealRow)
         }
+        mapped.hasOpenProblem = hasOpenDealProblem(chatDbRepo, currentUserId, mapped.id)
+        mapped.unreadCount = computeLocalUnread(chatDbRepo, currentUserId, row, listViewerUsername)
         list.push(mapped)
       }
       return sendJson(res, 200, {
@@ -170,6 +391,20 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       }) || true
     } catch (err) {
       return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'chat-db list failed' }) || true
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat-db/mark-read') {
+    try {
+      const payload = await readJsonBody(req, { fallback: {} })
+      const chatId = payload?.chatId != null ? String(payload.chatId).trim() : ''
+      if (!chatId) {
+        return sendJson(res, 400, { error: 'chatId is required' }) || true
+      }
+      const ok = chatDbRepo.markThreadRead(currentUserId, chatId)
+      return sendJson(res, 200, { ok: Boolean(ok), chatId }) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'chat-db mark-read failed' }) || true
     }
   }
 
@@ -191,6 +426,14 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       let deals = chatDbRepo.listDealsByChatId.all(currentUserId, effectiveChatId)
       const requestedDealId = dealId || null
       let viewerUsername = null
+      {
+        const { token: viewerToken } = getTokenFromBodyOrStored(currentUserId, payload)
+        viewerUsername = getCachedViewerUsername(viewerToken)
+        // Если ник ещё не в кеше — прогреваем фоном, не задерживая ответ со списком сообщений.
+        if (!viewerUsername && viewerToken) {
+          void resolveViewerUsername(getViewer, viewerToken, payload?.userAgent)
+        }
+      }
       const latestLocalMessage = chatDbRepo.getLatestMessageByChatId.get(currentUserId, effectiveChatId)
       const localLatestMessageId =
         latestLocalMessage?.message_id != null ? String(latestLocalMessage.message_id) : null
@@ -360,9 +603,8 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             buyerSupercellEmail = cached.email || null
           } else {
             try {
-              if (!viewerUsername && typeof getViewer === 'function') {
-                const viewer = await getViewer(token, payload?.userAgent)
-                viewerUsername = viewer?.username ? String(viewer.username) : null
+              if (!viewerUsername) {
+                viewerUsername = await resolveViewerUsername(getViewer, token, payload?.userAgent)
               }
               const smart = await fetchDealChatMessagesFromPlayerok(
                 token,
@@ -387,10 +629,33 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         }
       }
 
+      // Отзыв покупателя по основной сделке чата.
+      let review = null
+      {
+        const dealIdForReview =
+          requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
+        if (dealIdForReview) {
+          const { token } = getTokenFromBodyOrStored(currentUserId, payload)
+          review = await resolveDealReview({
+            chatDbRepo,
+            requestDealById,
+            token,
+            userAgent: payload?.userAgent,
+            userId: currentUserId,
+            dealId: dealIdForReview,
+          })
+        }
+      }
+
+      // Финансы по сделкам (цена/себестоимость/расходы на поднятия) — по dealId.
+      const dealFinancialsMap = await getDealFinancialsMap(currentUserId, deps)
+
       return sendJson(res, 200, {
         ok: true,
         chatId: effectiveChatId,
+        viewerUsername: viewerUsername || null,
         list: rows.map(mapMessageRow),
+        review: review || null,
         itemTitle: primaryDeal?.item_title || thread?.item_title || null,
         itemImageUrl: primaryDeal?.item_image_url || thread?.item_image_url || null,
         itemCategory: primaryDeal?.category || thread?.category || null,
@@ -401,6 +666,9 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
           itemTitle: d?.item_title || null,
           itemImageUrl: d?.item_image_url || null,
           itemCategory: d?.category || null,
+          status: d?.status || null,
+          buyerName: d?.buyer_name || null,
+          financials: financialsForDeal(dealFinancialsMap, d?.deal_id || null),
         })),
       }) || true
     } catch (err) {
@@ -413,6 +681,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const payload = await readJsonBody(req, { fallback: {} })
       const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload?.userAgent
+      const senderUsername = (await resolveViewerUsername(getViewer, token, userAgent)) || 'Levkaster'
       const chatId = payload?.chatId != null ? String(payload.chatId).trim() : null
       let dealId = payload?.dealId != null ? String(payload.dealId).trim() : null
       const text = payload?.text != null ? String(payload.text) : ''
@@ -439,7 +708,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             text,
             createdAt: pendingCreatedAt,
             dealId: dealId || null,
-            user: { username: 'Levkaster' },
+            user: { username: senderUsername },
             pending: true,
           },
         ], { syncedAt: now })
@@ -479,7 +748,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
               text: resolvedText,
               createdAt: resolvedCreatedAt,
               dealId: dealId || null,
-              user: { username: 'Levkaster' },
+              user: { username: senderUsername },
             },
           ], { syncedAt: Date.now() })
 
@@ -557,16 +826,10 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       if (!force && Number(state?.scan_in_progress || 0) === 1) {
         return sendJson(res, 409, { error: 'Сканирование уже запущено' }) || true
       }
-      if (force && Number(state?.scan_in_progress || 0) === 1 && chatDbSyncService?.abortFullScan) {
-        chatDbSyncService.abortFullScan(currentUserId, 'Перезапуск сканирования')
-      }
-      if (!force && Number(state?.full_scan_completed_at || 0) > 0) {
-        return sendJson(res, 409, { error: 'Полная прогрузка уже выполнялась. Повтор отключен.' }) || true
-      }
       // fire-and-forget
       setTimeout(async () => {
         try {
-          await chatDbSyncService.runFullScan({
+          await chatDbSyncService.runChatScan({
             userId: currentUserId,
             token,
             userAgent: payload?.userAgent,
@@ -583,15 +846,61 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
     }
   }
 
-  if (req.method === 'POST' && pathname === '/api/chat-db/full-scan-reset') {
+  if (req.method === 'POST' && pathname === '/api/chat-db/recheck-chat') {
     try {
-      if (!chatDbSyncService?.abortFullScan) {
-        return sendJson(res, 500, { error: 'reset not available' }) || true
+      if (!chatDbSyncService?.recheckOneChat) {
+        return sendJson(res, 500, { error: 'recheck not available' }) || true
       }
-      chatDbSyncService.abortFullScan(currentUserId, 'Сканирование сброшено вручную')
+      const payload = await readJsonBody(req, { fallback: {} })
+      const chatId = payload?.chatId != null ? String(payload.chatId).trim() : ''
+      const dealId = payload?.dealId != null ? String(payload.dealId).trim() : ''
+      let effectiveChatId = chatId || null
+      if (!effectiveChatId && dealId) {
+        const dealRow = chatDbRepo.getDealById.get(currentUserId, dealId)
+        effectiveChatId = dealRow?.chat_id ? String(dealRow.chat_id) : null
+      }
+      if (!effectiveChatId) {
+        return sendJson(res, 400, { error: 'chatId or known dealId is required' }) || true
+      }
+      const { token } = getTokenFromBodyOrStored(currentUserId, payload)
+      if (!token) return sendJson(res, 400, { error: 'token is required' }) || true
+      const result = await chatDbSyncService.recheckOneChat({
+        userId: currentUserId,
+        token,
+        userAgent: payload?.userAgent,
+        chatId: effectiveChatId,
+      })
+      return sendJson(res, 200, result) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'recheck failed' }) || true
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat-db/scan-pause') {
+    try {
+      if (!chatDbSyncService?.pauseScan) {
+        return sendJson(res, 500, { error: 'pause not available' }) || true
+      }
+      chatDbSyncService.pauseScan(currentUserId)
       return sendJson(res, 200, { ok: true }) || true
     } catch (err) {
-      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'reset failed' }) || true
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'pause failed' }) || true
+    }
+  }
+
+  // /full-scan-reset сохранён как алиас «Стоп» для совместимости.
+  if (
+    req.method === 'POST' &&
+    (pathname === '/api/chat-db/scan-stop' || pathname === '/api/chat-db/full-scan-reset')
+  ) {
+    try {
+      if (!chatDbSyncService?.stopScan) {
+        return sendJson(res, 500, { error: 'stop not available' }) || true
+      }
+      chatDbSyncService.stopScan(currentUserId, 'Сканирование остановлено вручную')
+      return sendJson(res, 200, { ok: true }) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'stop failed' }) || true
     }
   }
 

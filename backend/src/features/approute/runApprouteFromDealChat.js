@@ -136,7 +136,8 @@ async function runApprouteFromDealChat({
     lastChat: chatNode,
     fullDealSnapshot,
     relistedByScanIds: [],
-    deliveryOnly: true,
+    deliveryOnly: false,
+    skipRelist: true,
     chatMessages: list,
     viewerUsername: viewerUsername != null ? String(viewerUsername) : null,
   })

@@ -5,9 +5,23 @@ APP_ENV_FILE="${SAIT_DIR}/backend/.env"
 CERTBOT_ENV_FILE="${SAIT_DIR}/.env"
 COMPOSE_FILE="${SAIT_DIR}/docker-compose.yml"
 LEGACY_CONTAINER_NAME="saitplayerok"
+
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+    return
+  fi
+  echo "docker compose not found (need docker compose v2 or docker-compose)" >&2
+  exit 1
+}
+
 echo "=== Check docker ==="
 command -v docker >/dev/null 2>&1 || { echo "docker not found"; exit 1; }
-docker compose version >/dev/null 2>&1 || { echo "docker compose not found"; exit 1; }
+docker_compose version >/dev/null 2>&1 || { echo "docker compose not found"; exit 1; }
 echo "=== Prepare folders in ${SAIT_DIR} ==="
 mkdir -p "${SAIT_DIR}/backend/data"
 if [ ! -f "${APP_ENV_FILE}" ]; then
@@ -36,15 +50,13 @@ echo "=== Stop legacy container (breaks SSL) ==="
 docker rm -f "${LEGACY_CONTAINER_NAME}" >/dev/null 2>&1 || true
 echo "=== Start via docker compose ==="
 cd "${SAIT_DIR}"
-docker compose pull app || true
-# --force-recreate: network_mode: host у app, extra_hosts у nginx и т.д.
-docker compose up -d --build --force-recreate
+docker_compose pull app || true
+docker_compose up -d --build --force-recreate
 echo ""
-docker compose ps
-if cid="$(docker compose ps -q app 2>/dev/null)" && [ -n "${cid}" ]; then
+docker_compose ps
+if cid="$(docker_compose ps -q app 2>/dev/null)" && [ -n "${cid}" ]; then
   echo "app NetworkMode: $(docker inspect "${cid}" --format '{{.HostConfig.NetworkMode}}')"
-  echo "(При PLAYEROK_OUTBOUND_IP нужен host; иначе bind EADDRNOTAVAIL.)"
 fi
 echo ""
 echo "Open: https://playerokbot.com"
-echo "Logs: cd ${SAIT_DIR} && docker compose logs -f nginx"
+echo "Logs: cd ${SAIT_DIR} && docker_compose logs -f nginx"

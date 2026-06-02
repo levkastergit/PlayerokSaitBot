@@ -52,6 +52,7 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
         },
         (resp) => {
           let data = ''
+          resp.setEncoding('utf8')
           resp.on('data', (chunk) => { data += chunk })
           resp.on('end', () => {
             if (resp.statusCode !== 200) return reject(new Error(`Playerok verifiedCards: status ${resp.statusCode}`))

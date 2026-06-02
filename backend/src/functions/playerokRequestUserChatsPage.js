@@ -57,6 +57,7 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
 
       const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
         let data = ''
+        resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })

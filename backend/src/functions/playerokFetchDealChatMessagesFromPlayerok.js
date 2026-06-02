@@ -340,8 +340,20 @@ function createFetchDealChatMessagesFromPlayerok({
             fullDeal?.buyer?.profile?.username ||
             fullDeal?.buyer?.profile?.name ||
             fullDeal?.buyer?.user?.username ||
-            fullDeal?.buyer?.user?.name
+            fullDeal?.buyer?.user?.name ||
+            fullDeal?.item?.buyer?.username ||
+            fullDeal?.item?.buyer?.name
           if (bu) dealBuyerUsername = String(bu).trim()
+        }
+        // У Playerok покупатель сделки часто лежит в deal.user (а продавец — в deal.item.user).
+        // Это важно для чатов, где покупатель ни разу не написал и имя неоткуда взять из сообщений.
+        // Берём deal.user, только если это не владелец товара (не мы-продавец).
+        if (!dealBuyerUsername && fullDeal?.user && typeof fullDeal.user === 'object') {
+          const candidate = fullDeal.user.username || fullDeal.user.name
+          const sellerName = fullDeal?.item?.user?.username || fullDeal?.item?.user?.name || null
+          if (candidate && (!sellerName || String(candidate).trim() !== String(sellerName).trim())) {
+            dealBuyerUsername = String(candidate).trim()
+          }
         }
         itemTitle =
           (item && (item.title || item.name)) || fullDeal?.productTitle || itemTitle

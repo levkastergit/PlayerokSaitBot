@@ -28,6 +28,34 @@ function createChatThreadsTable(db) {
     CREATE INDEX IF NOT EXISTS chat_threads_user_updated_idx
     ON chat_threads(user_id, updated_at DESC)
   `)
+  const extraCols = [
+    ['last_message_sender_username', 'TEXT'],
+    ['last_message_from_buyer', 'INTEGER'],
+  ]
+  for (const [name, type] of extraCols) {
+    try {
+      db.exec(`ALTER TABLE chat_threads ADD COLUMN ${name} ${type}`)
+    } catch (_) {
+      // column already exists
+    }
+  }
+
+  // Локальное состояние прочтения (на нашем сайте): какое сообщение прочитано
+  // последним и в какой момент. Непрочитанность считаем сами, не доверяя Playerok.
+  // Бэкфилл выполняется ОДИН раз при первом создании колонки: все существующие
+  // чаты считаем уже прочитанными, чтобы при апгрейде не подсветить разом всё.
+  try {
+    db.exec(`ALTER TABLE chat_threads ADD COLUMN last_read_message_id TEXT`)
+    db.exec(`UPDATE chat_threads SET last_read_message_id = last_message_id`)
+  } catch (_) {
+    // column already exists
+  }
+  try {
+    db.exec(`ALTER TABLE chat_threads ADD COLUMN last_read_ts INTEGER`)
+    db.exec(`UPDATE chat_threads SET last_read_ts = CAST(strftime('%s','now') AS INTEGER)`)
+  } catch (_) {
+    // column already exists
+  }
 }
 
 module.exports = { createChatThreadsTable }

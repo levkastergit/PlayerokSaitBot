@@ -7,6 +7,7 @@ async function handleProfitStats({ query, currentUserId, deps }) {
     getListingFees,
     computeProfitAnalyticsList,
     parseIntSafe,
+    usdRateService,
   } = deps
 
   const { token } = getTokenFromQueryOrStored(currentUserId, query)
@@ -22,7 +23,27 @@ async function handleProfitStats({ query, currentUserId, deps }) {
     const settingsRows = getAllSettings.all(currentUserId)
     const listingFeesRows = getListingFees.all(currentUserId)
 
-    const allList = computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows })
+    // Курсы USD→RUB на даты продаж (для конвертации себестоимости в USD).
+    let usdRateByDate = null
+    let fallbackRate = 0
+    if (usdRateService && typeof usdRateService.ensureRatesForDates === 'function') {
+      const dates = [
+        ...new Set(
+          salesRows.map((r) => usdRateService.ymdFromUnix(r.sold_at)).filter(Boolean)
+        ),
+      ]
+      usdRateByDate = await usdRateService.ensureRatesForDates(dates)
+      fallbackRate = usdRateService.getLatestCachedRate() || 0
+    }
+
+    const allList = computeProfitAnalyticsList({
+      salesRows,
+      bumpsRows,
+      settingsRows,
+      listingFeesRows,
+      usdRateByDate,
+      fallbackRate,
+    })
 
     const year = parseIntSafe(query.year, null)
     const month = parseIntSafe(query.month, null)

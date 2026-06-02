@@ -442,6 +442,10 @@ body {
   color: #ef4444;
 }
 
+.tab-button__icon--docker {
+  color: #0284c7;
+}
+
 [data-theme="dark"] .tab-button__icon--active {
   color: #4ade80;
 }
@@ -496,6 +500,10 @@ body {
 
 [data-theme="dark"] .tab-button__icon--actions {
   color: #f87171;
+}
+
+[data-theme="dark"] .tab-button__icon--docker {
+  color: #38bdf8;
 }
 
 .tab-page {
@@ -777,9 +785,15 @@ body {
     font-size: 0.92rem;
   }
 
+  /* Кнопку «назад» выносим в верхнюю панель, справа от бургер-меню,
+     в свободное место (z-index ниже мобильного меню — оно её перекрывает). */
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-mobile-back-btn {
-    margin-bottom: 0.35rem;
-    padding: 0.25rem 0.45rem;
+    position: fixed;
+    top: 15px;
+    left: 72px;
+    z-index: 11;
+    margin: 0;
+    padding: 0.22rem 0.6rem;
     font-size: 0.72rem;
   }
 
@@ -792,9 +806,10 @@ body {
   }
 
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__info {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     margin: 0;
+    order: 1;
     font-size: 0.78rem;
     line-height: 1.25;
   }
@@ -813,36 +828,58 @@ body {
     line-height: 1.25;
   }
 
+  /* Сделка + статус — отдельной строкой во всю ширину, под шапкой. */
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__center {
     flex: 1 1 100%;
     order: 3;
-    text-align: left;
-    justify-content: flex-start;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
   }
 
+  /* Возврат + Подтвердить сделку — растянуты на всю ширину, делят строку поровну. */
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__deal-btns {
-    justify-content: flex-start;
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: stretch;
+    gap: 0.4rem;
   }
 
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__deal-btn {
-    padding: 0.22rem 0.5rem;
-    font-size: 0.72rem;
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.26rem 0.5rem;
+    font-size: 0.78rem;
+    text-align: center;
+    justify-content: center;
   }
 
+  /* Полоса статуса — во всю ширину экрана, под кнопками сделки. */
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__order-status {
-    font-size: 0.72rem;
-    padding: 0.22rem 0.55rem;
+    width: 100%;
+    justify-content: center;
+    font-size: 0.74rem;
+    padding: 0.24rem 0.55rem;
   }
 
+  /* Служебные кнопки — в свободное место справа сверху, рядом с заголовком.
+     flex-basis: 0 — занимаем только оставшееся место рядом с info и переносим
+     кнопки внутри (иначе при basis:auto блок не влезает и падает на свою строку). */
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__actions {
-    flex: 0 0 auto;
+    flex: 1 1 0;
+    min-width: 0;
+    flex-wrap: wrap;
     margin-left: auto;
+    justify-content: flex-end;
+    align-content: flex-start;
+    gap: 0.3rem;
     order: 2;
   }
 
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-header-row__hide-btn {
-    padding: 0.22rem 0.55rem;
-    font-size: 0.72rem;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.7rem;
   }
 
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card {
@@ -876,6 +913,28 @@ body {
     margin-top: 0.25rem;
     padding: 0.35rem 0.45rem;
     font-size: 0.78rem;
+  }
+
+  /* Мобильный тоггл деталей карточки товара. */
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card__mtoggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.2rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  /* По умолчанию (свёрнуто) скрываем финансы/почту/отзыв — больше места чату. */
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card:not(.chat-item-card--mexpanded) .chat-item-card__financials,
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card:not(.chat-item-card--mexpanded) .chat-item-card__email-box,
+  .tab-page--chat .tab-grid--chat-mobile-chat .chat-item-card:not(.chat-item-card--mexpanded) .chat-item-card__review {
+    display: none;
   }
 
   .tab-page--chat .tab-grid--chat-mobile-chat .chat-messages {
@@ -1062,6 +1121,14 @@ body {
 
 .history-table__price {
   white-space: nowrap;
+}
+
+.chat-messages__loading-hint {
+  align-self: center;
+  margin: 0.25rem 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #888);
+  opacity: 0.8;
 }
 
 .chat-messages {
@@ -1632,6 +1699,103 @@ body {
   white-space: nowrap;
 }
 
+.chat-review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.chat-review-badge--left {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
+.chat-review-badge--none {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.18));
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.chat-review-badge--header {
+  font-size: 0.85rem;
+}
+
+[data-theme="dark"] .chat-review-badge--left {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.chat-item-card__review {
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.deal-action-picker {
+  margin: 0.5rem 0 0.25rem;
+}
+
+.deal-action-picker__hint {
+  color: var(--text-muted);
+}
+
+.deal-action-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.deal-action-picker__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.4));
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.deal-action-picker__item:hover {
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+.deal-action-picker__item--active {
+  border-color: rgba(59, 130, 246, 0.85);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.deal-action-picker__item input {
+  margin-top: 0.2rem;
+}
+
+.deal-action-picker__item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.deal-action-picker__item-title {
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deal-action-picker__item-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 .chat-list__buyer-last-msg {
   font-size: 0.8rem;
   color: var(--text-main);
@@ -1776,10 +1940,11 @@ body {
 }
 
 .chat-header-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
   margin-bottom: 0.5rem;
 }
 
@@ -1787,18 +1952,18 @@ body {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  justify-self: start;
+  flex: 1 1 200px;
   min-width: 0;
 }
 
 .chat-header-row__center {
-  justify-self: center;
   text-align: center;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 0.5rem 0.65rem;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1811,7 +1976,7 @@ body {
 }
 
 .chat-header-row__deal-btn {
-  padding: 0.3rem 0.7rem;
+  padding: 0.34rem 0.85rem;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
@@ -1821,11 +1986,7 @@ body {
   cursor: pointer;
   white-space: nowrap;
   line-height: 1.2;
-}
-
-.chat-header-row__deal-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent-strong);
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .chat-header-row__deal-btn:disabled {
@@ -1833,6 +1994,7 @@ body {
   cursor: not-allowed;
 }
 
+/* Возврат — деструктивное действие: красный контур. */
 .chat-header-row__deal-btn--refund {
   border-color: color-mix(in srgb, #dc2626 55%, var(--border-subtle));
   color: #dc2626;
@@ -1842,11 +2004,21 @@ body {
 .chat-header-row__deal-btn--refund:hover:not(:disabled) {
   border-color: #dc2626;
   color: #b91c1c;
-  background: color-mix(in srgb, #dc2626 10%, transparent);
+  background: color-mix(in srgb, #dc2626 12%, transparent);
+}
+
+/* Подтвердить сделку — основное положительное действие: заливка акцентом. */
+.chat-header-row__deal-btn--confirm {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .chat-header-row__deal-btn--confirm:hover:not(:disabled) {
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #fff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .chat-header-row__thumb {
@@ -1879,37 +2051,50 @@ body {
 .chat-header-row__actions {
   display: flex;
   align-items: center;
-  justify-self: end;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 1 1 auto;
   gap: 0.35rem;
 }
 
 .chat-header-row__order-status {
-  display: inline-block;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--accent-strong);
   background: var(--accent-soft);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
-  padding: 0.35rem 0.85rem;
+  padding: 0.34rem 0.8rem;
   border-radius: 999px;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
+/* Утилитарные действия — одинаковые «призрачные» пилюли. */
 .chat-header-row__hide-btn {
-  padding: 0.3rem 0.8rem;
+  padding: 0.34rem 0.8rem;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
+  background: transparent;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.2;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.chat-header-row__hide-btn:hover {
+.chat-header-row__hide-btn:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.chat-header-row__hide-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .chat-item-card {
@@ -1965,6 +2150,129 @@ body {
 .chat-item-card__buyer {
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+.chat-item-card__financials {
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+/* Тоггл «детали» нужен только в мобильной версии чата. */
+.chat-item-card__mtoggle {
+  display: none;
+}
+
+.chat-deal-fin {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  background: var(--surface-muted, rgba(127, 127, 127, 0.06));
+}
+
+.chat-deal-fin__title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-muted));
+  margin-bottom: 0.3rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-deal-fin__rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+}
+
+.chat-deal-fin__cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 5.5rem;
+}
+
+.chat-deal-fin__label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.chat-deal-fin__value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary, inherit);
+}
+
+.chat-deal-fin__value--pos {
+  color: #16a34a;
+}
+
+.chat-deal-fin__value--neg {
+  color: #ef4444;
+}
+
+/* Финансы предыдущей сделки — инлайн в ленте, у начала сделки. */
+.chat-deal-fin-inline {
+  margin: 0.6rem auto;
+  max-width: 22rem;
+  width: 100%;
+}
+
+.chat-deal-fin-inline .chat-deal-fin {
+  background: var(--surface-muted, rgba(127, 127, 127, 0.08));
+  border-style: dashed;
+}
+
+/* Компактные финансы на мобильных: 2×2 сетка, чтобы блок не перекрывал чат. */
+@media (max-width: 600px) {
+  .chat-item-card__financials {
+    margin-top: 0.3rem;
+    gap: 0.3rem;
+  }
+
+  .chat-deal-fin {
+    padding: 0.3rem 0.45rem;
+    border-radius: 6px;
+  }
+
+  .chat-deal-fin__title {
+    font-size: 0.72rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .chat-deal-fin__rows {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.2rem 0.6rem;
+  }
+
+  .chat-deal-fin__cell {
+    min-width: 0;
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+
+  .chat-deal-fin__label {
+    font-size: 0.68rem;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-deal-fin__value {
+    font-size: 0.78rem;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .chat-deal-fin-inline {
+    margin: 0.4rem auto;
+  }
 }
 
 .chat-item-card__email-box {
@@ -3056,6 +3364,52 @@ body {
   overflow: hidden;
 }
 
+/* Кнопка «Выставить» на карточке завершённого лота. */
+.lot-card__relist-wrap {
+  margin-top: 0.5rem;
+}
+
+.lot-card__relist-btn {
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.lot-card__relist-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.lot-card__relist-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lot-card__relist-btn--ok {
+  border-color: #16a34a;
+  color: #16a34a;
+}
+
+.lot-card__relist-btn--error {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+
+.lot-card__relist-error {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  color: #dc2626;
+  line-height: 1.3;
+}
+
 .lot-card__last-bump {
   margin: 0.35rem 0 0;
   font-size: 0.8rem;
@@ -3703,10 +4057,65 @@ body {
   animation: fade-in 0.2s ease;
 }
 
+.lot-settings-time-window {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.lot-settings-time-window__field {
+  flex: 1 1 8rem;
+  min-width: 7rem;
+}
+
 .lot-settings-field__label {
   font-size: 0.9rem;
   font-weight: 500;
   color: var(--text-muted);
+}
+
+.lot-settings-field__hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
+/* Объединённая вкладка «Баланс» с под-вкладками. */
+.balance-hub__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.balance-hub__tab {
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.balance-hub__tab:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.balance-hub__tab--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.balance-hub__tab--active:hover {
+  color: #fff;
 }
 
 .lot-settings-btn {
@@ -3901,6 +4310,34 @@ body {
   cursor: not-allowed;
 }
 
+.lot-settings-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lot-settings-tab {
+  padding: 0.6rem 1rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.lot-settings-tab:hover {
+  color: var(--text-main);
+}
+
+.lot-settings-tab--active {
+  color: var(--text-main);
+  border-bottom-color: var(--accent, #2563eb);
+}
+
 .lot-settings-block {
   margin-bottom: 1.25rem;
   padding: 1.25rem;
@@ -4043,6 +4480,16 @@ body {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   margin-top: 0.5rem;
+}
+
+.docker-card {
+  gap: 0.8rem;
+}
+
+.docker-output {
+  margin-top: 0.8rem;
+  min-height: 260px;
+  resize: vertical;
 }
 
 .test-probe-load {

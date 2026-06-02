@@ -51,6 +51,7 @@ async function handlePaidChat({
   getSupercellGameByCategory,
   pickSupercellCategoryFromItemHints,
   autolistGetSupercellFlowMap,
+  autolistGetTopupFlowMap,
   extractSupercellEmailFromFields,
   upsertSettings,
   createChatMessage,
@@ -60,6 +61,7 @@ async function handlePaidChat({
   runApprouteAutodelivery,
   updateDealStatus,
   deliveryOnly = false,
+  skipRelist = false,
   chatMessages = null,
   viewerUsername = null,
 }) {
@@ -120,7 +122,7 @@ async function handlePaidChat({
   const { effectiveSettings: settingsForPublish, effectiveKey: settingsKeyForPublish } =
     resolveEffectiveProductSettings(currentUserId, productKey)
   const autolistEnabled = Boolean(settingsForPublish?.autolist?.enabled)
-  const shouldTryPublish = !deliveryOnly && autolistEnabled
+  const shouldTryPublish = !deliveryOnly && !skipRelist && autolistEnabled
 
   // 2.3 Пытаемся перевыставить конкретный товар из сделки, подбирая корректный статус приоритета
   let paidChatPriorityStatusId = null
@@ -450,6 +452,37 @@ async function handlePaidChat({
       createdAt: isNewDealInChat ? nowTs : Number(prevFlow.createdAt || nowTs),
       updatedAt: nowTs,
     }
+  }
+
+  // Автопополнение по API (DTU): активируем чат-флоу (бот спросит ID/логин у покупателя).
+  if (typeof autolistGetTopupFlowMap === 'function' && effectiveSettings?.autotopupApi?.enabled && lastChat?.id) {
+    const topupMap = autolistGetTopupFlowMap(tokenHash)
+    const topupChatId = String(lastChat.id)
+    const prev = topupMap[topupChatId] || {}
+    const prevDealId = prev.dealId != null ? String(prev.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDeal = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+    topupMap[topupChatId] = {
+      ...prev,
+      chatId: topupChatId,
+      dealId: dealId || null,
+      userId: currentUserId,
+      productKey,
+      cfg: effectiveSettings.autotopupApi,
+      stage: isNewDeal ? 'await_id' : prev.stage || 'await_id',
+      askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
+      confirmMsgTs: isNewDeal ? 0 : Number(prev.confirmMsgTs || 0),
+      candidateId: isNewDeal ? '' : prev.candidateId || '',
+      orderPlaced: isNewDeal ? false : Boolean(prev.orderPlaced),
+      active: true,
+      createdAt: isNewDeal ? nowTs : Number(prev.createdAt || nowTs),
+      updatedAt: nowTs,
+    }
+    logApprouteAutodelivery('topup: flow activated', {
+      chatId: topupChatId,
+      dealId: dealId || null,
+      productKey,
+    })
   }
 
   const s = effectiveSettings

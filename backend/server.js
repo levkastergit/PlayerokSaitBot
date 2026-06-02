@@ -277,6 +277,19 @@ const {
 const { setupApprouteRepo } = require('./src/db/approuteRepo')
 const { loadApprouteApiKeyPlain, saveApprouteApiKey, getApprouteSettingsMeta } = setupApprouteRepo(db)
 
+const { setupUsdRateService } = require('./src/features/fx/usdRateService')
+const usdRateService = setupUsdRateService(db)
+
+// Прогрев курсов USD в фоне — чтобы первые запросы статистики/чат-финансов
+// не блокировались массовой загрузкой курсов с ЦБ (далее всё из кэша БД).
+setTimeout(() => {
+  try {
+    const rows = db.prepare('SELECT DISTINCT sold_at FROM sales_history').all()
+    const dates = [...new Set(rows.map((r) => usdRateService.ymdFromUnix(r.sold_at)).filter(Boolean))]
+    if (dates.length > 0) void usdRateService.ensureRatesForDates(dates).catch(() => {})
+  } catch (_) {}
+}, 2000)
+
 const { runApprouteAutodelivery } = require('./src/features/approute/runApprouteAutodelivery')
 
 chatSnapshotsRepo = setupChatSnapshotsRepo(db)
@@ -339,13 +352,22 @@ const { dispatchPublicAuth, dispatchPrivateAuthAndSettings } = require('./src/ht
 const { dispatchFinance } = require('./src/http/dispatchFinance')
 const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { dispatchChatDb } = require('./src/http/dispatchChatDb')
+const { isAllActionsStopped } = require('./src/infra/runtimeControl')
 
 const { processActiveSupercellFlows } = require('./src/features/autolist/processActiveSupercellFlows')
+const { processActiveTopupFlows } = require('./src/features/autolist/processActiveTopupFlows')
+const { createProcessSingleTopupFlow } = require('./src/features/approute/runApprouteTopup')
+const {
+  checkApprouteDtuOrder,
+  createApprouteDtuOrderAndConfirm,
+  isApprouteValidationError: isApprouteValidationErrorFn,
+} = require('./src/integrations/approute/approuteClient')
 const { scanCompletedAndRelist } = require('./src/features/autolist/scanCompletedAndRelist')
 const { handlePaidChat } = require('./src/features/autolist/handlePaidChat')
 const {
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
+  handlePurchaseWindowAutomessage,
 } = require('./src/features/autolist/handleChatAutomessage')
 const { handleAutolistTick } = require('./src/features/autolist/handleAutolistTick')
 const { handleRelistItem } = require('./src/features/playerok/relistItem/handleRelistItem')
@@ -422,6 +444,8 @@ const {
   autolistGetApprouteRetryMap,
   autolistGetSupercellFlowMap,
   autolistPruneSupercellFlowMap,
+  autolistGetTopupFlowMap,
+  autolistPruneTopupFlowMap,
 } = require('./src/features/autolist/autolistState')
 
 const getViewer = createGetViewer({
@@ -554,7 +578,7 @@ const chatDbSyncService = createChatDbSyncService({
   userAgentProvider: () =>
     PLAYEROK_USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-  runAutomationForChat: async ({ userId, token, userAgent, chatId, dealId, dealItemId }) => {
+  runAutomationForChat: async ({ userId, token, userAgent, chatId, dealId, dealItemId, prefetched }) => {
     if (!postLocalRef) return
     try {
       await postLocalRef('/api/playerok/deal-chat-messages', {
@@ -564,6 +588,7 @@ const chatDbSyncService = createChatDbSyncService({
         chatId,
         ...(dealId ? { dealId } : {}),
         ...(dealItemId ? { dealItemId } : {}),
+        ...(prefetched ? { prefetched } : {}),
       })
     } catch (_) {
       // ignore automation bridge errors
@@ -615,6 +640,20 @@ const processSingleSupercellFlow = createProcessSingleSupercellFlow({
   isPlayerokRateLimitError,
   createChatMessage,
   requestSupercellCodeForChat,
+})
+
+const processSingleTopupFlow = createProcessSingleTopupFlow({
+  autolistGetTopupFlowMap,
+  fetchDealChatMessagesFromPlayerok,
+  withRetry,
+  isPlayerokRateLimitError,
+  createChatMessage,
+  loadApprouteApiKeyPlain,
+  checkApprouteDtuOrder,
+  createApprouteDtuOrderAndConfirm,
+  isApprouteValidationError: isApprouteValidationErrorFn,
+  updateDealStatus,
+  toUnixTs,
 })
 
 /** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
@@ -816,6 +855,12 @@ const server = http.createServer(async (req, res) => {
         sendChatMessageToPlayerok,
         loadStoredTokenPlain,
         getAllStoredTokens,
+        getSalesHistoryAll,
+        getBumpHistory,
+        getAllSettings,
+        getListingFees,
+        computeProfitAnalyticsList,
+        usdRateService,
       },
     })
     if (handled) return
@@ -851,6 +896,7 @@ const server = http.createServer(async (req, res) => {
         getListingFees,
         computeProfitAnalyticsList,
         clampInt,
+        usdRateService,
       },
     })
     if (handled) return
@@ -911,15 +957,20 @@ const server = http.createServer(async (req, res) => {
         getSupercellGameByCategory,
         pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap,
+        autolistGetTopupFlowMap,
+        autolistPruneTopupFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
         sleep,
         processActiveSupercellFlows,
         processSingleSupercellFlow,
+        processActiveTopupFlows,
+        processSingleTopupFlow,
         isSupercellModuleEnabled,
         handlePostPurchaseAutomessage,
         handleDealConfirmedAutomessage,
+        handlePurchaseWindowAutomessage,
         fetchInProgressDealsFromPlayerok,
         fetchActiveItemsFromPlayerok,
         fetchCompletedDealsFromPlayerok,
@@ -944,6 +995,7 @@ const server = http.createServer(async (req, res) => {
         setChatsSnapshotCache,
         isChatsSnapshotFresh,
         scheduleChatsSnapshotRefresh,
+        isAllActionsStopped,
       },
     })
 
@@ -1017,6 +1069,7 @@ server.listen(PORT, () => {
     getAllStoredTokens,
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    isAllActionsStopped,
   })
 
   setupAutobumpBackgroundJob({
@@ -1028,6 +1081,7 @@ server.listen(PORT, () => {
     buildProductKey,
     postLocal,
     getDefaultUserAgent: () => DEFAULT_USER_AGENT,
+    isAllActionsStopped,
   })
 
   setupChatsWarmupBackgroundJob({
@@ -1035,6 +1089,7 @@ server.listen(PORT, () => {
     getAllStoredTokens,
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    isAllActionsStopped,
   })
 
   setupChatsSyncBackgroundJob({
@@ -1043,6 +1098,7 @@ server.listen(PORT, () => {
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
     chatDbSyncService,
     chatDbRepo,
+    isAllActionsStopped,
     intervalMs: 500,
   })
 })

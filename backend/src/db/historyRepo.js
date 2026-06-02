@@ -25,7 +25,7 @@ function setupHistoryRepo(db) {
   `)
 
   const getSalesHistoryAll = db.prepare(`
-    SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name
+    SELECT product_key, product_title, sold_at, price, status, is_refund, buyer_name, deal_id, item_id
     FROM sales_history
     WHERE user_id = ?
     ORDER BY sold_at DESC

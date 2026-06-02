@@ -40,6 +40,7 @@ async function readPayloadMaybeLimited(req, { maxBytes = null } = {}) {
 }
 
 async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps }) {
+  const actionsStopped = typeof deps.isAllActionsStopped === 'function' && deps.isAllActionsStopped()
   const readLimited = async () => {
     try {
       return await readPayloadMaybeLimited(req, { maxBytes: 1e6 })
@@ -163,6 +164,9 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/autolist-tick') {
+    if (actionsStopped) {
+      return sendJson(res, 423, { ok: false, error: 'Фоновые действия остановлены' }) || true
+    }
     const payload = await readUnlimited()
     if (payload == null) return true
     const effectiveUserId = effectiveUserIdFromPayload(payload, currentUserId)
@@ -217,15 +221,20 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         getSupercellGameByCategory: deps.getSupercellGameByCategory,
         pickSupercellCategoryFromItemHints: deps.pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
+        autolistGetTopupFlowMap: deps.autolistGetTopupFlowMap,
+        autolistPruneTopupFlowMap: deps.autolistPruneTopupFlowMap,
         extractSupercellEmailFromFields: deps.extractSupercellEmailFromFields,
         upsertSettings: deps.upsertSettings,
         createChatMessage: deps.createChatMessage,
         sleep: deps.sleep,
         processActiveSupercellFlows: deps.processActiveSupercellFlows,
         processSingleSupercellFlow: deps.processSingleSupercellFlow,
+        processActiveTopupFlows: deps.processActiveTopupFlows,
+        processSingleTopupFlow: deps.processSingleTopupFlow,
         isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
         handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
         handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
+        handlePurchaseWindowAutomessage: deps.handlePurchaseWindowAutomessage,
         fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
       },
     }))
@@ -238,7 +247,16 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
     const result = await handleRelistItem({
       payload,
       currentUserId,
-      deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, publishItem: deps.publishItem },
+      deps: {
+        getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+        publishItem: deps.publishItem,
+        fetchItemPriorityStatuses: deps.fetchItemPriorityStatuses,
+        requestItemById: deps.requestItemById,
+        withRetry: deps.withRetry,
+        isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+        isPlayerokPublishRetryable: deps.isPlayerokPublishRetryable,
+        AUTOBUMP_PRIORITY_STATUS_ID: deps.AUTOBUMP_PRIORITY_STATUS_ID,
+      },
     })
     return sendJson(res, result.statusCode, result.data) || true
   }
@@ -339,7 +357,13 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages') {
-    const payload = await readLimited()
+    if (actionsStopped) {
+      return sendJson(res, 423, { ok: false, error: 'Фоновые действия остановлены' }) || true
+    }
+    // Внутренний эндпоинт (вызывается из синхронизации с уже загруженными
+    // сообщениями в теле — prefetched). Тело может превышать 1 МБ, поэтому без
+    // лимита, иначе запрос отбрасывается и автосообщения не отправляются.
+    const payload = await readUnlimited()
     if (payload == null) return true
     const result = await handleDealChatMessages({
         payload,
@@ -352,6 +376,8 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
           autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
           processSingleSupercellFlow: deps.processSingleSupercellFlow,
+          autolistGetTopupFlowMap: deps.autolistGetTopupFlowMap,
+          processSingleTopupFlow: deps.processSingleTopupFlow,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
           handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
           handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
@@ -389,6 +415,9 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/deal-chat-messages-batch') {
+    if (actionsStopped) {
+      return sendJson(res, 423, { ok: false, error: 'Фоновые действия остановлены' }) || true
+    }
     const payload = await readLimited()
     if (payload == null) return true
     const result = await handleDealChatMessagesBatch({
@@ -402,6 +431,8 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
           autolistGetSupercellFlowMap: deps.autolistGetSupercellFlowMap,
           processSingleSupercellFlow: deps.processSingleSupercellFlow,
+          autolistGetTopupFlowMap: deps.autolistGetTopupFlowMap,
+          processSingleTopupFlow: deps.processSingleTopupFlow,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
           handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
           handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,

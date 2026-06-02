@@ -13,6 +13,7 @@ import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVari
 
 export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [productSettings, setProductSettings] = useState(null)
+  const [settingsTab, setSettingsTab] = useState('general')
   const [loadingSettings, setLoadingSettings] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsError, setSettingsError] = useState(null)
@@ -34,6 +35,28 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [approuteVariants, setApprouteVariants] = useState([])
   const [approuteVariantsLoading, setApprouteVariantsLoading] = useState(false)
   const [approuteVariantsError, setApprouteVariantsError] = useState(null)
+  const [topupVariants, setTopupVariants] = useState([])
+  const [topupVariantsLoading, setTopupVariantsLoading] = useState(false)
+  const [topupVariantsError, setTopupVariantsError] = useState(null)
+  // Скрытый режим отладки: включается набором слова «дебаг» на странице.
+  const [debugMode, setDebugMode] = useState(false)
+  const debugBufferRef = useRef('')
+
+  useEffect(() => {
+    const TARGET = 'дебаг'
+    const onKeyDown = (e) => {
+      const k = e.key
+      if (!k || k.length !== 1) return
+      const buf = (debugBufferRef.current + k.toLowerCase()).slice(-TARGET.length)
+      debugBufferRef.current = buf
+      if (buf === TARGET) {
+        debugBufferRef.current = ''
+        setDebugMode((prev) => !prev)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const baseProductKey = lot ? getProductKey(lot) : null
   const groupKey = settingsLabel ? getGroupSettingsKey(settingsLabel) : ''
@@ -67,6 +90,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           groupName: typeof cleaned.groupName === 'string' ? cleaned.groupName : '',
           autobump: cleaned.autobump || { enabled: false, schedule: [] },
           autodeliveryApi: cleaned.autodeliveryApi || { enabled: false },
+          autotopupApi: cleaned.autotopupApi || { enabled: false },
         }
       : { ...cleaned, settingsLabel: '' }
 
@@ -83,6 +107,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
 
   const defaultProductSettings = () => ({
     cost: 0,
+    costUsd: 0,
     settingsLabel: '',
     groupName: '',
     autodelivery: {
@@ -106,6 +131,24 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       deliveryMessage: '{delivery}',
       autoCompleteDeal: false,
     },
+    autotopupApi: {
+      enabled: false,
+      serviceId: '',
+      serviceName: '',
+      variantId: '',
+      variantName: '',
+      variantOrderServiceId: '',
+      denominationId: '',
+      variantRequired: false,
+      quantity: 1,
+      amount: '',
+      amountCurrencyCode: 'RUB',
+      askIdMessage: 'Для пополнения напишите ваш игровой ID/логин.',
+      confirmTemplate: 'Подтвердите: ваш ID/логин — {id}. Всё верно? Напишите «да» или «нет».',
+      invalidIdMessage: 'ID/логин не прошёл проверку. Пришлите, пожалуйста, корректный ID/логин ещё раз.',
+      successMessage: 'Готово! Пополнение выполнено. Спасибо за покупку.',
+      autoCompleteDeal: false,
+    },
     autolist: { enabled: false },
     automessage: {
       enabled: false,
@@ -118,6 +161,12 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     dealConfirmedAutomessage: {
       enabled: false,
       message: '',
+    },
+    purchaseWindowAutomessage: {
+      enabled: false,
+      message: '',
+      start: '12:00',
+      end: '13:00',
     },
     emailValidation: {
       enabled: false,
@@ -191,7 +240,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   }, [token, lot?.id, lot?.price])
 
   useEffect(() => {
-    if (!productSettings?.autodeliveryApi?.enabled) {
+    if (!productSettings?.autodeliveryApi?.enabled && !productSettings?.autotopupApi?.enabled) {
       setApprouteServices([])
       setApprouteServicesError(null)
       setApprouteServicesLoading(false)
@@ -219,7 +268,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         setApprouteServicesLoading(false)
       })
     return () => { cancelled = true }
-  }, [productSettings?.autodeliveryApi?.enabled])
+  }, [productSettings?.autodeliveryApi?.enabled, productSettings?.autotopupApi?.enabled])
 
   const approuteServiceId = productSettings?.autodeliveryApi?.serviceId ?? ''
 
@@ -311,6 +360,94 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     return () => { cancelled = true }
   }, [productSettings?.autodeliveryApi?.enabled, approuteServiceId])
 
+  const topupServiceId = productSettings?.autotopupApi?.serviceId ?? ''
+
+  // Услуги AppRoute делим по типу: direct_topup -> автопополнение, остальные
+  // (voucher и т.п.) -> автовыдача. Услуги без типа показываем в обоих (фолбэк).
+  const serviceTypeOf = (s) => String(s?.serviceType || '').trim().toLowerCase()
+  const isDtuService = (s) => serviceTypeOf(s) === 'direct_topup'
+  const shopServices = approuteServices.filter((s) => !isDtuService(s))
+  const dtuServices = approuteServices.filter((s) => {
+    const t = serviceTypeOf(s)
+    return !t || t === 'direct_topup'
+  })
+
+  useEffect(() => {
+    if (!productSettings?.autotopupApi?.enabled) {
+      setTopupVariants([])
+      setTopupVariantsError(null)
+      setTopupVariantsLoading(false)
+      return
+    }
+    const sid = String(topupServiceId || '').trim()
+    if (!sid) {
+      setTopupVariants([])
+      setTopupVariantsError(null)
+      setTopupVariantsLoading(false)
+      return
+    }
+    let cancelled = false
+    setTopupVariantsLoading(true)
+    setTopupVariantsError(null)
+    fetchApprouteServiceVariants(sid)
+      .then((r) => {
+        if (cancelled) return
+        if (!r.ok) {
+          setTopupVariants([])
+          setTopupVariantsError(r.error || 'Не удалось загрузить номиналы')
+          setProductSettings((prev) => {
+            if (!prev?.autotopupApi) return prev
+            return { ...prev, autotopupApi: { ...prev.autotopupApi, variantRequired: false } }
+          })
+        } else {
+          const variants = r.variants || []
+          setTopupVariants(variants)
+          setTopupVariantsError(null)
+          setProductSettings((prev) => {
+            if (!prev?.autotopupApi) return prev
+            const api = prev.autotopupApi
+            const curVariant = String(api.variantId || '').trim()
+            const stillValid = variants.some((v) => String(v.id) === curVariant)
+            const variantRequired = variants.length > 0
+            let nextVariantId = api.variantId
+            let nextVariantName = api.variantName
+            let nextVariantOrderServiceId = api.variantOrderServiceId || ''
+            let nextDenominationId = api.denominationId || ''
+            if (!stillValid && curVariant) {
+              nextVariantId = ''
+              nextVariantName = ''
+              nextVariantOrderServiceId = ''
+              nextDenominationId = ''
+            } else if (stillValid && curVariant) {
+              const picked = variants.find((v) => String(v.id) === curVariant)
+              nextVariantName = picked ? formatApprouteVariantLabel(picked) : api.variantName
+              nextVariantOrderServiceId = picked?.orderServiceId ? String(picked.orderServiceId) : curVariant
+              nextDenominationId = picked?.denominationId ? String(picked.denominationId) : curVariant
+            }
+            return {
+              ...prev,
+              autotopupApi: {
+                ...api,
+                variantId: nextVariantId,
+                variantName: nextVariantName,
+                variantOrderServiceId: nextVariantOrderServiceId,
+                denominationId: nextDenominationId,
+                variantRequired,
+              },
+            }
+          })
+        }
+        setTopupVariantsLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setTopupVariants([])
+        setTopupVariantsError('Не удалось загрузить номиналы')
+        setTopupVariantsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [productSettings?.autotopupApi?.enabled, topupServiceId])
+
   useEffect(() => {
     if (!token || !baseProductKey) {
       setProductSettings(null)
@@ -330,6 +467,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         ...base,
         ...loaded,
         cost: typeof loaded.cost === 'number' ? loaded.cost : (parseFloat(loaded.cost) || 0),
+        costUsd: typeof loaded.costUsd === 'number' ? loaded.costUsd : (parseFloat(loaded.costUsd) || 0),
         groupName: typeof loaded.groupName === 'string' ? loaded.groupName : '',
         autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
         autodeliveryApi: {
@@ -366,6 +504,50 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
               ? String(loaded.autodeliveryApi.ordersType).toLowerCase()
               : 'shop',
         },
+        autotopupApi: {
+          ...base.autotopupApi,
+          ...(loaded.autotopupApi || {}),
+          enabled: Boolean(loaded.autotopupApi?.enabled),
+          serviceId:
+            loaded.autotopupApi?.serviceId != null ? String(loaded.autotopupApi.serviceId) : '',
+          serviceName:
+            typeof loaded.autotopupApi?.serviceName === 'string' ? loaded.autotopupApi.serviceName : '',
+          quantity: Math.max(1, Math.min(99, Math.floor(Number(loaded.autotopupApi?.quantity) || 1))),
+          variantId:
+            loaded.autotopupApi?.variantId != null ? String(loaded.autotopupApi.variantId) : '',
+          variantName:
+            typeof loaded.autotopupApi?.variantName === 'string' ? loaded.autotopupApi.variantName : '',
+          variantRequired: Boolean(loaded.autotopupApi?.variantRequired),
+          variantOrderServiceId:
+            typeof loaded.autotopupApi?.variantOrderServiceId === 'string'
+              ? loaded.autotopupApi.variantOrderServiceId
+              : '',
+          denominationId:
+            loaded.autotopupApi?.denominationId != null ? String(loaded.autotopupApi.denominationId) : '',
+          amount:
+            loaded.autotopupApi?.amount != null ? String(loaded.autotopupApi.amount) : '',
+          amountCurrencyCode:
+            typeof loaded.autotopupApi?.amountCurrencyCode === 'string' && loaded.autotopupApi.amountCurrencyCode
+              ? loaded.autotopupApi.amountCurrencyCode
+              : 'RUB',
+          askIdMessage:
+            typeof loaded.autotopupApi?.askIdMessage === 'string'
+              ? loaded.autotopupApi.askIdMessage
+              : base.autotopupApi.askIdMessage,
+          confirmTemplate:
+            typeof loaded.autotopupApi?.confirmTemplate === 'string'
+              ? loaded.autotopupApi.confirmTemplate
+              : base.autotopupApi.confirmTemplate,
+          invalidIdMessage:
+            typeof loaded.autotopupApi?.invalidIdMessage === 'string'
+              ? loaded.autotopupApi.invalidIdMessage
+              : base.autotopupApi.invalidIdMessage,
+          successMessage:
+            typeof loaded.autotopupApi?.successMessage === 'string'
+              ? loaded.autotopupApi.successMessage
+              : base.autotopupApi.successMessage,
+          autoCompleteDeal: Boolean(loaded.autotopupApi?.autoCompleteDeal),
+        },
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
@@ -394,6 +576,25 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             typeof loaded.dealConfirmedAutomessage?.message === 'string'
               ? loaded.dealConfirmedAutomessage.message
               : '',
+        },
+        purchaseWindowAutomessage: {
+          ...base.purchaseWindowAutomessage,
+          ...(loaded.purchaseWindowAutomessage || {}),
+          enabled: Boolean(loaded.purchaseWindowAutomessage?.enabled),
+          message:
+            typeof loaded.purchaseWindowAutomessage?.message === 'string'
+              ? loaded.purchaseWindowAutomessage.message
+              : '',
+          start:
+            typeof loaded.purchaseWindowAutomessage?.start === 'string' &&
+            loaded.purchaseWindowAutomessage.start
+              ? loaded.purchaseWindowAutomessage.start
+              : base.purchaseWindowAutomessage.start,
+          end:
+            typeof loaded.purchaseWindowAutomessage?.end === 'string' &&
+            loaded.purchaseWindowAutomessage.end
+              ? loaded.purchaseWindowAutomessage.end
+              : base.purchaseWindowAutomessage.end,
         },
         emailValidation: {
           ...base.emailValidation,
@@ -625,6 +826,13 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     }))
   }
 
+  const setPurchaseWindowAutomessage = (field, value) => {
+    setProductSettings((prev) => ({
+      ...prev,
+      purchaseWindowAutomessage: { ...(prev?.purchaseWindowAutomessage || {}), [field]: value },
+    }))
+  }
+
   const setEmailValidation = (field, value) => {
     setProductSettings((prev) => ({
       ...prev,
@@ -826,7 +1034,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                 )}
               </div>
               <div className="lot-settings-page__header-text">
-                <h2 className="lot-settings-page__title">Настройки товара</h2>
+                <h2 className="lot-settings-page__title">
+                  Настройки товара
+                  {debugMode && (
+                    <span style={{ marginLeft: 8, fontSize: '0.7em', color: '#ef4444', fontWeight: 600 }}>
+                      • режим отладки
+                    </span>
+                  )}
+                </h2>
                 <p className="lot-settings-page__product-name">{lot.title}</p>
                 {lot.game && (
                   <p className="lot-settings-page__product-game">{lot.game}</p>
@@ -841,6 +1056,32 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
 
             {!loadingSettings && productSettings != null && (
               <>
+                <div className="lot-settings-tabs" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === 'general'}
+                    className={
+                      'lot-settings-tab' + (settingsTab === 'general' ? ' lot-settings-tab--active' : '')
+                    }
+                    onClick={() => setSettingsTab('general')}
+                  >
+                    Основные настройки
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === 'automessage'}
+                    className={
+                      'lot-settings-tab' + (settingsTab === 'automessage' ? ' lot-settings-tab--active' : '')
+                    }
+                    onClick={() => setSettingsTab('automessage')}
+                  >
+                    Настройки автосообщения
+                  </button>
+                </div>
+                {settingsTab === 'general' && (
+                <>
                 <section className="lot-settings-block">
                   <h3 className="lot-settings-block__title">Группа товара</h3>
                   <div className="lot-settings-row" style={{ alignItems: 'flex-end', gap: 8 }}>
@@ -865,15 +1106,18 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                 <section className="lot-settings-block">
                   <h3 className="lot-settings-block__title">Себестоимость</h3>
                   <label className="lot-settings-field">
-                    <span className="lot-settings-field__label">Себестоимость товара (₽)</span>
+                    <span className="lot-settings-field__label">Себестоимость товара ($)</span>
                     <input
                       type="number"
                       className="lot-settings-input lot-settings-input--price"
                       min={0}
                       step={0.01}
-                      value={productSettings?.cost ?? 0}
-                      onChange={(e) => setProductSettings((p) => ({ ...p, cost: parseFloat(e.target.value) || 0 }))}
+                      value={productSettings?.costUsd ?? 0}
+                      onChange={(e) => setProductSettings((p) => ({ ...p, costUsd: parseFloat(e.target.value) || 0 }))}
                     />
+                    <span className="lot-settings-field__hint">
+                      В долларах. Для прибыли конвертируется в ₽ по курсу ЦБ на дату продажи.
+                    </span>
                   </label>
                 </section>
                 <section className="lot-settings-block">
@@ -992,7 +1236,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           }}
                         >
                           <option value="">— выберите услугу —</option>
-                          {approuteServices.map((svc) => (
+                          {shopServices.map((svc) => (
                             <option key={svc.id} value={svc.id}>
                               {svc.name}
                               {svc.price != null ? ` (${svc.price} ₽)` : ''}
@@ -1044,28 +1288,30 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           )}
                         </>
                       )}
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">ID услуги (если нет в списке)</span>
-                        <input
-                          type="text"
-                          className="lot-settings-input"
-                          value={productSettings?.autodeliveryApi?.serviceId ?? ''}
-                          onChange={(e) =>
-                            setProductSettings((prev) => ({
-                              ...prev,
-                              autodeliveryApi: {
-                                ...(prev?.autodeliveryApi || {}),
-                                serviceId: e.target.value,
-                                variantId: '',
-                                variantName: '',
-                                variantOrderServiceId: '',
-                                variantRequired: false,
-                              },
-                            }))
-                          }
-                        />
-                      </label>
-                      {approuteVariants.length > 0 && (
+                      {debugMode && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">ID услуги (если нет в списке)</span>
+                          <input
+                            type="text"
+                            className="lot-settings-input"
+                            value={productSettings?.autodeliveryApi?.serviceId ?? ''}
+                            onChange={(e) =>
+                              setProductSettings((prev) => ({
+                                ...prev,
+                                autodeliveryApi: {
+                                  ...(prev?.autodeliveryApi || {}),
+                                  serviceId: e.target.value,
+                                  variantId: '',
+                                  variantName: '',
+                                  variantOrderServiceId: '',
+                                  variantRequired: false,
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                      )}
+                      {debugMode && approuteVariants.length > 0 && (
                         <label className="lot-settings-field">
                           <span className="lot-settings-field__label">ID номинала (если нет в списке)</span>
                           <input
@@ -1076,32 +1322,6 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           />
                         </label>
                       )}
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Количество</span>
-                        <input
-                          type="number"
-                          className="lot-settings-input lot-settings-input--price"
-                          min={1}
-                          max={99}
-                          value={productSettings?.autodeliveryApi?.quantity ?? 1}
-                          onChange={(e) =>
-                            setFeature(
-                              'autodeliveryApi',
-                              'quantity',
-                              Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1))
-                            )
-                          }
-                        />
-                      </label>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение при покупке</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          value={productSettings?.autodeliveryApi?.messageOnPurchase ?? ''}
-                          onChange={(e) => setFeature('autodeliveryApi', 'messageOnPurchase', e.target.value)}
-                          rows={2}
-                        />
-                      </label>
                       <label className="lot-settings-field">
                         <span className="lot-settings-field__label">Сообщение с выдачей ({'{delivery}'}, {'{Kod}'})</span>
                         <textarea
@@ -1127,6 +1347,170 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                   )}
                 </section>
                 <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автопополнение по API</h3>
+                  <p className="card-text">
+                    После оплаты бот попросит покупателя прислать игровой ID/логин, проверит его через
+                    AppRoute и переспросит подтверждение. После «да» — пополнит аккаунт напрямую.
+                  </p>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autotopupApi?.enabled)}
+                      onChange={(e) => setFeature('autotopupApi', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автопополнение по API</span>
+                  </label>
+                  {Boolean(productSettings?.autotopupApi?.enabled) && (
+                    <div className="lot-settings-autodelivery-extra">
+                      {approuteServicesLoading && (
+                        <p className="lot-settings-field__label">Загрузка услуг AppRoute…</p>
+                      )}
+                      {approuteServicesError && (
+                        <p className="lot-settings-field__label">{approuteServicesError}</p>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Услуга AppRoute (пополнение)</span>
+                        <select
+                          className="lot-settings-input"
+                          value={productSettings?.autotopupApi?.serviceId ?? ''}
+                          onChange={(e) => {
+                            const id = e.target.value
+                            const picked = approuteServices.find((s) => String(s.id) === String(id))
+                            setProductSettings((prev) => ({
+                              ...prev,
+                              autotopupApi: {
+                                ...(prev?.autotopupApi || {}),
+                                serviceId: id,
+                                serviceName: picked?.name || '',
+                                variantId: '',
+                                variantName: '',
+                                variantOrderServiceId: '',
+                                denominationId: '',
+                                variantRequired: false,
+                              },
+                            }))
+                          }}
+                        >
+                          <option value="">— выберите услугу —</option>
+                          {dtuServices.map((svc) => (
+                            <option key={svc.id} value={svc.id}>
+                              {svc.name}
+                              {svc.price != null ? ` (${svc.price} ₽)` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {String(topupServiceId || '').trim() && (
+                        <>
+                          {topupVariantsLoading && (
+                            <p className="lot-settings-field__label">Загрузка номиналов…</p>
+                          )}
+                          {topupVariantsError && (
+                            <p className="lot-settings-field__label">{topupVariantsError}</p>
+                          )}
+                          {topupVariants.length > 0 && (
+                            <label className="lot-settings-field">
+                              <span className="lot-settings-field__label">Номинал</span>
+                              <select
+                                className="lot-settings-input"
+                                value={productSettings?.autotopupApi?.variantId ?? ''}
+                                onChange={(e) => {
+                                  const vid = e.target.value
+                                  const picked = topupVariants.find((v) => String(v.id) === String(vid))
+                                  setProductSettings((prev) => ({
+                                    ...prev,
+                                    autotopupApi: {
+                                      ...(prev?.autotopupApi || {}),
+                                      variantId: vid,
+                                      variantName: picked ? formatApprouteVariantLabel(picked) : '',
+                                      variantOrderServiceId: picked?.orderServiceId
+                                        ? String(picked.orderServiceId)
+                                        : vid,
+                                      denominationId: picked?.denominationId
+                                        ? String(picked.denominationId)
+                                        : vid,
+                                    },
+                                  }))
+                                }}
+                              >
+                                <option value="">— выберите номинал —</option>
+                                {topupVariants.map((v) => (
+                                  <option key={v.id} value={v.id}>
+                                    {formatApprouteVariantLabel(v)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </>
+                      )}
+                      {debugMode && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">ID номинала (denominationId, если нет в списке)</span>
+                          <input
+                            type="text"
+                            className="lot-settings-input"
+                            value={productSettings?.autotopupApi?.denominationId ?? ''}
+                            onChange={(e) => setFeature('autotopupApi', 'denominationId', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение «запросить ID/логин»</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autotopupApi?.askIdMessage ?? ''}
+                          onChange={(e) => setFeature('autotopupApi', 'askIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение подтверждения ({'{id}'} — подставится ID)</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autotopupApi?.confirmTemplate ?? ''}
+                          onChange={(e) => setFeature('autotopupApi', 'confirmTemplate', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при неверном ID</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autotopupApi?.invalidIdMessage ?? ''}
+                          onChange={(e) => setFeature('autotopupApi', 'invalidIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение об успешном пополнении</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autotopupApi?.successMessage ?? ''}
+                          onChange={(e) => setFeature('autotopupApi', 'successMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-toggle">
+                        <input
+                          type="checkbox"
+                          className="lot-settings-toggle__input"
+                          checked={Boolean(productSettings?.autotopupApi?.autoCompleteDeal)}
+                          onChange={(e) => setFeature('autotopupApi', 'autoCompleteDeal', e.target.checked)}
+                        />
+                        <span className="lot-settings-toggle__switch">
+                          <span className="lot-settings-toggle__knob" />
+                        </span>
+                        <span className="lot-settings-toggle__label">Автозавершение сделки после пополнения</span>
+                      </label>
+                    </div>
+                  )}
+                </section>
+                <section className="lot-settings-block">
                   <h3 className="lot-settings-block__title">Автовыставление</h3>
                   <label className="lot-settings-toggle">
                     <input
@@ -1141,6 +1525,10 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     <span className="lot-settings-toggle__label">Включить автовыставление</span>
                   </label>
                 </section>
+                </>
+                )}
+                {settingsTab === 'automessage' && (
+                <>
                 <section className="lot-settings-block">
                   <h3 className="lot-settings-block__title">Автосообщение</h3>
                   <label className="lot-settings-toggle">
@@ -1251,6 +1639,66 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     </label>
                   )}
                 </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автосообщение по времени покупки</h3>
+                  <p className="card-text">
+                    Если покупатель оплатит товар в указанный промежуток времени (по МСК), ему
+                    отправится это сообщение. Если покупка вне промежутка — сообщение не отправляется,
+                    задание считается выполненным.
+                  </p>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.purchaseWindowAutomessage?.enabled)}
+                      onChange={(e) => setPurchaseWindowAutomessage('enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">
+                      Включить автосообщение по времени покупки
+                    </span>
+                  </label>
+                  {Boolean(productSettings?.purchaseWindowAutomessage?.enabled) && (
+                    <>
+                      <div className="lot-settings-time-window">
+                        <label className="lot-settings-field lot-settings-time-window__field">
+                          <span className="lot-settings-field__label">С (МСК)</span>
+                          <input
+                            type="time"
+                            className="lot-settings-input"
+                            value={productSettings?.purchaseWindowAutomessage?.start ?? '12:00'}
+                            onChange={(e) => setPurchaseWindowAutomessage('start', e.target.value)}
+                          />
+                        </label>
+                        <label className="lot-settings-field lot-settings-time-window__field">
+                          <span className="lot-settings-field__label">До (МСК)</span>
+                          <input
+                            type="time"
+                            className="lot-settings-input"
+                            value={productSettings?.purchaseWindowAutomessage?.end ?? '13:00'}
+                            onChange={(e) => setPurchaseWindowAutomessage('end', e.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Текст сообщения</span>
+                        <textarea
+                          className="lot-settings-textarea"
+                          rows={4}
+                          value={productSettings?.purchaseWindowAutomessage?.message ?? ''}
+                          onChange={(e) => setPurchaseWindowAutomessage('message', e.target.value)}
+                          placeholder="Сообщение покупателю при покупке в заданное время"
+                        />
+                      </label>
+                    </>
+                  )}
+                </section>
+                </>
+                )}
+                {settingsTab === 'general' && (
+                <>
                 {showSupercellEmailValidation && (
                   <section className="lot-settings-block">
                     <h3 className="lot-settings-block__title">Проверка почты Supercell ID</h3>
@@ -1426,6 +1874,8 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     </div>
                   )}
                 </section>
+                </>
+                )}
 
                 {codesModalOpen && (
                   <div className="modal-backdrop" onClick={() => setCodesModalOpen(false)} role="presentation">

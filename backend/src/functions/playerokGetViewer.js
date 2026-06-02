@@ -41,6 +41,7 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
 
       const req = https.request({ ...options, ...playerokHttpsExtraOptions('sync') }, (resp) => {
         let data = ''
+        resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })

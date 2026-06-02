@@ -19,6 +19,18 @@ function getBaseUrl() {
   return String(raw).trim().replace(/\/+$/, '') || DEFAULT_BASE
 }
 
+// AppRoute стоит за DDoS-Guard, который отклоняет запросы без User-Agent (403).
+const DEFAULT_BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+
+function getApprouteUserAgent() {
+  const raw =
+    process.env.APPROUTE_USER_AGENT ||
+    process.env.PLAYEROK_USER_AGENT ||
+    DEFAULT_BROWSER_UA
+  return String(raw).trim() || DEFAULT_BROWSER_UA
+}
+
 function formatApprouteErrorMessage(body, status) {
   const parts = []
   if (body?.statusMessage) parts.push(String(body.statusMessage))
@@ -63,6 +75,7 @@ async function approuteFetch(apiKey, method, path, body) {
     headers: {
       'X-Api-Key': key,
       Accept: 'application/json',
+      'User-Agent': getApprouteUserAgent(),
     },
   }
   if (body != null) {
@@ -120,7 +133,11 @@ function normalizeServiceEntry(raw) {
           ? raw.amount
           : null
   const category = String(raw.category ?? raw.categoryName ?? raw.group ?? '').trim()
-  return { id: String(id), name, price, category }
+  // Тип услуги AppRoute: 'voucher' (shop/автовыдача) или 'direct_topup' (автопополнение).
+  const serviceType = String(raw.type ?? raw.serviceType ?? raw.ordersType ?? '')
+    .trim()
+    .toLowerCase()
+  return { id: String(id), name, price, category, serviceType: serviceType || null }
 }
 
 function normalizeVariantEntry(raw, parentServiceId) {
@@ -668,11 +685,130 @@ async function createApprouteOrderAndGetDelivery(apiKey, orderInput) {
   return { ...polled, approuteSubmitted, maskedDelivery: Boolean(polled?.maskedDelivery || maskedOnCreate) }
 }
 
+// ---------------------------------------------------------------------------
+// Прямое пополнение (Direct Top-Up, ordersType: 'dtu').
+// В отличие от shop-заказа здесь не возвращается код для выдачи — средства идут
+// напрямую на аккаунт игрока. Поэтому в строку заказа передаётся идентификатор
+// аккаунта покупателя (поле account_reference) и опционально сумма (поле amount).
+// ---------------------------------------------------------------------------
+const APPROUTE_DTU_SUCCESS_STATUSES = new Set([
+  'COMPLETED',
+  'COMPLETE',
+  'SUCCESS',
+  'SUCCEEDED',
+  'DONE',
+  'DELIVERED',
+  'FULFILLED',
+  'PAID',
+  'OK',
+])
+
+function buildDtuOrderLine({ denominationId, quantity, amountCurrencyCode, accountReference, amount }) {
+  const fields = [
+    { key: 'account_reference', value: String(accountReference == null ? '' : accountReference).trim() },
+  ]
+  const amountStr = amount == null ? '' : String(amount).trim()
+  if (amountStr) fields.push({ key: 'amount', value: amountStr })
+
+  const line = {
+    denominationId: String(denominationId || '').trim(),
+    quantity: Math.max(1, Math.min(99, Math.floor(Number(quantity) || 1))),
+    fields,
+  }
+  // Валюту/сумму передаём только если задана сумма; при фиксированном номинале
+  // сумма определяется самим номиналом и эти поля не нужны.
+  if (amountStr) {
+    const currency = String(amountCurrencyCode || '').trim()
+    if (currency) line.amountCurrencyCode = currency
+  }
+  return line
+}
+
+function buildDtuOrderBody(input, { checkOnly = false } = {}) {
+  const body = { ordersType: 'dtu', orders: [buildDtuOrderLine(input)] }
+  if (checkOnly) {
+    body.checkOnly = true
+  } else {
+    const referenceId = resolveApprouteReferenceId({ referenceId: input.referenceId, dealId: input.dealId })
+    if (referenceId) body.referenceId = referenceId
+  }
+  return body
+}
+
+/** Проверка DTU-заказа без списания (checkOnly). Бросает ошибку при невалидном account_reference/номинале. */
+async function checkApprouteDtuOrder(apiKey, input) {
+  const body = buildDtuOrderBody(input, { checkOnly: true })
+  const result = await approuteFetch(apiKey, 'POST', 'orders', body)
+  return { ok: true, body: result }
+}
+
+function isApprouteDtuCompleted(body) {
+  const status = String(extractApprouteOrderStatus(body) || '').toUpperCase()
+  if (!status) return false
+  return APPROUTE_DTU_SUCCESS_STATUSES.has(status)
+}
+
+async function pollApprouteDtuCompletion(apiKey, { orderId, referenceId, initialBody }) {
+  const started = Date.now()
+  let lastBody = initialBody || null
+  let lastStatus = extractApprouteOrderStatus(lastBody)
+
+  while (Date.now() - started < APPROUTE_POLL_MAX_MS) {
+    const up = String(lastStatus || '').toUpperCase()
+    if (APPROUTE_DTU_SUCCESS_STATUSES.has(up)) {
+      return { completed: true, failed: false, orderBody: lastBody, orderStatus: lastStatus }
+    }
+    if (APPROUTE_FAILED_STATUSES.has(up)) {
+      return { completed: false, failed: true, orderBody: lastBody, orderStatus: lastStatus }
+    }
+
+    await delay(APPROUTE_POLL_INTERVAL_MS)
+    const oid = orderId || extractApprouteOrderId(lastBody)
+    const snap = await fetchApprouteOrderSnapshot(apiKey, { orderId: oid, referenceId })
+    if (!snap) continue
+    lastBody = snap
+    lastStatus = extractApprouteOrderStatus(snap)
+    logApprouteAutodelivery('dtu poll: status', {
+      referenceId: referenceId || null,
+      orderId: oid || null,
+      status: lastStatus || null,
+      elapsedMs: Date.now() - started,
+    })
+  }
+
+  const up = String(lastStatus || '').toUpperCase()
+  return {
+    completed: APPROUTE_DTU_SUCCESS_STATUSES.has(up),
+    failed: false,
+    inProgress: true,
+    orderBody: lastBody,
+    orderStatus: lastStatus,
+  }
+}
+
+/**
+ * Создаёт реальный DTU-заказ и дожидается терминального статуса.
+ * Идемпотентно по referenceId (= dealId): повторный вызов не списывает повторно.
+ */
+async function createApprouteDtuOrderAndConfirm(apiKey, input) {
+  const created = await approuteFetch(apiKey, 'POST', 'orders', buildDtuOrderBody(input, { checkOnly: false }))
+  if (isApprouteDtuCompleted(created)) {
+    return { completed: true, failed: false, orderBody: created, orderStatus: extractApprouteOrderStatus(created) }
+  }
+  const orderId = extractApprouteOrderId(created)
+  const referenceId = resolveApprouteReferenceId({ referenceId: input.referenceId, dealId: input.dealId })
+  const polled = await pollApprouteDtuCompletion(apiKey, { orderId, referenceId, initialBody: created })
+  return { ...polled, orderBody: polled.orderBody || created }
+}
+
 module.exports = {
   listApprouteServices,
   listApprouteServiceVariants,
   createApprouteOrder,
   createApprouteOrderAndGetDelivery,
+  checkApprouteDtuOrder,
+  createApprouteDtuOrderAndConfirm,
+  isApprouteDtuCompleted,
   extractApprouteDeliveryText,
   formatApprouteErrorMessage,
   isApprouteValidationError,

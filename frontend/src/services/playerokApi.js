@@ -46,9 +46,13 @@ const BACKEND_DDOS_CHECK_URL = `${BACKEND_ORIGIN}/api/playerok/ddos-check`
 const BACKEND_CHATS_PROBE_STEP_URL = `${BACKEND_ORIGIN}/api/playerok/chats-probe-step`
 const BACKEND_CHAT_DB_LIST_URL = `${BACKEND_ORIGIN}/api/chat-db/list`
 const BACKEND_CHAT_DB_MESSAGES_URL = `${BACKEND_ORIGIN}/api/chat-db/messages`
+const BACKEND_CHAT_DB_MARK_READ_URL = `${BACKEND_ORIGIN}/api/chat-db/mark-read`
 const BACKEND_CHAT_DB_SEND_URL = `${BACKEND_ORIGIN}/api/chat-db/send`
 const BACKEND_CHAT_DB_FULL_SCAN_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan`
 const BACKEND_CHAT_DB_FULL_SCAN_RESET_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-reset`
+const BACKEND_CHAT_DB_RECHECK_CHAT_URL = `${BACKEND_ORIGIN}/api/chat-db/recheck-chat`
+const BACKEND_CHAT_DB_SCAN_PAUSE_URL = `${BACKEND_ORIGIN}/api/chat-db/scan-pause`
+const BACKEND_CHAT_DB_SCAN_STOP_URL = `${BACKEND_ORIGIN}/api/chat-db/scan-stop`
 const BACKEND_CHAT_DB_FULL_SCAN_STATUS_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-status`
 const BACKEND_CHAT_DB_SYNC_STEP_LOG_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log`
 const BACKEND_CHAT_DB_SYNC_STEP_LOG_CLEAR_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log/clear`
@@ -446,8 +450,25 @@ export async function fetchChatDbMessages(token, { chatId, dealId, skipSmartEmai
     itemTitle: data?.itemTitle || null,
     itemImageUrl: data?.itemImageUrl || null,
     itemCategory: data?.itemCategory || null,
+    viewerUsername: data?.viewerUsername || null,
     deals: Array.isArray(data?.deals) ? data.deals : [],
+    review: data?.review != null ? data.review : null,
   }
+}
+
+/** Отметить чат прочитанным на нашем сайте (локальная метка непрочитанности). */
+export async function markChatDbRead(token, chatId) {
+  const id = chatId != null ? String(chatId).trim() : ''
+  if (!id) return { ok: false }
+  const response = await trackedFetch(BACKEND_CHAT_DB_MARK_READ_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...(token ? { token } : {}), chatId: id }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Не удалось отметить чат прочитанным: ${response.status}`)
+  return { ok: Boolean(data?.ok), chatId: id }
 }
 
 /** Batch-обертка над fetchChatDbMessages для совместимости ChatTab. */
@@ -478,7 +499,9 @@ export async function fetchChatDbMessagesBatch(token, chatEntries = [], opts = {
           itemTitle: data.itemTitle,
           itemImageUrl: data.itemImageUrl,
           itemCategory: data.itemCategory,
+          viewerUsername: data.viewerUsername || null,
           deals: data.deals,
+          review: data.review != null ? data.review : null,
           automationEvents: [],
         }
       } catch (err) {
@@ -493,6 +516,7 @@ export async function fetchChatDbMessagesBatch(token, chatEntries = [], opts = {
           itemImageUrl: null,
           itemCategory: null,
           deals: [],
+          review: null,
           automationEvents: [],
         }
       }
@@ -522,6 +546,24 @@ export async function sendChatDbMessage(token, { dealId, chatId, text, clientMes
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка отправки сообщения: ${response.status}`)
+  return data
+}
+
+/** Принудительная перепроверка одного чата: тянет историю с Playerok и доливает недостающие сообщения в БД. */
+export async function recheckChatDbChat(token, { chatId, dealId } = {}) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_RECHECK_CHAT_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      ...(chatId ? { chatId } : {}),
+      ...(dealId ? { dealId } : {}),
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка перепроверки чата: ${response.status}`)
   return data
 }
 
@@ -589,6 +631,30 @@ export async function resetChatDbFullScan() {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка сброса прогрузки: ${response.status}`)
+  return data
+}
+
+export async function pauseChatDbScan() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_SCAN_PAUSE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка паузы прогрузки: ${response.status}`)
+  return data
+}
+
+export async function stopChatDbScan() {
+  const response = await trackedFetch(BACKEND_CHAT_DB_SCAN_STOP_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка остановки прогрузки: ${response.status}`)
   return data
 }
 

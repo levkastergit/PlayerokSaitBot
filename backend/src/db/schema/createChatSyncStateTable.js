@@ -22,6 +22,10 @@ function createChatSyncStateTable(db) {
     ['scan_current_chat_id', 'TEXT'],
     ['scan_current_label', 'TEXT'],
     ['scan_step', 'TEXT'],
+    ['scan_phase', 'TEXT'],
+    ['scan_paused', 'INTEGER NOT NULL DEFAULT 0'],
+    ['list_cursor', 'TEXT'],
+    ['list_scan_completed_at', 'INTEGER NOT NULL DEFAULT 0'],
   ]
   for (const [name, type] of extraCols) {
     try {

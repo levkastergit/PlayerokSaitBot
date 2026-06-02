@@ -18,7 +18,34 @@ function productTitleKeyFromProductKey(productKey) {
   return normalizeKeyPart(title)
 }
 
-function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listingFeesRows }) {
+const { ymdFromUnix } = require('../fx/usdRateService')
+
+// Себестоимость берём в долларах (поле costUsd) и конвертируем в рубли по курсу
+// доллара на дату продажи. Если costUsd не задан — используем старое рублёвое cost.
+function resolveCostRub(s, soldAt, usdRateByDate, fallbackRate) {
+  const rawUsd = s && (s.costUsd != null ? s.costUsd : s.cost_usd)
+  const costUsd = typeof rawUsd === 'number' ? rawUsd : parseFloat(rawUsd)
+  if (Number.isFinite(costUsd) && costUsd > 0) {
+    let rate = 0
+    if (usdRateByDate) {
+      const ymd = ymdFromUnix(soldAt)
+      rate = (ymd && Number(usdRateByDate[ymd])) || 0
+    }
+    if (!rate) rate = Number(fallbackRate) || 0
+    return { costRub: costUsd * rate, costUsd, usdRate: rate }
+  }
+  const legacy = typeof s?.cost === 'number' ? s.cost : parseFloat(s?.cost) || 0
+  return { costRub: legacy, costUsd: null, usdRate: null }
+}
+
+function computeProfitAnalyticsList({
+  salesRows,
+  bumpsRows,
+  settingsRows,
+  listingFeesRows,
+  usdRateByDate = null,
+  fallbackRate = 0,
+}) {
   const settingsByKey = {}
   for (const row of settingsRows || []) {
     try {
@@ -71,7 +98,7 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
       settingsByKey[productKey] ||
       settingsByKey[lookupKey] ||
       {}
-    const cost = typeof s.cost === 'number' ? s.cost : parseFloat(s.cost) || 0
+    const { costRub: cost, costUsd, usdRate } = resolveCostRub(s, soldAt, usdRateByDate, fallbackRate)
 
     const productListingFees = listingFeesByProduct[lookupKey] || []
     let listingCost = 0
@@ -98,10 +125,14 @@ function computeProfitAnalyticsList({ salesRows, bumpsRows, settingsRows, listin
     computed.push({
       productTitle: row.product_title,
       productKey,
+      dealId: row.deal_id != null ? String(row.deal_id) : null,
+      itemId: row.item_id != null ? String(row.item_id) : null,
       soldAt,
       salePrice,
       isRefund,
       cost,
+      costUsd,
+      usdRate,
       listingCost,
       bumpCost,
       profit,

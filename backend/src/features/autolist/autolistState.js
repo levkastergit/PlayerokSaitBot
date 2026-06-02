@@ -168,6 +168,27 @@ function autolistPruneSupercellFlowMap(tokenHash, nowTs) {
   }
 }
 
+function autolistGetTopupFlowMap(tokenHash) {
+  global.__autolistTopupFlowByTokenHash = global.__autolistTopupFlowByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistTopupFlowByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistTopupFlowByTokenHash[key] = {}
+  return global.__autolistTopupFlowByTokenHash[key]
+}
+
+function autolistPruneTopupFlowMap(tokenHash, nowTs) {
+  const map = autolistGetTopupFlowMap(tokenHash)
+  for (const [chatId, state] of Object.entries(map)) {
+    const updatedAt = Number(state?.updatedAt || state?.createdAt || 0)
+    const ageSec = updatedAt ? nowTs - updatedAt : Number.MAX_SAFE_INTEGER
+    const maxAgeSec = state?.active ? 24 * 60 * 60 : 60 * 60
+    if (ageSec > maxAgeSec) {
+      delete map[chatId]
+    }
+  }
+}
+
 function buildChatAutomessageEventKey(prefix, chatId, dealId) {
   const c = String(chatId || '').trim()
   const d = String(dealId || '').trim()
@@ -187,6 +208,10 @@ function buildDealConfirmedAutomessageEventKey(chatId, dealId) {
 
 function buildPaidChatAutomessageEventKey(chatId, dealId) {
   return buildChatAutomessageEventKey('lot_automessage', chatId, dealId)
+}
+
+function buildPurchaseWindowAutomessageEventKey(chatId, dealId) {
+  return buildChatAutomessageEventKey('purchase_window_auto_msg', chatId, dealId)
 }
 
 function chatAutomessageLockKey(tokenHash, eventKey) {
@@ -273,9 +298,12 @@ module.exports = {
   autolistGetLastChatMeta,
   autolistGetSupercellFlowMap,
   autolistPruneSupercellFlowMap,
+  autolistGetTopupFlowMap,
+  autolistPruneTopupFlowMap,
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   buildPaidChatAutomessageEventKey,
+  buildPurchaseWindowAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   tryBeginPostPurchaseAutomessageSend,

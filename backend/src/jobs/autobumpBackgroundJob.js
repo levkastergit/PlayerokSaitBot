@@ -9,6 +9,7 @@ function setupAutobumpBackgroundJob({
   buildProductKey,
   postLocal,
   getDefaultUserAgent,
+  isAllActionsStopped = () => false,
   intervalMs = 15000,
 }) {
   // Автоподнятие: раз в 15 сек проверяем для каждого товара «пора ли поднять» по его расписанию.
@@ -19,6 +20,7 @@ function setupAutobumpBackgroundJob({
 
   setInterval(async () => {
     try {
+      if (isAllActionsStopped()) return
       if (Date.now() < autobumpViewerBackoffUntil) {
         return
       }
