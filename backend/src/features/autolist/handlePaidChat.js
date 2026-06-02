@@ -1,5 +1,5 @@
 const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
-const { logSupercellDebug } = require('../../functions/supercellHelpers')
+const { logSupercellDebug, scopeMessagesToDeal } = require('../../functions/supercellHelpers')
 const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
 const { toUnixTs } = require('../../functions/toUnixTs')
 const { shouldSkipApprouteAutodelivery } = require('../approute/approuteAutodeliveryGuards')
@@ -538,7 +538,10 @@ async function handlePaidChat({
             ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
             : []
 
-        const history = Array.isArray(chatMessages) ? chatMessages : []
+        // Дубль ищем ТОЛЬКО в рамках текущей сделки (повторные покупки в одном чате):
+        // иначе автосообщение из прошлой сделки покупателя ошибочно считается уже
+        // отправленным, и для новой сделки оно не уходит.
+        const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
         const allAlreadyInChat =
           textsToSend.length > 0 &&
           history.length > 0 &&

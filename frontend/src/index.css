@@ -1131,6 +1131,37 @@ body {
   white-space: nowrap;
 }
 
+.table-filters {
+  margin-top: 0.75rem;
+}
+
+.table-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.table-filters__date,
+.table-filters__used {
+  width: auto;
+  min-width: 10rem;
+  max-width: 100%;
+}
+
+.table-codes-add-row {
+  align-items: flex-end;
+}
+
+.table-codes-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  min-height: 4.5rem;
+  resize: vertical;
+  font-family: inherit;
+}
+
 .table-code-copy-btn {
   padding: 0;
   border: none;
@@ -4192,6 +4223,70 @@ body {
 
 .lot-settings-automessage-remove {
   flex-shrink: 0;
+}
+
+.lot-settings-image-auto {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lot-settings-image-auto__head,
+.lot-settings-image-auto__row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(10rem, 2fr) auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.lot-settings-image-auto__head {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding-bottom: 0.15rem;
+}
+
+.lot-settings-image-auto__head-actions {
+  width: 4.5rem;
+}
+
+.lot-settings-image-auto__image {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.lot-settings-image-auto__preview {
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border-subtle);
+  display: block;
+}
+
+.lot-settings-image-auto__remove {
+  flex-shrink: 0;
+  align-self: start;
+  min-height: 2.75rem;
+}
+
+@media (max-width: 640px) {
+  .lot-settings-image-auto__head {
+    display: none;
+  }
+
+  .lot-settings-image-auto__row {
+    grid-template-columns: 1fr;
+    padding: 0.65rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm, 8px);
+    background: var(--bg-elevated);
+  }
+
+  .lot-settings-image-auto__remove {
+    width: 100%;
+  }
 }
 
 .lot-settings-row {

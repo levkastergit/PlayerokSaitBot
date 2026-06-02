@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   addTableCode,
+  addTableCodes,
   createTableColumn,
   createTableSubtab,
   createTableTab,
@@ -19,6 +20,58 @@ import {
 
 const HOVER_DELETE_MS = 5000
 const TABLE_FIXED_COL_COUNT = 8
+const DEFAULT_TABLE_FILTERS = { dateFrom: '', dateTo: '', used: 'all' }
+
+function parseCodesFromInput(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+function getSubtabFilters(filtersBySubtab, subtabId) {
+  if (!subtabId) return DEFAULT_TABLE_FILTERS
+  const stored = filtersBySubtab[subtabId]
+  if (!stored || typeof stored !== 'object') return DEFAULT_TABLE_FILTERS
+  return {
+    dateFrom: typeof stored.dateFrom === 'string' ? stored.dateFrom : '',
+    dateTo: typeof stored.dateTo === 'string' ? stored.dateTo : '',
+    used: stored.used === 'yes' || stored.used === 'no' ? stored.used : 'all',
+  }
+}
+
+function dateInputToDayStartSec(dateStr) {
+  const value = String(dateStr || '').trim()
+  if (!value) return null
+  const date = new Date(value + 'T00:00:00')
+  const ms = date.getTime()
+  if (!Number.isFinite(ms)) return null
+  return Math.floor(ms / 1000)
+}
+
+function dateInputToDayEndSec(dateStr) {
+  const value = String(dateStr || '').trim()
+  if (!value) return null
+  const date = new Date(value + 'T23:59:59')
+  const ms = date.getTime()
+  if (!Number.isFinite(ms)) return null
+  return Math.floor(ms / 1000)
+}
+
+function codeMatchesFilters(code, filters) {
+  if (filters.used === 'yes' && !code.used) return false
+  if (filters.used === 'no' && code.used) return false
+
+  const fromSec = dateInputToDayStartSec(filters.dateFrom)
+  const toSec = dateInputToDayEndSec(filters.dateTo)
+  if (fromSec == null && toSec == null) return true
+
+  const createdAt = Number(code.createdAt)
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return false
+  if (fromSec != null && createdAt < fromSec) return false
+  if (toSec != null && createdAt > toSec) return false
+  return true
+}
 
 export function TableTab() {
   const [tabs, setTabs] = useState([])
@@ -27,6 +80,7 @@ export function TableTab() {
   const [codeInput, setCodeInput] = useState('')
   const [codesBySubtab, setCodesBySubtab] = useState({})
   const [columnsBySubtab, setColumnsBySubtab] = useState({})
+  const [filtersBySubtab, setFiltersBySubtab] = useState({})
 
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -51,7 +105,17 @@ export function TableTab() {
   const activeSubtabs = Array.isArray(activeTab?.subtabs) ? activeTab.subtabs : []
   const activeCodes = Array.isArray(codesBySubtab[activeSubtabId]) ? codesBySubtab[activeSubtabId] : []
   const activeColumns = Array.isArray(columnsBySubtab[activeSubtabId]) ? columnsBySubtab[activeSubtabId] : []
+  const activeFilters = getSubtabFilters(filtersBySubtab, activeSubtabId)
+  const filteredCodes = activeCodes.filter((code) => codeMatchesFilters(code, activeFilters))
   const tableColSpan = TABLE_FIXED_COL_COUNT + activeColumns.length + 2
+
+  const setActiveSubtabFilter = (patch) => {
+    if (!activeSubtabId) return
+    setFiltersBySubtab((prev) => ({
+      ...prev,
+      [activeSubtabId]: { ...getSubtabFilters(prev, activeSubtabId), ...patch },
+    }))
+  }
 
   useEffect(() => {
     return () => {
@@ -156,29 +220,43 @@ export function TableTab() {
   }, [activeSubtabId, codesBySubtab, columnsBySubtab])
 
   const handleAddCode = async () => {
-    const nextCode = codeInput.trim()
-    if (!nextCode || isSaving || !activeSubtabId) return
+    const parsedCodes = parseCodesFromInput(codeInput)
+    if (parsedCodes.length === 0 || isSaving || !activeSubtabId) return
 
     setIsSaving(true)
     setError('')
     try {
-      const result = await addTableCode(activeSubtabId, nextCode)
-      const item = result?.item && typeof result.item === 'object'
-        ? result.item
-        : {
-          id: Date.now(),
-          code: nextCode,
-          used: false,
-          dealId: null,
-          itemId: null,
-          chatId: null,
-          createdAt: Math.floor(Date.now() / 1000),
-          customValues: {},
-        }
-      setCodesBySubtab((prev) => ({
-        ...prev,
-        [activeSubtabId]: [item, ...(Array.isArray(prev[activeSubtabId]) ? prev[activeSubtabId] : [])],
-      }))
+      if (parsedCodes.length === 1) {
+        const nextCode = parsedCodes[0]
+        const result = await addTableCode(activeSubtabId, nextCode)
+        const item = result?.item && typeof result.item === 'object'
+          ? result.item
+          : {
+            id: Date.now(),
+            code: nextCode,
+            used: false,
+            dealId: null,
+            itemId: null,
+            chatId: null,
+            createdAt: Math.floor(Date.now() / 1000),
+            customValues: {},
+          }
+        setCodesBySubtab((prev) => ({
+          ...prev,
+          [activeSubtabId]: [item, ...(Array.isArray(prev[activeSubtabId]) ? prev[activeSubtabId] : [])],
+        }))
+      } else {
+        const result = await addTableCodes(activeSubtabId, parsedCodes)
+        const items = Array.isArray(result.list) ? result.list : []
+        const itemsNewestFirst = [...items].reverse()
+        setCodesBySubtab((prev) => ({
+          ...prev,
+          [activeSubtabId]: [
+            ...itemsNewestFirst,
+            ...(Array.isArray(prev[activeSubtabId]) ? prev[activeSubtabId] : []),
+          ],
+        }))
+      }
       setCodeInput('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка добавления кода')
@@ -695,14 +773,14 @@ export function TableTab() {
 
         <h2 className="card-title">{activeTab?.name || 'Таблица'}</h2>
 
-        <div className="lot-settings-row">
-          <input
-            type="text"
-            className="input"
+        <div className="lot-settings-row table-codes-add-row">
+          <textarea
+            className="input table-codes-input"
+            rows={3}
             value={codeInput}
             onChange={(event) => setCodeInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault()
                 handleAddCode()
               }
@@ -715,6 +793,41 @@ export function TableTab() {
         </div>
         {!activeSubtabId ? <p className="card-text">Создайте таблицу через +.</p> : null}
         {error ? <p className="card-text card-text--error">{error}</p> : null}
+
+        {activeSubtabId ? (
+          <div className="table-filters profit-toolbar">
+            <label className="table-filters__field">
+              <span className="active-lots-filters__label">Дата с</span>
+              <input
+                type="date"
+                className="input table-filters__date"
+                value={activeFilters.dateFrom}
+                onChange={(event) => setActiveSubtabFilter({ dateFrom: event.target.value })}
+              />
+            </label>
+            <label className="table-filters__field">
+              <span className="active-lots-filters__label">Дата по</span>
+              <input
+                type="date"
+                className="input table-filters__date"
+                value={activeFilters.dateTo}
+                onChange={(event) => setActiveSubtabFilter({ dateTo: event.target.value })}
+              />
+            </label>
+            <label className="table-filters__field">
+              <span className="active-lots-filters__label">Использован</span>
+              <select
+                className="input table-filters__used"
+                value={activeFilters.used}
+                onChange={(event) => setActiveSubtabFilter({ used: event.target.value })}
+              >
+                <option value="all">Все</option>
+                <option value="yes">Да</option>
+                <option value="no">Нет</option>
+              </select>
+            </label>
+          </div>
+        ) : null}
 
         <div className="history-table-wrap">
           <table className="history-table">
@@ -798,12 +911,12 @@ export function TableTab() {
               </tr>
             </thead>
             <tbody>
-              {!isLoading && activeCodes.length === 0 ? (
+              {!isLoading && filteredCodes.length === 0 ? (
                 <tr>
                   <td colSpan={tableColSpan}>Пусто</td>
                 </tr>
               ) : null}
-              {activeCodes.map((code, index) => (
+              {filteredCodes.map((code, index) => (
                 <tr key={String(activeSubtabId) + '-' + (code.id || index)}>
                   <td>{index + 1}</td>
                   <td>

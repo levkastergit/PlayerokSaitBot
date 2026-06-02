@@ -1246,6 +1246,36 @@ export async function fetchTableTabs() {
   return { list: Array.isArray(data?.list) ? data.list : [] }
 }
 
+/** Абсолютный URL картинки автосообщения (бэкенд на другом порту в dev). */
+export function automessageImageUrl(relativeOrAbsolute) {
+  const u = String(relativeOrAbsolute || '')
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  return `${BACKEND_ORIGIN}${u.startsWith('/') ? '' : '/'}${u}`
+}
+
+/** Загрузка картинки автосообщения на сервер. Возвращает { imageId, ext, filename, url }. */
+export async function uploadAutomessageImage(file) {
+  if (!file) throw new Error('Файл не выбран')
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл'))
+    reader.readAsDataURL(file)
+  })
+  const response = await fetch(`${BACKEND_ORIGIN}/api/automessage-image`, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl, filename: file.name || '' }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok || !data?.image) {
+    throw new Error(data.error || `Ошибка загрузки картинки (${response.status})`)
+  }
+  return data.image
+}
+
 export async function createTableTab(name) {
   const trimmedName = String(name || '').trim()
   if (!trimmedName) throw new Error('Название вкладки обязательно')
@@ -1440,6 +1470,24 @@ export async function addTableCode(subtabId, code) {
     throw new Error(data.error || `Ошибка добавления кода: ${response.status}`)
   }
   return data
+}
+
+export async function addTableCodes(subtabId, codes) {
+  const id = Number(subtabId)
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Подвкладка обязательна')
+  const list = Array.isArray(codes) ? codes.map((value) => String(value || '').trim()).filter(Boolean) : []
+  if (list.length === 0) throw new Error('Код обязателен')
+  const response = await trackedFetch(BACKEND_TABLE_CODES_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtabId: id, codes: list }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка добавления кодов: ${response.status}`)
+  }
+  return { list: Array.isArray(data?.list) ? data.list : [] }
 }
 
 export async function updateTableCodeUsed(id, used) {

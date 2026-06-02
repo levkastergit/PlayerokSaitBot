@@ -92,6 +92,9 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     handlePostPurchaseAutomessage: handlePostPurchaseAutomessageFn,
     handleDealConfirmedAutomessage: handleDealConfirmedAutomessageFn,
     handlePurchaseWindowAutomessage: handlePurchaseWindowAutomessageFn,
+    handleImageAutomessage: handleImageAutomessageFn,
+    sendChatImage,
+    automessageImagesDir,
     requestDealById,
     requestItemById,
     resolveEffectiveProductSettings,
@@ -170,6 +173,7 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     { fn: handlePostPurchaseAutomessageFn, logLabel: 'post-purchase-automessage' },
     { fn: handleDealConfirmedAutomessageFn, logLabel: 'deal-confirmed-automessage' },
     { fn: handlePurchaseWindowAutomessageFn, logLabel: 'purchase-window-automessage' },
+    { fn: handleImageAutomessageFn, logLabel: 'image-automessage' },
   ]
 
   const automationEvents = []
@@ -310,6 +314,8 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
       normalizeKeyPart,
       buildProductKey,
       toUnixTs,
+      sendChatImage,
+      automessageImagesDir,
     }
 
     for (const { fn, logLabel } of automessageHandlers) {

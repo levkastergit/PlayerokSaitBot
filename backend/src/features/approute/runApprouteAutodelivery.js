@@ -4,6 +4,7 @@ const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog
 
 const { shouldSkipApprouteAutodelivery } = require('./approuteAutodeliveryGuards')
 const { hasSellerMessageText } = require('../autolist/handleChatAutomessage')
+const { scopeMessagesToDeal } = require('../../functions/supercellHelpers')
 
 
 
@@ -295,7 +296,7 @@ async function runApprouteAutodelivery({
 
 
   if (messageOnPurchase && !deliveryOnly) {
-    const history = Array.isArray(chatMessages) ? chatMessages : []
+    const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
     const alreadySent = history.length > 0 && hasSellerMessageText(history, messageOnPurchase, viewerUsername)
     if (alreadySent) {
       logApprouteAutodelivery('messageOnPurchase already in chat', {
@@ -462,7 +463,7 @@ async function runApprouteAutodelivery({
 
     }
 
-    const history = Array.isArray(chatMessages) ? chatMessages : []
+    const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
     if (history.length > 0 && hasSellerMessageText(history, textToSend, viewerUsername)) {
       logApprouteAutodelivery('chat already has delivery text', {
         productKey,

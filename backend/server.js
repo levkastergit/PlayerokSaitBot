@@ -326,8 +326,15 @@ const {
   getSalesMonthsForYear,
 } = setupHistoryRepo(db)
 
-const { insertCode, getCodesByUserAndCategory, updateCodeUsed, deleteCodeById, deleteCodesByCategory, getCodeById } =
-  setupTableCodesRepo(db)
+const {
+  insertCode,
+  insertCodesBulk,
+  getCodesByUserAndCategory,
+  updateCodeUsed,
+  deleteCodeById,
+  deleteCodesByCategory,
+  getCodeById,
+} = setupTableCodesRepo(db)
 const {
   getColumnsBySubtab,
   getColumnById,
@@ -398,6 +405,7 @@ const {
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
   handlePurchaseWindowAutomessage,
+  handleImageAutomessage,
 } = require('./src/features/autolist/handleChatAutomessage')
 const { handleAutolistTick } = require('./src/features/autolist/handleAutolistTick')
 const { handleRelistItem } = require('./src/features/playerok/relistItem/handleRelistItem')
@@ -500,6 +508,12 @@ const publishItem = createPublishItem({
 const { createCreateChatMessage } = require('./src/functions/playerokCreateChatMessage')
 
 const createChatMessage = createCreateChatMessage()
+
+/** Отправить картинку в чат (автосообщение картинкой) */
+const { createSendChatImage } = require('./src/functions/playerokSendChatImage')
+const sendChatImage = createSendChatImage()
+const { dispatchAutomessageImage } = require('./src/http/dispatchAutomessageImage')
+const automessageImagesDir = path.join(DATA_DIR, 'automessage-images')
 
 /** Обновить статус сделки (например, SENT / ROLLED_BACK) */
 const { createUpdateDealStatus } = require('./src/functions/playerokUpdateDealStatus')
@@ -867,6 +881,18 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // Загрузка/отдача картинок автосообщения
+  {
+    const handled = await dispatchAutomessageImage({
+      req,
+      res,
+      pathname,
+      currentUserId,
+      deps: { automessageImagesDir },
+    })
+    if (handled) return
+  }
+
   // Finance endpoints dispatcher (sales/bump/logs/profit)
   {
     const handled = await dispatchChatDb({
@@ -928,6 +954,7 @@ const server = http.createServer(async (req, res) => {
         clampInt,
         usdRateService,
         insertCode,
+        insertCodesBulk,
         getCodesByUserAndCategory,
         updateCodeUsed,
         deleteCodeById,
@@ -1025,6 +1052,9 @@ const server = http.createServer(async (req, res) => {
         handlePostPurchaseAutomessage,
         handleDealConfirmedAutomessage,
         handlePurchaseWindowAutomessage,
+        handleImageAutomessage,
+        sendChatImage,
+        automessageImagesDir,
         fetchInProgressDealsFromPlayerok,
         fetchActiveItemsFromPlayerok,
         fetchCompletedDealsFromPlayerok,

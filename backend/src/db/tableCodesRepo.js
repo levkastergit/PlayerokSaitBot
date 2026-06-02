@@ -34,8 +34,29 @@ function setupTableCodesRepo(db) {
     WHERE id = ?
   `)
 
+  const insertCodesBulk = db.transaction((userId, category, codesList) => {
+    const nowTs = Math.floor(Date.now() / 1000)
+    const items = []
+    for (const code of codesList) {
+      const info = insertCode.run(userId, category, code, 0, null, null, null, null, nowTs)
+      items.push({
+        id: info.lastInsertRowid,
+        code,
+        used: false,
+        dealId: null,
+        itemId: null,
+        chatId: null,
+        statusChangedAt: null,
+        createdAt: nowTs,
+        customValues: {},
+      })
+    }
+    return items
+  })
+
   return {
     insertCode,
+    insertCodesBulk,
     getCodesByUserAndCategory,
     updateCodeUsed,
     deleteCodeById,

@@ -413,11 +413,28 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
       Number.isFinite(subtabId) && subtabId > 0
         ? `subtab:${subtabId}`
         : String(payload?.category || '').trim()
-    const code = String(payload?.code || '').trim()
     if (!category) {
       sendJson(res, 400, { error: 'category is required' })
       return true
     }
+
+    const codesRaw = payload?.codes
+    if (Array.isArray(codesRaw) && codesRaw.length > 0) {
+      const codes = codesRaw.map((value) => String(value || '').trim()).filter(Boolean)
+      if (codes.length === 0) {
+        sendJson(res, 400, { error: 'code is required' })
+        return true
+      }
+      if (codes.length > 500) {
+        sendJson(res, 400, { error: 'too many codes' })
+        return true
+      }
+      const list = deps.insertCodesBulk(currentUserId, category, codes)
+      sendJson(res, 200, { ok: true, list })
+      return true
+    }
+
+    const code = String(payload?.code || '').trim()
     if (!code) {
       sendJson(res, 400, { error: 'code is required' })
       return true

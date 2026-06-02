@@ -23,10 +23,7 @@ import { CommandsTab } from './features/commands/CommandsTab.jsx'
 import { ChatTab } from './features/chat/ChatTab.jsx'
 import { PartnersTab } from './features/partners/PartnersTab.jsx'
 import { SettingsTab } from './features/settings/SettingsTab.jsx'
-import { DdosTab } from './features/ddos/DdosTab.jsx'
-import { ChatLoggingTab } from './features/chat-logging/ChatLoggingTab.jsx'
 import { BalanceHubTab } from './features/balance/BalanceHubTab.jsx'
-import { TestTab } from './features/test/TestTab.jsx'
 import { DockerTab } from './features/docker/DockerTab.jsx'
 import { TableTab } from './features/table/TableTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'auto-delivery-api', 'lot-boost'])
@@ -156,23 +153,6 @@ const TabIcon = ({ id }) => {
           <path d="M8.6 8.6l-1-1" />
         </svg>
       )
-    case 'ddos':
-      return (
-        <svg {...common}>
-          <path d="M12 3.8l7.1 3.2v4.8c0 4.1-2.8 7.4-7.1 8.7-4.3-1.3-7.1-4.6-7.1-8.7V7l7.1-3.2z" opacity="0.18" fill="currentColor" stroke="none" />
-          <path d="M12 7.4v5.2" />
-          <circle cx="12" cy="15.6" r="0.9" fill="currentColor" stroke="none" />
-        </svg>
-      )
-    case 'chat-logging':
-      return (
-        <svg {...common}>
-          <rect x="5" y="4.5" width="14" height="15" rx="2.5" opacity="0.18" fill="currentColor" stroke="none" />
-          <path d="M8.2 9h7.6" />
-          <path d="M8.2 12h5.8" />
-          <path d="M8.2 15h4.2" />
-        </svg>
-      )
     case 'balance':
       return (
         <svg {...common}>
@@ -200,15 +180,6 @@ const TabIcon = ({ id }) => {
           <path d="M18.4 12h1.8" />
           <path d="M12 3.8v1.8" />
           <path d="M12 18.4v1.8" />
-        </svg>
-      )
-    case 'test':
-      return (
-        <svg {...common}>
-          <path d="M8.5 6.2h7v1.8h-7z" opacity="0.2" fill="currentColor" stroke="none" />
-          <path d="M7.8 9.4h8.4" />
-          <path d="M9.2 12.2h5.6" />
-          <path d="M10.6 15h2.8" />
         </svg>
       )
     case 'docker':
@@ -247,15 +218,14 @@ const TABS = [
   { id: 'partners', label: 'Напарники' },
   { id: 'commands', label: 'Команды' },
   { id: 'settings', label: 'Настройки' },
-  { id: 'ddos', label: 'Ddos' },
-  { id: 'chat-logging', label: 'Логирование Чата' },
   { id: 'balance', label: 'Баланс' },
-  { id: 'test', label: 'Тест' },
   { id: 'docker', label: 'Docker' },
   { id: 'table', label: 'Таблица' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
+
+const SETTINGS_SUB_IDS = new Set(['ddos', 'chat-logging', 'test'])
 
 function App() {
   const location = useLocation()
@@ -265,6 +235,13 @@ function App() {
   const isRegisterPage = pathParts[0] === 'register'
   const isLotPage = pathParts[0] === 'lot' && pathParts[1]
   const lotIdFromUrl = isLotPage ? pathParts[1] : null
+  const isSettingsRoute = pathParts[0] === 'settings'
+  const settingsSub =
+    isSettingsRoute && !pathParts[1]
+      ? ''
+      : isSettingsRoute && SETTINGS_SUB_IDS.has(pathParts[1])
+        ? pathParts[1]
+        : ''
   const activeTab =
     isLotPage ? 'lot' : (TAB_IDS.has(pathParts[0]) ? pathParts[0] : 'active')
 
@@ -326,6 +303,18 @@ function App() {
     // Вкладки «Статистика» и «Действия» объединены во вкладку «Баланс».
     if (first === 'profit' || first === 'actions') {
       navigate('/balance', { replace: true })
+    }
+    if (first === 'ddos') {
+      navigate('/settings/ddos', { replace: true })
+    }
+    if (first === 'chat-logging') {
+      navigate('/settings/chat-logging', { replace: true })
+    }
+    if (first === 'test') {
+      navigate('/settings/test', { replace: true })
+    }
+    if (first === 'settings' && pathParts[1] && !SETTINGS_SUB_IDS.has(pathParts[1])) {
+      navigate('/settings', { replace: true })
     }
   }, [location.pathname, navigate])
   const [darkTheme, setDarkTheme] = useState(false)
@@ -673,12 +662,15 @@ function App() {
             />
           )}
           {activeTab === 'settings' && (
-            <SettingsTab token={token} onTokenChange={handleTokenChange} onLogout={handleLogout} />
+            <SettingsTab
+              token={token}
+              onTokenChange={handleTokenChange}
+              onLogout={handleLogout}
+              subTab={settingsSub}
+              onSubTabChange={(id) => navigate(id ? `/settings/${id}` : '/settings')}
+            />
           )}
-          {activeTab === 'ddos' && <DdosTab />}
-          {activeTab === 'chat-logging' && <ChatLoggingTab />}
           {activeTab === 'balance' && <BalanceHubTab token={token} />}
-          {activeTab === 'test' && <TestTab token={token} />}
           {activeTab === 'docker' && <DockerTab />}
           {activeTab === 'table' && <TableTab />}
         </section>

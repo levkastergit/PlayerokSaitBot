@@ -214,6 +214,14 @@ function buildPurchaseWindowAutomessageEventKey(chatId, dealId) {
   return buildChatAutomessageEventKey('purchase_window_auto_msg', chatId, dealId)
 }
 
+function buildImageAutomessageEventKey(chatId, dealId, itemKey) {
+  const base = buildChatAutomessageEventKey('image_auto_msg', chatId, dealId)
+  if (!base) return null
+  const suffix =
+    itemKey != null && String(itemKey).trim() !== '' ? String(itemKey).trim() : null
+  return suffix ? `${base}::${suffix}` : base
+}
+
 function chatAutomessageLockKey(tokenHash, eventKey) {
   return `${String(tokenHash)}::${String(eventKey)}`
 }
@@ -304,6 +312,7 @@ module.exports = {
   buildDealConfirmedAutomessageEventKey,
   buildPaidChatAutomessageEventKey,
   buildPurchaseWindowAutomessageEventKey,
+  buildImageAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   tryBeginPostPurchaseAutomessageSend,

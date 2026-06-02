@@ -1,11 +1,14 @@
 'use strict'
 
-const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
+const fs = require('fs')
+const { resolveEffectiveDealIdForChat, scopeMessagesToDeal } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
+const { automessageImagePath, EXT_TO_MIME } = require('../../http/dispatchAutomessageImage')
 const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   buildPurchaseWindowAutomessageEventKey,
+  buildImageAutomessageEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   autolistMarkProcessed,
@@ -249,7 +252,11 @@ async function runChatAutomessage({
       }
     }
 
-    if (hasSellerMessageText(messages, text, viewerUsername)) {
+    // Дубль ищем ТОЛЬКО в рамках текущей сделки (повторные покупки в одном чате):
+    // иначе автосообщение из прошлой сделки покупателя ошибочно считается уже
+    // отправленным, и для новой сделки сообщение не уходит.
+    const dealScopedMessages = scopeMessagesToDeal(messages, effectiveDealId || null)
+    if (hasSellerMessageText(dealScopedMessages, text, viewerUsername)) {
       finishSuccess = true
       return { sent: false, reason: 'already_in_chat' }
     }
@@ -309,10 +316,214 @@ async function handlePurchaseWindowAutomessage(params) {
   })
 }
 
+// ── Автосообщение картинкой ──────────────────────────────────────────────────
+const IMAGE_TRIGGER_MARKERS = {
+  purchase: [ITEM_PAID_MARKER],
+  sent: [ITEM_SENT_MARKER],
+  confirmed: DEAL_CONFIRMED_MARKERS,
+}
+
+function normalizeImageAutomessageItems(cfg) {
+  if (!cfg || typeof cfg !== 'object') return []
+  if (Array.isArray(cfg.items)) {
+    return cfg.items
+      .filter((row) => row && typeof row === 'object')
+      .map((row, index) => {
+        const imageId = String(row.imageId || '').trim()
+        const ext = String(row.ext || '').trim()
+        if (!imageId || !ext) return null
+        const trigger = ['purchase', 'sent', 'confirmed'].includes(row.trigger) ? row.trigger : 'purchase'
+        return {
+          trigger,
+          imageId,
+          ext,
+          filename: String(row.filename || '').trim(),
+          itemKey: imageId || String(index),
+        }
+      })
+      .filter(Boolean)
+  }
+  const imageId = String(cfg.imageId || '').trim()
+  const ext = String(cfg.ext || '').trim()
+  if (!imageId || !ext) return []
+  const trigger = ['purchase', 'sent', 'confirmed'].includes(cfg.trigger) ? cfg.trigger : 'purchase'
+  return [
+    {
+      trigger,
+      imageId,
+      ext,
+      filename: String(cfg.filename || '').trim(),
+      itemKey: imageId,
+    },
+  ]
+}
+
+async function handleImageAutomessage(params) {
+  const {
+    currentUserId,
+    tokenHash,
+    token,
+    userAgent,
+    nowTs,
+    chatId,
+    dealId,
+    dealItemId,
+    messages,
+    itemTitle,
+    itemCategory,
+    withRetry,
+    isPlayerokRateLimitError,
+    requestDealById,
+    requestItemById,
+    resolveEffectiveProductSettings,
+    normalizeKeyPart,
+    buildProductKey,
+    toUnixTs = defaultToUnixTs,
+    sendChatImage,
+    automessageImagesDir,
+  } = params
+
+  if (!token || !chatId) return { sent: false, reason: 'missing_chat' }
+  if (typeof sendChatImage !== 'function' || !automessageImagesDir) {
+    return { sent: false, reason: 'image_unavailable' }
+  }
+
+  const effectiveDealId = resolveEffectiveDealIdForChat({ dealIdFromRequest: dealId, messages })
+
+  const ANY_TRIGGER_MARKERS = [ITEM_PAID_MARKER, ITEM_SENT_MARKER, ...DEAL_CONFIRMED_MARKERS]
+  if (!hasSystemMarkerForDeal(messages, effectiveDealId || null, ANY_TRIGGER_MARKERS)) {
+    return { sent: false, reason: 'no_system_marker' }
+  }
+
+  const effectiveNowTs = Number(nowTs) > 0 ? Number(nowTs) : Math.floor(Date.now() / 1000)
+
+  let rawTitle = typeof itemTitle === 'string' ? itemTitle.trim() : ''
+  let rawGame = typeof itemCategory === 'string' ? itemCategory.trim() : ''
+  if ((!rawTitle || !rawGame) && (dealItemId || effectiveDealId)) {
+    try {
+      if (dealItemId) {
+        const item = await withRetry(() => requestItemById(token, userAgent, dealItemId), {
+          label: 'itemById(image-automessage)',
+          retries: 2,
+          shouldRetry: isPlayerokRateLimitError,
+        })
+        if (item) {
+          rawTitle = rawTitle || item.title || item.name || ''
+          if (!rawGame) {
+            rawGame =
+              typeof item?.game === 'string'
+                ? item.game
+                : (item?.game?.name && typeof item.game.name === 'string' ? item.game.name : '') ||
+                  item?.game_name ||
+                  ''
+          }
+        }
+      } else if (effectiveDealId) {
+        const fullDeal = await withRetry(() => requestDealById(token, userAgent, effectiveDealId), {
+          label: 'dealById(image-automessage)',
+          retries: 2,
+          shouldRetry: isPlayerokRateLimitError,
+        })
+        const dealItem = fullDeal?.item || null
+        if (dealItem) {
+          rawTitle = rawTitle || dealItem.title || dealItem.name || ''
+          if (!rawGame) {
+            rawGame =
+              typeof dealItem?.game === 'string'
+                ? dealItem.game
+                : (dealItem?.game?.name && typeof dealItem.game.name === 'string' ? dealItem.game.name : '') ||
+                  ''
+          }
+        }
+        if (!rawGame && fullDeal && typeof fullDeal.productKey === 'string') {
+          const sep = fullDeal.productKey.indexOf('::')
+          if (sep > 0) rawGame = fullDeal.productKey.slice(0, sep).trim()
+        }
+      }
+    } catch (_) { /* productKey может не собраться */ }
+  }
+
+  const productKey = buildProductKey(normalizeKeyPart(rawGame), normalizeKeyPart(rawTitle))
+  if (!productKey) return { sent: false, reason: 'no_product_key' }
+
+  const { effectiveSettings } = resolveEffectiveProductSettings(currentUserId, productKey)
+  const cfg =
+    effectiveSettings?.imageAutomessage && typeof effectiveSettings.imageAutomessage === 'object'
+      ? effectiveSettings.imageAutomessage
+      : null
+  if (!cfg?.enabled) return { sent: false, reason: 'disabled' }
+
+  const items = normalizeImageAutomessageItems(cfg)
+  if (items.length === 0) return { sent: false, reason: 'no_image' }
+
+  let lastResult = { sent: false, reason: 'no_matching_item' }
+
+  for (const item of items) {
+    const eventKey = buildImageAutomessageEventKey(chatId, effectiveDealId, item.itemKey)
+    if (!eventKey) continue
+    if (!tryBeginChatAutomessageSend(tokenHash, eventKey)) continue
+
+    let finishSuccess = false
+    try {
+      const markers = IMAGE_TRIGGER_MARKERS[item.trigger]
+      if (!hasSystemMarkerForDeal(messages, effectiveDealId || null, markers)) {
+        continue
+      }
+
+      const triggerTs = getSystemMarkerTriggerUnixTs(
+        messages,
+        effectiveDealId || null,
+        markers,
+        toUnixTs
+      )
+      if (triggerTs > 0 && effectiveNowTs - triggerTs > CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC) {
+        finishSuccess = true
+        continue
+      }
+
+      const filePath = automessageImagePath(
+        automessageImagesDir,
+        currentUserId,
+        item.imageId,
+        item.ext
+      )
+      if (!filePath || !fs.existsSync(filePath)) {
+        finishSuccess = true
+        continue
+      }
+
+      await withRetry(
+        () =>
+          sendChatImage(token, userAgent, String(chatId), {
+            filePath,
+            filename: item.filename || `image.${item.ext}`,
+            mime: EXT_TO_MIME[item.ext] || 'image/png',
+          }),
+        { label: 'sendChatImage(image-automessage)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+      )
+      finishSuccess = true
+      lastResult = { sent: true, kind: 'image', imageId: item.imageId }
+    } catch (err) {
+      console.warn('[image-automessage] отправка не удалась', {
+        chatId,
+        dealId: effectiveDealId || null,
+        imageId: item.imageId,
+        error: err?.message || String(err),
+      })
+      lastResult = { sent: false, reason: 'send_failed' }
+    } finally {
+      finishChatAutomessageSend(tokenHash, eventKey, { success: finishSuccess, nowTs })
+    }
+  }
+
+  return lastResult
+}
+
 module.exports = {
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
   handlePurchaseWindowAutomessage,
+  handleImageAutomessage,
   hasSellerMessageText,
   hasSystemMarkerForDeal,
   getSystemMarkerTriggerUnixTs,

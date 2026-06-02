@@ -1,4 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { DdosTab } from '../ddos/DdosTab.jsx'
+import { ChatLoggingTab } from '../chat-logging/ChatLoggingTab.jsx'
+import { TestTab } from '../test/TestTab.jsx'
 import { changeAccountPassword, fetchAuthMe } from '../../services/authApi'
 import {
   OUTBOUND_IP_DISABLED,
@@ -12,7 +15,15 @@ import {
   clearApprouteApiKey,
 } from '../../services/approuteApi'
 
-export function SettingsTab({ token, onTokenChange, onLogout }) {
+const SETTINGS_SUB_TABS = [
+  { id: '', label: 'Основные' },
+  { id: 'ddos', label: 'Ddos' },
+  { id: 'chat-logging', label: 'Логирование чата' },
+  { id: 'test', label: 'Тест' },
+]
+
+export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSubTabChange }) {
+  const activeSub = SETTINGS_SUB_TABS.some((t) => t.id === subTab) ? subTab : ''
   const [value, setValue] = useState(token ?? '')
   const [savedAt, setSavedAt] = useState(null)
   const [isSaved, setIsSaved] = useState(Boolean(token))
@@ -222,6 +233,22 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
         <h1>Настройки</h1>
       </div>
 
+      <div className="balance-hub__tabs settings-hub__tabs" role="tablist">
+        {SETTINGS_SUB_TABS.map((t) => (
+          <button
+            key={t.id || 'main'}
+            type="button"
+            role="tab"
+            aria-selected={activeSub === t.id}
+            className={'balance-hub__tab' + (activeSub === t.id ? ' balance-hub__tab--active' : '')}
+            onClick={() => onSubTabChange?.(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="balance-hub__panel" hidden={activeSub !== ''}>
       <div className="settings-layout">
         <section className="card settings-card settings-card--account">
           <div className="card-title-row settings-account-head">
@@ -476,6 +503,17 @@ export function SettingsTab({ token, onTokenChange, onLogout }) {
             </button>
           </form>
         </section>
+      </div>
+      </div>
+
+      <div className="balance-hub__panel" hidden={activeSub !== 'ddos'}>
+        <DdosTab />
+      </div>
+      <div className="balance-hub__panel" hidden={activeSub !== 'chat-logging'}>
+        <ChatLoggingTab />
+      </div>
+      <div className="balance-hub__panel" hidden={activeSub !== 'test'}>
+        <TestTab token={token} />
       </div>
     </div>
   )

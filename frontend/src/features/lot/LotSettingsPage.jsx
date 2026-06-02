@@ -8,8 +8,48 @@ import {
   deleteProductSettings,
   fetchItemPriorityStatuses,
   recordBump,
+  fetchTableTabs,
+  uploadAutomessageImage,
+  automessageImageUrl,
 } from '../../services/playerokApi'
 import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
+
+const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
+
+function emptyImageAutomessageRow() {
+  return { trigger: 'purchase', imageId: '', ext: '', filename: '', url: '' }
+}
+
+function normalizeImageAutomessageFromLoaded(loaded) {
+  const raw =
+    loaded?.imageAutomessage && typeof loaded.imageAutomessage === 'object'
+      ? loaded.imageAutomessage
+      : {}
+  const enabled = Boolean(raw.enabled)
+  let items = []
+  if (Array.isArray(raw.items)) {
+    items = raw.items
+      .filter((row) => row && typeof row === 'object')
+      .map((row) => ({
+        trigger: IMAGE_AUTO_TRIGGERS.includes(row.trigger) ? row.trigger : 'purchase',
+        imageId: typeof row.imageId === 'string' ? row.imageId : '',
+        ext: typeof row.ext === 'string' ? row.ext : '',
+        filename: typeof row.filename === 'string' ? row.filename : '',
+        url: typeof row.url === 'string' ? row.url : '',
+      }))
+  } else if (typeof raw.imageId === 'string' && raw.imageId && typeof raw.ext === 'string' && raw.ext) {
+    items = [
+      {
+        trigger: IMAGE_AUTO_TRIGGERS.includes(raw.trigger) ? raw.trigger : 'purchase',
+        imageId: raw.imageId,
+        ext: raw.ext,
+        filename: typeof raw.filename === 'string' ? raw.filename : '',
+        url: typeof raw.url === 'string' ? raw.url : '',
+      },
+    ]
+  }
+  return { enabled, items }
+}
 
 export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [productSettings, setProductSettings] = useState(null)
@@ -38,6 +78,12 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [topupVariants, setTopupVariants] = useState([])
   const [topupVariantsLoading, setTopupVariantsLoading] = useState(false)
   const [topupVariantsError, setTopupVariantsError] = useState(null)
+  // Список таблиц (вкладка = категория, под-вкладка = название таблицы) для привязки.
+  const [tableTabs, setTableTabs] = useState([])
+  const [tableTabsLoading, setTableTabsLoading] = useState(false)
+  const [tableTabsError, setTableTabsError] = useState(null)
+  const [imageUploadingRow, setImageUploadingRow] = useState(null)
+  const [imageUploadError, setImageUploadError] = useState(null)
   // Скрытый режим отладки: включается набором слова «дебаг» на странице.
   const [debugMode, setDebugMode] = useState(false)
   const debugBufferRef = useRef('')
@@ -108,6 +154,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const defaultProductSettings = () => ({
     cost: 0,
     costUsd: 0,
+    tableBinding: { subtabId: '', subtabName: '', tabName: '' },
     settingsLabel: '',
     groupName: '',
     autodelivery: {
@@ -167,6 +214,10 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       message: '',
       start: '12:00',
       end: '13:00',
+    },
+    imageAutomessage: {
+      enabled: false,
+      items: [],
     },
     emailValidation: {
       enabled: false,
@@ -238,6 +289,28 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       })
     return () => { cancelled = true }
   }, [token, lot?.id, lot?.price])
+
+  // Загружаем список таблиц (категория + название) для привязки к таблице.
+  useEffect(() => {
+    let cancelled = false
+    setTableTabsLoading(true)
+    setTableTabsError(null)
+    fetchTableTabs()
+      .then((data) => {
+        if (cancelled) return
+        setTableTabs(Array.isArray(data?.list) ? data.list : [])
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setTableTabs([])
+        setTableTabsError(err instanceof Error ? err.message : 'Ошибка загрузки таблиц')
+      })
+      .finally(() => {
+        if (cancelled) return
+        setTableTabsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!productSettings?.autodeliveryApi?.enabled && !productSettings?.autotopupApi?.enabled) {
@@ -468,6 +541,10 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         ...loaded,
         cost: typeof loaded.cost === 'number' ? loaded.cost : (parseFloat(loaded.cost) || 0),
         costUsd: typeof loaded.costUsd === 'number' ? loaded.costUsd : (parseFloat(loaded.costUsd) || 0),
+        tableBinding: {
+          ...base.tableBinding,
+          ...(loaded.tableBinding && typeof loaded.tableBinding === 'object' ? loaded.tableBinding : {}),
+        },
         groupName: typeof loaded.groupName === 'string' ? loaded.groupName : '',
         autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
         autodeliveryApi: {
@@ -596,6 +673,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
               ? loaded.purchaseWindowAutomessage.end
               : base.purchaseWindowAutomessage.end,
         },
+        imageAutomessage: normalizeImageAutomessageFromLoaded(loaded),
         emailValidation: {
           ...base.emailValidation,
           ...loadedEmailValidation,
@@ -831,6 +909,64 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       ...prev,
       purchaseWindowAutomessage: { ...(prev?.purchaseWindowAutomessage || {}), [field]: value },
     }))
+  }
+
+  const setImageAutomessage = (field, value) => {
+    setProductSettings((prev) => ({
+      ...prev,
+      imageAutomessage: { ...(prev?.imageAutomessage || {}), [field]: value },
+    }))
+  }
+
+  const setImageAutomessageRow = (index, patch) => {
+    setProductSettings((prev) => {
+      const items = [...(prev?.imageAutomessage?.items || [])]
+      items[index] = { ...(items[index] || emptyImageAutomessageRow()), ...patch }
+      return {
+        ...prev,
+        imageAutomessage: { ...(prev?.imageAutomessage || {}), items },
+      }
+    })
+  }
+
+  const addImageAutomessageRow = () => {
+    setProductSettings((prev) => ({
+      ...prev,
+      imageAutomessage: {
+        ...(prev?.imageAutomessage || {}),
+        items: [...(prev?.imageAutomessage?.items || []), emptyImageAutomessageRow()],
+      },
+    }))
+  }
+
+  const removeImageAutomessageRow = (index) => {
+    setProductSettings((prev) => {
+      const items = [...(prev?.imageAutomessage?.items || [])]
+      items.splice(index, 1)
+      return {
+        ...prev,
+        imageAutomessage: { ...(prev?.imageAutomessage || {}), items },
+      }
+    })
+  }
+
+  const handleImageAutomessageUpload = async (index, file) => {
+    if (!file) return
+    setImageUploadingRow(index)
+    setImageUploadError(null)
+    try {
+      const image = await uploadAutomessageImage(file)
+      setImageAutomessageRow(index, {
+        imageId: image.imageId || '',
+        ext: image.ext || '',
+        filename: image.filename || '',
+        url: image.url || '',
+      })
+    } catch (err) {
+      setImageUploadError(err instanceof Error ? err.message : 'Ошибка загрузки картинки')
+    } finally {
+      setImageUploadingRow(null)
+    }
   }
 
   const setEmailValidation = (field, value) => {
@@ -1118,6 +1254,76 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     <span className="lot-settings-field__hint">
                       В долларах. Для прибыли конвертируется в ₽ по курсу ЦБ на дату продажи.
                     </span>
+                  </label>
+                </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Привязка к таблице</h3>
+                  <label className="lot-settings-field">
+                    <span className="lot-settings-field__label">Таблица</span>
+                    <select
+                      className="lot-settings-input"
+                      value={productSettings?.tableBinding?.subtabId ?? ''}
+                      onChange={(e) => {
+                        const subtabId = e.target.value
+                        let picked = null
+                        let tabName = ''
+                        for (const tab of tableTabs) {
+                          const sub = (Array.isArray(tab.subtabs) ? tab.subtabs : []).find(
+                            (s) => String(s.id) === String(subtabId)
+                          )
+                          if (sub) {
+                            picked = sub
+                            tabName = tab.name || ''
+                            break
+                          }
+                        }
+                        setProductSettings((p) => ({
+                          ...p,
+                          tableBinding: {
+                            subtabId,
+                            subtabName: picked?.name || '',
+                            tabName,
+                          },
+                        }))
+                      }}
+                    >
+                      <option value="">— не привязано —</option>
+                      {tableTabs.map((tab) => {
+                        const subtabs = Array.isArray(tab.subtabs) ? tab.subtabs : []
+                        if (subtabs.length === 0) return null
+                        return (
+                          <optgroup key={tab.id} label={tab.name}>
+                            {subtabs.map((sub) => (
+                              <option key={sub.id} value={sub.id}>
+                                {tab.name} / {sub.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )
+                      })}
+                    </select>
+                    {tableTabsLoading && (
+                      <span className="lot-settings-field__hint">Загрузка таблиц…</span>
+                    )}
+                    {tableTabsError && (
+                      <span className="lot-settings-field__hint">{tableTabsError}</span>
+                    )}
+                    {!tableTabsLoading &&
+                      !tableTabsError &&
+                      productSettings?.tableBinding?.subtabId &&
+                      !tableTabs.some((tab) =>
+                        (Array.isArray(tab.subtabs) ? tab.subtabs : []).some(
+                          (s) => String(s.id) === String(productSettings.tableBinding.subtabId)
+                        )
+                      ) && (
+                        <span className="lot-settings-field__hint">
+                          Привязанная таблица не найдена
+                          {productSettings.tableBinding.subtabName
+                            ? ` (${productSettings.tableBinding.tabName || '—'} / ${productSettings.tableBinding.subtabName})`
+                            : ''}
+                          — выберите заново.
+                        </span>
+                      )}
                   </label>
                 </section>
                 <section className="lot-settings-block">
@@ -1693,6 +1899,83 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                         />
                       </label>
                     </>
+                  )}
+                </section>
+                <section className="lot-settings-block">
+                  <h3 className="lot-settings-block__title">Автосообщение (картинка)</h3>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.imageAutomessage?.enabled)}
+                      onChange={(e) => setImageAutomessage('enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить отправку картинки</span>
+                  </label>
+                  {Boolean(productSettings?.imageAutomessage?.enabled) && (
+                    <div className="lot-settings-image-auto">
+                      <div className="lot-settings-image-auto__head">
+                        <span>Когда отправлять</span>
+                        <span>Картинка</span>
+                        <span className="lot-settings-image-auto__head-actions" />
+                      </div>
+                      {(productSettings?.imageAutomessage?.items || []).map((row, index) => (
+                        <div key={index} className="lot-settings-image-auto__row">
+                          <select
+                            className="lot-settings-input"
+                            value={row.trigger ?? 'purchase'}
+                            onChange={(e) => setImageAutomessageRow(index, { trigger: e.target.value })}
+                          >
+                            <option value="purchase">При покупке</option>
+                            <option value="sent">После отправки товара</option>
+                            <option value="confirmed">После подтверждения сделки</option>
+                          </select>
+                          <div className="lot-settings-image-auto__image">
+                            {row.url ? (
+                              <img
+                                src={automessageImageUrl(row.url)}
+                                alt=""
+                                className="lot-settings-image-auto__preview"
+                              />
+                            ) : null}
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/gif,image/webp"
+                              className="lot-settings-input"
+                              disabled={imageUploadingRow === index}
+                              onChange={(e) => {
+                                const file = e.target.files && e.target.files[0]
+                                if (file) void handleImageAutomessageUpload(index, file)
+                                e.target.value = ''
+                              }}
+                            />
+                            {imageUploadingRow === index && (
+                              <span className="lot-settings-field__hint">Загрузка…</span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-image-auto__remove"
+                            onClick={() => removeImageAutomessageRow(index)}
+                          >
+                            Удалить
+                          </button>
+                        </div>
+                      ))}
+                      {imageUploadError && (
+                        <span className="lot-settings-field__hint">{imageUploadError}</span>
+                      )}
+                      <button
+                        type="button"
+                        className="lot-settings-btn lot-settings-btn--secondary"
+                        onClick={addImageAutomessageRow}
+                      >
+                        + Добавить
+                      </button>
+                    </div>
                   )}
                 </section>
                 </>

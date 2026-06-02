@@ -16,6 +16,7 @@ const {
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   buildPurchaseWindowAutomessageEventKey,
+  buildImageAutomessageEventKey,
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
@@ -76,6 +77,9 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     handlePostPurchaseAutomessage,
     handleDealConfirmedAutomessage,
     handlePurchaseWindowAutomessage,
+    handleImageAutomessage,
+    sendChatImage,
+    automessageImagesDir,
     fetchDealChatMessagesFromPlayerok,
     loadApprouteApiKeyPlain,
     runApprouteAutodelivery,
@@ -496,6 +500,15 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         buildEventKey: buildPurchaseWindowAutomessageEventKey,
         logLabel: 'purchase-window-automessage',
       },
+      {
+        handler: handleImageAutomessage,
+        // Маркер зависит от настройки cfg.trigger — сканируем по всем трём,
+        // обработчик внутри сверяет нужный.
+        markers: [ITEM_PAID_MARKER, ITEM_SENT_MARKER, ...DEAL_CONFIRMED_MARKERS],
+        buildEventKey: buildImageAutomessageEventKey,
+        logLabel: 'image-automessage',
+        skipProcessedPreCheck: true,
+      },
     ]
 
     for (const scan of chatAutomessageScans) {
@@ -511,15 +524,21 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         const d = lm?.deal || null
         const candidateDealId = d?.id || null
         const dItemId = d?.item?.id || null
-        const eventKey = scan.buildEventKey(chatId, candidateDealId)
-        if (!eventKey || autolistWasProcessed(tokenHash, eventKey)) continue
+        const eventKey = scan.buildEventKey
+          ? scan.buildEventKey(chatId, candidateDealId)
+          : null
+        if (!scan.skipProcessedPreCheck) {
+          if (!eventKey || autolistWasProcessed(tokenHash, eventKey)) continue
+        }
 
         const triggerTs = toUnixTs(lm?.createdAt)
         if (
           triggerTs > 0 &&
           nowTs - triggerTs > CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC
         ) {
-          autolistMarkProcessed(tokenHash, eventKey, nowTs)
+          if (!scan.skipProcessedPreCheck && eventKey) {
+            autolistMarkProcessed(tokenHash, eventKey, nowTs)
+          }
           continue
         }
 
@@ -557,6 +576,8 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
             normalizeKeyPart,
             buildProductKey,
             toUnixTs,
+            sendChatImage,
+            automessageImagesDir,
           })
         } catch (err) {
           warnAutolistTick(`${scan.logLabel} scan failed`, {
