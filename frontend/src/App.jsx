@@ -28,6 +28,7 @@ import { ChatLoggingTab } from './features/chat-logging/ChatLoggingTab.jsx'
 import { BalanceHubTab } from './features/balance/BalanceHubTab.jsx'
 import { TestTab } from './features/test/TestTab.jsx'
 import { DockerTab } from './features/docker/DockerTab.jsx'
+import { TableTab } from './features/table/TableTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'auto-delivery-api', 'lot-boost'])
 
 const TabIcon = ({ id }) => {
@@ -220,6 +221,15 @@ const TabIcon = ({ id }) => {
           <path d="M5.2 15.3h9.8c3.2 0 4.9-1.7 5.2-4.2h-2.3" />
         </svg>
       )
+    case 'table':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="5.2" width="15" height="13.6" rx="2.4" opacity="0.16" fill="currentColor" stroke="none" />
+          <path d="M4.5 9.7h15" />
+          <path d="M9.5 5.2v13.6" />
+          <path d="M14.5 5.2v13.6" />
+        </svg>
+      )
     default:
       return null
   }
@@ -242,6 +252,7 @@ const TABS = [
   { id: 'balance', label: 'Баланс' },
   { id: 'test', label: 'Тест' },
   { id: 'docker', label: 'Docker' },
+  { id: 'table', label: 'Таблица' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -669,6 +680,7 @@ function App() {
           {activeTab === 'balance' && <BalanceHubTab token={token} />}
           {activeTab === 'test' && <TestTab token={token} />}
           {activeTab === 'docker' && <DockerTab />}
+          {activeTab === 'table' && <TableTab />}
         </section>
       </main>
     </div>

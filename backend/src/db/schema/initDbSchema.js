@@ -15,6 +15,9 @@ const { createChatSyncRunsTable } = require('./createChatSyncRunsTable')
 const { createPlayerokOutboundIpSettingsTable } = require('./createPlayerokOutboundIpSettingsTable')
 const { createApprouteSettingsTable } = require('./createApprouteSettingsTable')
 const { createUsdRatesTable } = require('./createUsdRatesTable')
+const { createTableCodesTable } = require('./createTableCodesTable')
+const { createTableTabsTables } = require('./createTableTabsTables')
+const { createTableColumnsTables } = require('./createTableColumnsTables')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -34,6 +37,9 @@ function initDbSchema(db) {
   createPlayerokOutboundIpSettingsTable(db)
   createApprouteSettingsTable(db)
   createUsdRatesTable(db)
+  createTableCodesTable(db)
+  createTableTabsTables(db)
+  createTableColumnsTables(db)
 }
 
 module.exports = { initDbSchema }

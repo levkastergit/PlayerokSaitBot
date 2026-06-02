@@ -56,6 +56,18 @@ const BACKEND_CHAT_DB_SCAN_STOP_URL = `${BACKEND_ORIGIN}/api/chat-db/scan-stop`
 const BACKEND_CHAT_DB_FULL_SCAN_STATUS_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-status`
 const BACKEND_CHAT_DB_SYNC_STEP_LOG_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log`
 const BACKEND_CHAT_DB_SYNC_STEP_LOG_CLEAR_URL = `${BACKEND_ORIGIN}/api/chat-db/sync-step-log/clear`
+const BACKEND_TABLE_CODES_URL = `${BACKEND_ORIGIN}/api/table-codes`
+const BACKEND_TABLE_CODES_USED_URL = `${BACKEND_ORIGIN}/api/table-codes/used`
+const BACKEND_TABLE_CODES_DELETE_URL = `${BACKEND_ORIGIN}/api/table-codes/delete`
+const BACKEND_TABLE_TABS_URL = `${BACKEND_ORIGIN}/api/table-tabs`
+const BACKEND_TABLE_SUBTABS_URL = `${BACKEND_ORIGIN}/api/table-subtabs`
+const BACKEND_TABLE_SUBTABS_RENAME_URL = `${BACKEND_ORIGIN}/api/table-subtabs/rename`
+const BACKEND_TABLE_TABS_DELETE_URL = `${BACKEND_ORIGIN}/api/table-tabs/delete`
+const BACKEND_TABLE_SUBTABS_DELETE_URL = `${BACKEND_ORIGIN}/api/table-subtabs/delete`
+const BACKEND_TABLE_COLUMNS_URL = `${BACKEND_ORIGIN}/api/table-columns`
+const BACKEND_TABLE_COLUMNS_RENAME_URL = `${BACKEND_ORIGIN}/api/table-columns/rename`
+const BACKEND_TABLE_COLUMNS_DELETE_URL = `${BACKEND_ORIGIN}/api/table-columns/delete`
+const BACKEND_TABLE_CODES_CELL_VALUE_URL = `${BACKEND_ORIGIN}/api/table-codes/cell-value`
 
 const FETCH_CREDENTIALS = { credentials: 'include' }
 
@@ -1221,6 +1233,243 @@ export async function saveCategoryCommands(token, category, commands) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     throw new Error(data.error || `Ошибка сохранения команд: ${response.status}`)
+  }
+  return data
+}
+
+export async function fetchTableTabs() {
+  const response = await trackedFetch(BACKEND_TABLE_TABS_URL, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка загрузки вкладок: ${response.status}`)
+  }
+  return { list: Array.isArray(data?.list) ? data.list : [] }
+}
+
+export async function createTableTab(name) {
+  const trimmedName = String(name || '').trim()
+  if (!trimmedName) throw new Error('Название вкладки обязательно')
+  const response = await trackedFetch(BACKEND_TABLE_TABS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: trimmedName }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка создания вкладки: ${response.status}`)
+  }
+  return data
+}
+
+export async function createTableSubtab(tabId, name) {
+  const id = Number(tabId)
+  const trimmedName = String(name || '').trim()
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Некорректный tabId')
+  if (!trimmedName) throw new Error('Название подвкладки обязательно')
+  const response = await trackedFetch(BACKEND_TABLE_SUBTABS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tabId: id, name: trimmedName }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка создания таблицы: ${response.status}`)
+  }
+  return data
+}
+
+export async function renameTableSubtab(id, name) {
+  const subtabId = Number(id)
+  const trimmedName = String(name || '').trim()
+  if (!Number.isFinite(subtabId) || subtabId <= 0) throw new Error('Некорректный id')
+  if (!trimmedName) throw new Error('Название обязательно')
+  const response = await trackedFetch(BACKEND_TABLE_SUBTABS_RENAME_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: subtabId, name: trimmedName }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка переименования: ${response.status}`)
+  }
+  return data
+}
+
+export async function deleteTableTab(id) {
+  const tabId = Number(id)
+  if (!Number.isFinite(tabId) || tabId <= 0) throw new Error('Некорректный id')
+  const response = await trackedFetch(BACKEND_TABLE_TABS_DELETE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: tabId }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка удаления вкладки: ${response.status}`)
+  }
+  return data
+}
+
+export async function deleteTableSubtab(id) {
+  const subtabId = Number(id)
+  if (!Number.isFinite(subtabId) || subtabId <= 0) throw new Error('Некорректный id')
+  const response = await trackedFetch(BACKEND_TABLE_SUBTABS_DELETE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: subtabId }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка удаления таблицы: ${response.status}`)
+  }
+  return data
+}
+
+export async function fetchTableColumns(subtabId) {
+  const id = Number(subtabId)
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Подвкладка обязательна')
+  const url = buildUrlWithToken(BACKEND_TABLE_COLUMNS_URL, null, { subtabId: id })
+  const response = await trackedFetch(url, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка загрузки столбцов: ${response.status}`)
+  }
+  return { list: Array.isArray(data?.list) ? data.list : [] }
+}
+
+export async function createTableColumn(subtabId, name) {
+  const id = Number(subtabId)
+  const trimmedName = String(name || '').trim()
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Подвкладка обязательна')
+  if (!trimmedName) throw new Error('Название столбца обязательно')
+  const response = await trackedFetch(BACKEND_TABLE_COLUMNS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtabId: id, name: trimmedName }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка создания столбца: ${response.status}`)
+  }
+  return data
+}
+
+export async function renameTableColumn(id, name) {
+  const columnId = Number(id)
+  const trimmedName = String(name || '').trim()
+  if (!Number.isFinite(columnId) || columnId <= 0) throw new Error('Некорректный id')
+  if (!trimmedName) throw new Error('Название обязательно')
+  const response = await trackedFetch(BACKEND_TABLE_COLUMNS_RENAME_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: columnId, name: trimmedName }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка переименования столбца: ${response.status}`)
+  }
+  return data
+}
+
+export async function deleteTableColumn(id) {
+  const columnId = Number(id)
+  if (!Number.isFinite(columnId) || columnId <= 0) throw new Error('Некорректный id')
+  const response = await trackedFetch(BACKEND_TABLE_COLUMNS_DELETE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: columnId }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка удаления столбца: ${response.status}`)
+  }
+  return data
+}
+
+export async function updateTableCodeCellValue(codeId, columnId, value) {
+  const id = Number(codeId)
+  const colId = Number(columnId)
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Некорректный codeId')
+  if (!Number.isFinite(colId) || colId <= 0) throw new Error('Некорректный columnId')
+  const response = await trackedFetch(BACKEND_TABLE_CODES_CELL_VALUE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ codeId: id, columnId: colId, value: String(value ?? '') }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка сохранения ячейки: ${response.status}`)
+  }
+  return data
+}
+
+export async function fetchTableCodes(subtabId) {
+  const id = Number(subtabId)
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Подвкладка обязательна')
+  const url = buildUrlWithToken(BACKEND_TABLE_CODES_URL, null, { subtabId: id })
+  const response = await trackedFetch(url, FETCH_CREDENTIALS)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка загрузки кодов: ${response.status}`)
+  }
+  return { list: Array.isArray(data?.list) ? data.list : [] }
+}
+
+export async function addTableCode(subtabId, code) {
+  const id = Number(subtabId)
+  const trimmedCode = String(code || '').trim()
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Подвкладка обязательна')
+  if (!trimmedCode) throw new Error('Код обязателен')
+  const response = await trackedFetch(BACKEND_TABLE_CODES_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtabId: id, code: trimmedCode }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка добавления кода: ${response.status}`)
+  }
+  return data
+}
+
+export async function updateTableCodeUsed(id, used) {
+  const codeId = Number(id)
+  if (!Number.isFinite(codeId) || codeId <= 0) throw new Error('Некорректный id')
+  const response = await trackedFetch(BACKEND_TABLE_CODES_USED_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: codeId, used: Boolean(used) }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка обновления статуса: ${response.status}`)
+  }
+  return data
+}
+
+export async function deleteTableCode(id) {
+  const codeId = Number(id)
+  if (!Number.isFinite(codeId) || codeId <= 0) throw new Error('Некорректный id')
+  const response = await trackedFetch(BACKEND_TABLE_CODES_DELETE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: codeId }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || `Ошибка удаления кода: ${response.status}`)
   }
   return data
 }

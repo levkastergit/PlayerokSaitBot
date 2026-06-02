@@ -306,6 +306,9 @@ const { setOutboundIpBindingsResolver } = require('./src/infra/playerokOutboundI
 setOutboundIpBindingsResolver(loadOutboundIpBindings)
 
 const { setupHistoryRepo } = require('./src/db/historyRepo')
+const { setupTableCodesRepo } = require('./src/db/tableCodesRepo')
+const { setupTableTabsRepo } = require('./src/db/tableTabsRepo')
+const { setupTableColumnsRepo } = require('./src/db/tableColumnsRepo')
 
 const {
   insertBump,
@@ -322,6 +325,33 @@ const {
   getSalesYears,
   getSalesMonthsForYear,
 } = setupHistoryRepo(db)
+
+const { insertCode, getCodesByUserAndCategory, updateCodeUsed, deleteCodeById, deleteCodesByCategory, getCodeById } =
+  setupTableCodesRepo(db)
+const {
+  getColumnsBySubtab,
+  getColumnById,
+  getMaxSortOrderBySubtab,
+  insertColumn,
+  updateColumnName,
+  deleteColumnById,
+  deleteColumnsBySubtabId,
+  getValuesByCategory,
+  upsertCellValue,
+} = setupTableColumnsRepo(db)
+const {
+  getTabsByUser,
+  getSubtabsByUser,
+  insertTab,
+  insertSubtab,
+  getTabById,
+  getSubtabById,
+  getSubtabIdsByTabId,
+  updateSubtabName,
+  deleteSubtabTx,
+  deleteTabTx,
+  ensureDefaultTabsTx,
+} = setupTableTabsRepo(db, { deleteCodesByCategory, deleteColumnsBySubtabId })
 
 const { setupPartnersRepo } = require('./src/db/partnersRepo')
 const {
@@ -897,6 +927,30 @@ const server = http.createServer(async (req, res) => {
         computeProfitAnalyticsList,
         clampInt,
         usdRateService,
+        insertCode,
+        getCodesByUserAndCategory,
+        updateCodeUsed,
+        deleteCodeById,
+        getCodeById,
+        getTabsByUser,
+        getSubtabsByUser,
+        insertTab,
+        insertSubtab,
+        getTabById,
+        getSubtabById,
+        updateSubtabName,
+        getSubtabIdsByTabId,
+        deleteSubtabTx,
+        deleteTabTx,
+        ensureDefaultTabsTx,
+        getColumnsBySubtab,
+        getColumnById,
+        getMaxSortOrderBySubtab,
+        insertColumn,
+        updateColumnName,
+        deleteColumnById,
+        getValuesByCategory,
+        upsertCellValue,
       },
     })
     if (handled) return
