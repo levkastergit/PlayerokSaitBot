@@ -48,6 +48,7 @@ const BACKEND_CHAT_DB_LIST_URL = `${BACKEND_ORIGIN}/api/chat-db/list`
 const BACKEND_CHAT_DB_MESSAGES_URL = `${BACKEND_ORIGIN}/api/chat-db/messages`
 const BACKEND_CHAT_DB_MARK_READ_URL = `${BACKEND_ORIGIN}/api/chat-db/mark-read`
 const BACKEND_CHAT_DB_SEND_URL = `${BACKEND_ORIGIN}/api/chat-db/send`
+const BACKEND_CHAT_DB_TEST_PURCHASE_URL = `${BACKEND_ORIGIN}/api/chat-db/test-purchase`
 const BACKEND_CHAT_DB_FULL_SCAN_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan`
 const BACKEND_CHAT_DB_FULL_SCAN_RESET_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-reset`
 const BACKEND_CHAT_DB_RECHECK_CHAT_URL = `${BACKEND_ORIGIN}/api/chat-db/recheck-chat`
@@ -558,6 +559,22 @@ export async function sendChatDbMessage(token, { dealId, chatId, text, clientMes
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка отправки сообщения: ${response.status}`)
+  return data
+}
+
+/** Тест-покупка: прогон реальной логики выдачи без сайд-эффектов, возвращает транскрипт. */
+export async function testChatPurchase(token, { productKey }) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_TEST_PURCHASE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      productKey,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка тест-покупки: ${response.status}`)
   return data
 }
 

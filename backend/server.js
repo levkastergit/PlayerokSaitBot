@@ -922,6 +922,7 @@ const server = http.createServer(async (req, res) => {
         getListingFees,
         computeProfitAnalyticsList,
         usdRateService,
+        resolveEffectiveProductSettings,
       },
     })
     if (handled) return

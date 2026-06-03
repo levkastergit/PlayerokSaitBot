@@ -4,8 +4,16 @@ const LOGS_BUFFER_SIZE = 10000
 const logsBuffer = []
 
 let initialized = false
+let suppressed = false
+
+// Временное подавление записи в буфер `GET /api/logs` (вывод в терминал сохраняется).
+// Используется тест-покупкой, чтобы прогон логики не засорял журнал.
+function setLogBufferSuppressed(value) {
+  suppressed = Boolean(value)
+}
 
 function addLogToBuffer(level, args) {
+  if (suppressed) return
   const timestamp = new Date().toISOString()
 
   // Определяем тег из первого аргумента, если он есть
@@ -116,5 +124,5 @@ function getLogsBuffer(limit = 1000) {
   return logsBuffer.slice(-Math.max(0, safeLimit))
 }
 
-module.exports = { initLogger, getLogsBuffer, addLogToBuffer }
+module.exports = { initLogger, getLogsBuffer, addLogToBuffer, setLogBufferSuppressed }
 

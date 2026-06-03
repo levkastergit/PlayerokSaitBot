@@ -6,6 +6,7 @@ const {
 } = require('../debug/chatSyncStepLog')
 const { getSupercellGameByCategory } = require('../functions/supercellHelpers')
 const { resolveBuyerSupercellEmailFromDeal } = require('../functions/resolveBuyerSupercellEmailFromDeal')
+const { handleTestPurchase } = require('../features/chat-db/handleTestPurchase')
 const { logChatMessagesGap } = require('../debug/chatMessagesGapLog')
 
 const SMART_EMAIL_CACHE_TTL_MS = 2 * 60 * 1000
@@ -421,6 +422,13 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       if (!effectiveChatId) {
         return sendJson(res, 400, { error: 'chatId or known dealId is required' }) || true
       }
+      if (effectiveChatId === 'synthetic-test') {
+        // Синтетический тест-чат: истории на бэке нет, в Playerok не ходим (chatId не UUID).
+        return sendJson(res, 200, {
+          list: [], deals: [], itemTitle: '', itemImageUrl: '', itemCategory: '',
+          viewerUsername: null, review: null, buyerSupercellEmail: '',
+        }) || true
+      }
       let rows = chatDbRepo.listMessages.all(currentUserId, effectiveChatId)
       let thread = chatDbRepo.getThreadByChatId.get(currentUserId, effectiveChatId)
       let deals = chatDbRepo.listDealsByChatId.all(currentUserId, effectiveChatId)
@@ -812,6 +820,16 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       }
     } catch (err) {
       return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'chat-db send failed' }) || true
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat-db/test-purchase') {
+    try {
+      const payload = await readJsonBody(req, { fallback: {} })
+      const result = await handleTestPurchase({ payload, currentUserId, deps })
+      return sendJson(res, result.statusCode, result.data) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'test purchase failed' }) || true
     }
   }
 

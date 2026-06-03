@@ -15,8 +15,8 @@ const {
   finishChatAutomessageSend,
   tryBeginApprouteChatSend,
   finishApprouteChatSend,
-  autolistWasAutomessageSent,
-  autolistMarkAutomessageSent,
+  autolistWasAutomessageSent: autolistWasAutomessageSentDefault,
+  autolistMarkAutomessageSent: autolistMarkAutomessageSentDefault,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
 const { hasSellerMessageText } = require('./handleChatAutomessage')
@@ -66,6 +66,10 @@ async function handlePaidChat({
   skipRelist = false,
   chatMessages = null,
   viewerUsername = null,
+  // Дедуп лот-автосообщений (журнал в БД). По умолчанию — реальные функции из
+  // autolistState; в тест-песочнице подменяются на no-op, чтобы не писать в БД.
+  autolistWasAutomessageSent = autolistWasAutomessageSentDefault,
+  autolistMarkAutomessageSent = autolistMarkAutomessageSentDefault,
 }) {
   // 2.2 Фиксируем продажу и выполняем автосообщения/автовыдачу для этого товара
   let item = null

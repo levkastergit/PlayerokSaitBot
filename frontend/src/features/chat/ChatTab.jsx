@@ -17,6 +17,7 @@ import {
   rescanApprouteChat,
   recheckChatDbChat,
   loadProductSettingsList,
+  testChatPurchase,
   getProductKey,
   getGroupSettingsKey,
   startChatDbFullScan,
@@ -24,6 +25,10 @@ import {
   pauseChatDbScan,
   stopChatDbScan,
 } from '../../services/playerokApi'
+
+// Синтетический чат категории «Тест» (имитация покупок, без сайд-эффектов).
+const TEST_CHAT_ID = 'synthetic-test'
+const TEST_CHAT = { id: TEST_CHAT_ID, buyerName: 'Тестовый покупатель', category: 'Тест', itemTitle: '' }
 
 function renderReviewBadge(review, { variant = 'list' } = {}) {
   const reviewObj = review && typeof review === 'object' ? review : null
@@ -117,7 +122,11 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const [selectedChatId, setSelectedChatId] = useState(null)
   const [chatStateById, setChatStateById] = useState({})
   const [draftByChatId, setDraftByChatId] = useState({})
-  const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment'
+  const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment' | 'test'
+  const [testProductKey, setTestProductKey] = useState('')
+  const [testMessages, setTestMessages] = useState([])
+  const [testRunning, setTestRunning] = useState(false)
+  const [testError, setTestError] = useState(null)
   const [categoryCommands, setCategoryCommands] = useState([]) // [{ category, commands }]
   const [loadingCommands, setLoadingCommands] = useState(false)
   const [requestCodeModal, setRequestCodeModal] = useState({ open: false, chatId: null })
@@ -280,6 +289,51 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     })
     return map
   }, [productSettingsList])
+
+  // Товары для тест-покупки: только те, у кого включён какой-либо режим выдачи.
+  const testProductOptions = useMemo(() => {
+    const opts = []
+    for (const entry of productSettingsList) {
+      const productKey = entry && entry.productKey
+      const s = entry && entry.settings
+      if (!productKey || !s || typeof s !== 'object') continue
+      const enabled =
+        (s.automessage && s.automessage.enabled) ||
+        (s.autodelivery && s.autodelivery.enabled) ||
+        (s.autodeliveryApi && s.autodeliveryApi.enabled) ||
+        (s.autotopupApi && s.autotopupApi.enabled) ||
+        (s.emailValidation && s.emailValidation.enabled)
+      if (!enabled) continue
+      const key = String(productKey)
+      const sep = key.indexOf('::')
+      const label = sep > 0 ? `${key.slice(0, sep).trim()} — ${key.slice(sep + 2).trim()}` : key
+      opts.push({ value: key, label })
+    }
+    opts.sort((a, b) => a.label.localeCompare(b.label))
+    return opts
+  }, [productSettingsList])
+
+  const runTestPurchase = useCallback(async () => {
+    if (!token || !testProductKey || testRunning) return
+    setTestRunning(true)
+    setTestError(null)
+    try {
+      const data = await testChatPurchase(token, { productKey: testProductKey })
+      const transcript = Array.isArray(data?.transcript) ? data.transcript : []
+      setTestMessages(
+        transcript.map((m, i) => ({
+          id: `test-${i}`,
+          role: m && m.role === 'buyer' ? 'buyer' : m && m.role === 'system' ? 'system' : 'bot',
+          text: m && m.text != null ? String(m.text) : '',
+        }))
+      )
+    } catch (err) {
+      setTestError(err && err.message ? err.message : 'Ошибка тест-покупки')
+      setTestMessages([])
+    } finally {
+      setTestRunning(false)
+    }
+  }, [token, testProductKey, testRunning])
 
   const resolveSettingsForChat = useCallback(
     (chat, itemTitle) => {
@@ -972,6 +1026,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const pullMessagesForChat = useCallback(
     async (chat, { silent = false } = {}) => {
       if (!token || !chat?.id) return
+      if (chat.id === TEST_CHAT_ID) return // тест-чат синтетический, истории на бэке нет
       const chatId = chat.id
       const isSelected = selectedChatIdRef.current === chatId
       const hasCachedMessages = Boolean(chatStateByIdRef.current[chatId]?.messages?.length)
@@ -1161,7 +1216,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const PRELOAD_VIEWPORT_PRIORITY = 4
 
   const chatNeedsMessagesLoad = useCallback((chatId) => {
-    if (!chatId) return false
+    if (!chatId || chatId === TEST_CHAT_ID) return false
     const chatKey = String(chatId)
     if (batchLoadInFlightRef.current.has(chatKey)) return false
     const state = chatStateByIdRef.current[chatId]
@@ -1597,6 +1652,9 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   }, [token, pageInfo.hasNextPage, pageInfo.endCursor, mergeChatEntry, enqueueChatsForPreload])
 
   const visibleChats = useMemo(() => {
+    if (chatFilter === 'test') {
+      return [TEST_CHAT]
+    }
     if (chatFilter === 'hide-completed') {
       const base = chats.filter((chat) => !chat.isHidden)
       return base.filter((chat) => !isChatCompleted(chat))
@@ -1711,6 +1769,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   const loadMessagesForChat = async (chat, { force = false } = {}) => {
     if (!token || !chat?.id) return
+    if (chat.id === TEST_CHAT_ID) return // тест-чат синтетический, истории на бэке нет
     const state = chatStateByIdRef.current[chat.id]
     const hasCachedMessages = Boolean(state?.messages?.length)
     const listAhead = isListAheadOfLoadedMessages(chat)
@@ -1722,7 +1781,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   }
 
   const markChatAsRead = useCallback((chatId) => {
-    if (!chatId) return
+    if (!chatId || chatId === TEST_CHAT_ID) return
     // Оптимистично гасим бейдж локально...
     setChats((prev) =>
       prev.map((chat) =>
@@ -1779,7 +1838,8 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     })
   }
 
-  const selectedChat = chats.find((c) => c.id === selectedChatId) || null
+  const isTestChat = selectedChatId === TEST_CHAT_ID
+  const selectedChat = isTestChat ? TEST_CHAT : chats.find((c) => c.id === selectedChatId) || null
   const selectedChatState = selectedChat
     ? chatStateById[selectedChat.id] || {
         loading: Boolean(selectedChat.lastMessageId || String(selectedChat.lastMessageText || '').trim()),
@@ -2812,6 +2872,19 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                 >
                   <span aria-hidden="true">📦</span>
                 </button>
+                <button
+                  type="button"
+                  className={
+                    chatFilter === 'test'
+                      ? 'chat-filter-toggle__btn chat-filter-toggle__btn--active'
+                      : 'chat-filter-toggle__btn'
+                  }
+                  onClick={() => setChatFilter('test')}
+                  aria-label="Тест: имитация покупок"
+                  title="Тест"
+                >
+                  <span aria-hidden="true">🧪</span>
+                </button>
               </div>
               <div
                 ref={listRef}
@@ -2939,7 +3012,81 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
               Выберите чат слева, чтобы увидеть сообщения.
             </p>
           )}
-          {hasToken && selectedChat && (
+          {hasToken && selectedChat && isTestChat && (
+            <>
+              <div className="chat-header-row">
+                <div className="card-text chat-header-row__info">
+                  <div className="chat-header-row__text">
+                    <strong>Тест покупки</strong>
+                    <span className="chat-header-row__buyer">
+                      Покупатель: {TEST_CHAT.buyerName}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="chat-messages">
+                {testMessages.length === 0 ? (
+                  <p className="card-text">
+                    Выберите товар и нажмите «Тест покупки».
+                  </p>
+                ) : (
+                  testMessages.map((m) => {
+                    const cls =
+                      m.role === 'system'
+                        ? 'chat-message chat-message--system'
+                        : m.role === 'buyer'
+                          ? 'chat-message chat-message--buyer'
+                          : 'chat-message chat-message--seller'
+                    return (
+                      <div key={m.id} className={cls}>
+                        <div className="chat-message__bubble">
+                          <div className="chat-message__text-wrapper">
+                            <div className="chat-message__text">
+                              {formatMessageText(m.text)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+              {testError && (
+                <p className="card-text card-text--error" role="status" aria-live="polite">
+                  {testError}
+                </p>
+              )}
+              <form
+                className="deal-chat-row__input"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  void runTestPurchase()
+                }}
+              >
+                <select
+                  className="deal-chat-row__input-field"
+                  value={testProductKey}
+                  onChange={(e) => setTestProductKey(e.target.value)}
+                  aria-label="Товар для тест-покупки"
+                >
+                  <option value="">Выберите товар…</option>
+                  {testProductOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  className="deal-chat-row__input-btn"
+                  disabled={!token || !testProductKey || testRunning}
+                >
+                  {testRunning ? 'Тестируем…' : 'Тест покупки'}
+                </button>
+              </form>
+            </>
+          )}
+          {hasToken && selectedChat && !isTestChat && (
             <>
               <div className="chat-header-row">
                 <div className="card-text chat-header-row__info">
