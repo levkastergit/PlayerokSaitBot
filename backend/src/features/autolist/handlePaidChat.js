@@ -15,6 +15,8 @@ const {
   finishChatAutomessageSend,
   tryBeginApprouteChatSend,
   finishApprouteChatSend,
+  autolistWasAutomessageSent,
+  autolistMarkAutomessageSent,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
 const { hasSellerMessageText } = require('./handleChatAutomessage')
@@ -538,6 +540,10 @@ async function handlePaidChat({
             ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
             : []
 
+        // Персистентный дедуп (журнал в БД): не отправляем лот-автосообщение повторно
+        // по этой сделке — переживает перезапуск и устаревание загруженных сообщений.
+        const lotAutoAlreadySent = autolistWasAutomessageSent(currentUserId, chatIdStr, dealId, 'lot_automessage')
+
         // Дубль ищем ТОЛЬКО в рамках текущей сделки (повторные покупки в одном чате):
         // иначе автосообщение из прошлой сделки покупателя ошибочно считается уже
         // отправленным, и для новой сделки оно не уходит.
@@ -547,7 +553,7 @@ async function handlePaidChat({
           history.length > 0 &&
           textsToSend.every((line) => hasSellerMessageText(history, line, viewerUsername))
 
-        if (allAlreadyInChat) {
+        if (lotAutoAlreadySent || allAlreadyInChat) {
           automessageSuccess = true
         } else if (textsToSend.length > 0) {
           let sentCount = 0
@@ -583,6 +589,9 @@ async function handlePaidChat({
           automessageSuccess = sentCount === textsToSend.length && failedIndex < 0
         }
       } finally {
+        if (automessageSuccess) {
+          autolistMarkAutomessageSent(currentUserId, chatIdStr, dealId, 'lot_automessage', nowTs)
+        }
         finishChatAutomessageSend(tokenHash, automessageEventKey, {
           success: automessageSuccess,
           nowTs,

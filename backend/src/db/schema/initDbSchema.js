@@ -18,6 +18,7 @@ const { createUsdRatesTable } = require('./createUsdRatesTable')
 const { createTableCodesTable } = require('./createTableCodesTable')
 const { createTableTabsTables } = require('./createTableTabsTables')
 const { createTableColumnsTables } = require('./createTableColumnsTables')
+const { createSentAutomessagesTable } = require('./createSentAutomessagesTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -40,6 +41,7 @@ function initDbSchema(db) {
   createTableCodesTable(db)
   createTableTabsTables(db)
   createTableColumnsTables(db)
+  createSentAutomessagesTable(db)
 }
 
 module.exports = { initDbSchema }

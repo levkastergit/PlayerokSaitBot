@@ -295,7 +295,11 @@ async function runApprouteAutodelivery({
 
 
 
-  if (messageOnPurchase && !deliveryOnly) {
+  // Сообщение при покупке отправляем при любом запуске автовыдачи (в т.ч. delivery-only
+  // и после перезапуска), а не только при первичном размещении заказа. Дубль исключён
+  // дедупом в рамках текущей сделки — иначе у повторных покупок/после перезапуска оно
+  // не уходило, если первичный цикл его пропустил.
+  if (messageOnPurchase) {
     const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
     const alreadySent = history.length > 0 && hasSellerMessageText(history, messageOnPurchase, viewerUsername)
     if (alreadySent) {
@@ -463,7 +467,11 @@ async function runApprouteAutodelivery({
 
     }
 
-    const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
+    // Текст выдачи (код) уникален для каждой сделки, поэтому дубль ищем по ВСЕЙ
+    // истории чата (надёжнее: переживает перезапуск/повторную обработку и не
+    // зависит от корректного вычисления границ сделки). Это предотвращает повторную
+    // отправку «Ваш код: …» при повторной обработке уже выданной сделки.
+    const history = Array.isArray(chatMessages) ? chatMessages : []
     if (history.length > 0 && hasSellerMessageText(history, textToSend, viewerUsername)) {
       logApprouteAutodelivery('chat already has delivery text', {
         productKey,

@@ -7,9 +7,58 @@ const AUTOLIST_ITEM_STATE_TTL_SEC = 24 * 60 * 60
 // Иначе "ожидает автовыставления" может висеть бесконечно. Интервал — 2 минуты.
 const AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC = 120
 /** Макс. возраст системного триггера (подтверждение товара / сделки) для автосообщения в чат. */
-const CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC = 10 * 60
-/** Макс. возраст сделки для paid_chat-автосообщения после покупки. */
-const PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC = 2 * 60
+// Окно «свежести» триггера автосообщения. Раньше было 10 минут, но при перезапуске
+// сервера или задержке обработки чат мог простоять дольше, и автосообщение навсегда
+// помечалось выполненным, так и не отправившись. Дедуп в рамках сделки надёжно не даёт
+// дублей, поэтому окно увеличено до 2 часов — чтобы отложенная обработка/перезапуск
+// всё же отправили автосообщение (лучше с опозданием, чем никогда).
+const CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC = 2 * 60 * 60
+/** Макс. возраст сделки для paid_chat-автосообщения после покупки.
+ *  Было 2 минуты — слишком жёстко: при любой задержке/перезапуске лот-автосообщение
+ *  навсегда помечалось выполненным. Дедуп в рамках сделки не даёт дублей, поэтому окно
+ *  увеличено до 2 часов. */
+const PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC = 2 * 60 * 60
+
+// ── Персистентный дедуп автосообщений (журнал в БД) ──────────────────────────
+// In-memory processed-map теряется при перезапуске, а дедуп по истории чата может
+// промахнуться на устаревших сообщениях (гонка) → дубли. Журнал в таблице
+// sent_automessages надёжно фиксирует факт отправки по (user, chat, deal, kind).
+let _sentAutomsgWasStmt = null
+let _sentAutomsgMarkStmt = null
+
+function setAutolistPersistenceDb(db) {
+  if (!db || typeof db.prepare !== 'function') return
+  _sentAutomsgWasStmt = db.prepare(
+    'SELECT 1 FROM sent_automessages WHERE user_id=? AND chat_id=? AND deal_id=? AND kind=? LIMIT 1'
+  )
+  _sentAutomsgMarkStmt = db.prepare(
+    'INSERT OR IGNORE INTO sent_automessages (user_id, chat_id, deal_id, kind, sent_at) VALUES (?, ?, ?, ?, ?)'
+  )
+}
+
+function autolistWasAutomessageSent(userId, chatId, dealId, kind) {
+  if (!_sentAutomsgWasStmt) return false
+  const c = String(chatId || '').trim()
+  const d = String(dealId || '').trim()
+  const k = String(kind || '').trim()
+  if (!c || !d || !k) return false
+  try {
+    return Boolean(_sentAutomsgWasStmt.get(Number(userId), c, d, k))
+  } catch (_) {
+    return false
+  }
+}
+
+function autolistMarkAutomessageSent(userId, chatId, dealId, kind, sentAt) {
+  if (!_sentAutomsgMarkStmt) return
+  const c = String(chatId || '').trim()
+  const d = String(dealId || '').trim()
+  const k = String(kind || '').trim()
+  if (!c || !d || !k) return
+  try {
+    _sentAutomsgMarkStmt.run(Number(userId), c, d, k, Number(sentAt) || Math.floor(Date.now() / 1000))
+  } catch (_) {}
+}
 
 function autolistGetProcessedMap(tokenHash) {
   global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
@@ -287,6 +336,9 @@ module.exports = {
   AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC,
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
+  setAutolistPersistenceDb,
+  autolistWasAutomessageSent,
+  autolistMarkAutomessageSent,
   autolistGetProcessedMap,
   autolistPruneProcessedMap,
   autolistWasProcessed,

@@ -253,6 +253,11 @@ const db = new Database(DB_PATH)
 const { initDbSchema } = require('./src/db/schema/initDbSchema')
 initDbSchema(db)
 
+// Включаем персистентный дедуп автосообщений (журнал в БД) — чтобы не было дублей
+// после перезапуска/гонок и не терялись отправки.
+const { setAutolistPersistenceDb } = require('./src/features/autolist/autolistState')
+setAutolistPersistenceDb(db)
+
 const getUserSupercellModule = db.prepare('SELECT module_supercell FROM users WHERE id = ?')
 function isSupercellModuleEnabled(userId) {
   const row = getUserSupercellModule.get(userId)

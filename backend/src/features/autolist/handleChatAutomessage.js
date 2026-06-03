@@ -12,6 +12,8 @@ const {
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   autolistMarkProcessed,
+  autolistWasAutomessageSent,
+  autolistMarkAutomessageSent,
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
@@ -252,12 +254,20 @@ async function runChatAutomessage({
       }
     }
 
+    // Персистентный дедуп (журнал в БД): надёжно не даёт повторно отправить это же
+    // автосообщение по этой сделке даже после перезапуска / на устаревших сообщениях.
+    if (autolistWasAutomessageSent(currentUserId, chatId, effectiveDealId, kind)) {
+      finishSuccess = true
+      return { sent: false, reason: 'already_sent_persisted' }
+    }
+
     // Дубль ищем ТОЛЬКО в рамках текущей сделки (повторные покупки в одном чате):
     // иначе автосообщение из прошлой сделки покупателя ошибочно считается уже
     // отправленным, и для новой сделки сообщение не уходит.
     const dealScopedMessages = scopeMessagesToDeal(messages, effectiveDealId || null)
     if (hasSellerMessageText(dealScopedMessages, text, viewerUsername)) {
       finishSuccess = true
+      autolistMarkAutomessageSent(currentUserId, chatId, effectiveDealId, kind, effectiveNowTs)
       return { sent: false, reason: 'already_in_chat' }
     }
 
@@ -266,6 +276,7 @@ async function runChatAutomessage({
       { label: `createChatMessage(${logLabel})`, retries: 3, shouldRetry: isPlayerokRateLimitError }
     )
     finishSuccess = true
+    autolistMarkAutomessageSent(currentUserId, chatId, effectiveDealId, kind, effectiveNowTs)
     return { sent: true, kind }
   } catch (err) {
     console.warn(`[${logLabel}] отправка не удалась`, {
@@ -481,6 +492,14 @@ async function handleImageAutomessage(params) {
         continue
       }
 
+      // Персистентный дедуп по конкретной картинке (журнал в БД) — не даёт повторно
+      // отправить эту картинку по этой сделке после перезапуска / на устаревших данных.
+      const imgKind = 'image:' + String(item.itemKey || item.imageId || '')
+      if (autolistWasAutomessageSent(currentUserId, chatId, effectiveDealId, imgKind)) {
+        finishSuccess = true
+        continue
+      }
+
       const filePath = automessageImagePath(
         automessageImagesDir,
         currentUserId,
@@ -502,6 +521,7 @@ async function handleImageAutomessage(params) {
         { label: 'sendChatImage(image-automessage)', retries: 2, shouldRetry: isPlayerokRateLimitError }
       )
       finishSuccess = true
+      autolistMarkAutomessageSent(currentUserId, chatId, effectiveDealId, imgKind, effectiveNowTs)
       lastResult = { sent: true, kind: 'image', imageId: item.imageId }
     } catch (err) {
       console.warn('[image-automessage] отправка не удалась', {
