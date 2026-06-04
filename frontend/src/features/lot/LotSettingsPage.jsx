@@ -179,6 +179,74 @@ function placementTileLabel(key) {
   return 'Текст'
 }
 
+// Тип плитки по ключу размещения — чтобы рисовать одинаковую иконку
+// и в палитре, и в размещённой строке.
+function placementTileKind(key) {
+  if (key === 'w') return 'time'
+  if (key === 'd') return 'autodelivery'
+  if (key === 'c') return 'autoComplete'
+  if (key === 'a') return 'autodeliveryApi'
+  if (key === 'e') return 'emailValidation'
+  if (key === 's') return 'supercellAutoRequestCode'
+  if (key === 'u') return 'autotopupApi'
+  if (key && key.startsWith('i:')) return 'image'
+  return 'text'
+}
+
+// Иконка плитки автосообщений (inline SVG, 16px, наследует currentColor).
+function AutoTileIcon({ kind }) {
+  const common = {
+    viewBox: '0 0 24 24',
+    width: 15,
+    height: 15,
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.9,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': true,
+  }
+  switch (kind) {
+    case 'time':
+      return (
+        <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 1.8" /></svg>
+      )
+    case 'image':
+      return (
+        <svg {...common}><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="m4.5 17 4.5-4 4 3.2 3-2.7 3.5 3.5" /></svg>
+      )
+    case 'autodelivery':
+      return (
+        <svg {...common}><path d="M12 2.8 4 6.6v8.2l8 3.8 8-3.8V6.6z" /><path d="m4 6.6 8 3.8 8-3.8M12 10.4V18" /></svg>
+      )
+    case 'autodeliveryApi':
+      return (
+        <svg {...common}><path d="m9 8-4 4 4 4M15 8l4 4-4 4" /></svg>
+      )
+    case 'autoComplete':
+      return (
+        <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12 2.4 2.4L16 9.5" /></svg>
+      )
+    case 'emailValidation':
+      return (
+        <svg {...common}><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" /><path d="m4 7 8 5.5L20 7" /></svg>
+      )
+    case 'supercellAutoRequestCode':
+      return (
+        <svg {...common}><circle cx="8" cy="14" r="3.2" /><path d="m10.2 11.8 6-6M14 5.5h3v3" /></svg>
+      )
+    case 'autotopupApi':
+      return (
+        <svg {...common}><rect x="3.5" y="6.5" width="17" height="11.5" rx="2.5" /><path d="M16 12h2.5M3.5 10h17" /></svg>
+      )
+    case 'text':
+    default:
+      return (
+        <svg {...common}><path d="M5 7h14M5 12h14M5 17h9" /></svg>
+      )
+  }
+}
+
 function dedupePlacementOrder(order) {
   const seen = new Set()
   return order.filter((key) => {
@@ -2042,34 +2110,64 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                             }}
                             onDragEnd={handleAutoPaletteDragEnd}
                           >
-                            {tile.label}
+                            <span className="lot-settings-auto-palette__tile-icon">
+                              <AutoTileIcon kind={tile.id} />
+                            </span>
+                            <span className="lot-settings-auto-palette__tile-label">
+                              {tile.label}
+                            </span>
                           </div>
                         )
                       })}
                     </aside>
                     <div className="lot-settings-auto-stages-wrap">
                       <div className="lot-settings-auto-stages">
-                        {AUTO_MESSAGE_STAGES.map((stage) => {
+                        {AUTO_MESSAGE_STAGES.map((stage, stageIdx) => {
                           const dropActive =
                             autoDropStage === stage.trigger &&
                             autoDragTile &&
                             canDropAutoTile(autoDragTile, stage.trigger, productSettings)
+                          const stageOrder = getStagePlacementOrderFromSettings(
+                            stage.trigger,
+                            productSettings
+                          )
                           return (
-                            <div key={stage.trigger} className="lot-settings-auto-stage">
-                              <h4 className="lot-settings-auto-stage__title">{stage.label}</h4>
+                            <div
+                              key={stage.trigger}
+                              className={
+                                'lot-settings-auto-stage lot-settings-auto-stage--' + stage.trigger
+                              }
+                            >
+                              <h4 className="lot-settings-auto-stage__title">
+                                <span className="lot-settings-auto-stage__num">{stageIdx + 1}</span>
+                                <span className="lot-settings-auto-stage__label">{stage.label}</span>
+                                {stageOrder.length > 0 ? (
+                                  <span className="lot-settings-auto-stage__count">
+                                    {stageOrder.length}
+                                  </span>
+                                ) : null}
+                              </h4>
                               <div
                                 className={
                                   'lot-settings-auto-stage__body lot-settings-auto-stage__drop' +
-                                  (dropActive ? ' lot-settings-auto-stage__drop--over' : '')
+                                  (dropActive ? ' lot-settings-auto-stage__drop--over' : '') +
+                                  (stageOrder.length === 0
+                                    ? ' lot-settings-auto-stage__drop--empty'
+                                    : '')
                                 }
                                 onDragOver={(e) => handleAutoStageDragOver(e, stage.trigger)}
                                 onDragLeave={(e) => handleAutoStageDragLeave(e, stage.trigger)}
                                 onDrop={(e) => handleAutoStageDrop(e, stage.trigger)}
                               >
-                                {getStagePlacementOrderFromSettings(
-                                  stage.trigger,
-                                  productSettings
-                                ).map(
+                                {stageOrder.length === 0 ? (
+                                  <div className="lot-settings-auto-stage__placeholder" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M12 5v14M5 12h14" />
+                                    </svg>
+                                    <span>Перетащите плитку слева сюда</span>
+                                  </div>
+                                ) : null}
+                                {stageOrder.map(
                                   (placeKey, pos) => {
                                     const purchaseOrder =
                                       stage.trigger === 'purchase'
@@ -2138,7 +2236,12 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                         }
                                         onDragEnd={handlePlacedRowDragEnd}
                                       >
-                                        {placementTileLabel(placeKey)}
+                                        <span className="lot-settings-auto-palette__tile-icon">
+                                          <AutoTileIcon kind={placementTileKind(placeKey)} />
+                                        </span>
+                                        <span className="lot-settings-auto-palette__tile-label">
+                                          {placementTileLabel(placeKey)}
+                                        </span>
                                       </div>
                                     )
 
