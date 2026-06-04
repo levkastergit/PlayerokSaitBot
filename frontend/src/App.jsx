@@ -370,6 +370,7 @@ function App() {
     }
     const needActiveLots =
       activeTab === 'active' ||
+      activeTab === 'chat' ||
       LOTS_TABS.has(activeTab) ||
       pathParts[0] === 'lot'
     if (!needActiveLots) return
@@ -648,6 +649,8 @@ function App() {
           <div className="app-content-panel" hidden={activeTab !== 'chat'}>
             <ChatTab
               token={token}
+              lots={lots}
+              loadingLots={loadingLots}
               moduleSupercellEnabled={moduleSupercellEnabled}
               isPageActive={activeTab === 'chat'}
             />

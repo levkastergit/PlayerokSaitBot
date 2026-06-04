@@ -27,6 +27,7 @@ const { handleSendChatMessage } = require('../features/playerok/sendChatMessage/
 const { handleRequestSupercellCode } = require('../features/playerok/requestSupercellCode/handleRequestSupercellCode')
 const { handleCancelDeal } = require('../features/playerok/dealsActions/handleCancelDeal')
 const { handleConfirmDeal } = require('../features/playerok/dealsActions/handleConfirmDeal')
+const { handleCompleteDeal } = require('../features/playerok/dealsActions/handleCompleteDeal')
 const { handleBalanceOverview } = require('../features/playerok/balance/handleBalanceOverview')
 const { handleTransactionProviders } = require('../features/playerok/balance/handleTransactionProviders')
 const { handleTransactions } = require('../features/playerok/balance/handleTransactions')
@@ -208,6 +209,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         normalizeKeyPart: deps.normalizeKeyPart,
         buildProductKey: deps.buildProductKey,
         handlePaidChat: deps.handlePaidChat,
+        claimNextUnusedTableCode: deps.claimNextUnusedTableCode,
         loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
         runApprouteAutodelivery: deps.runApprouteAutodelivery,
         updateDealStatus: deps.updateDealStatus,
@@ -232,6 +234,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         processActiveTopupFlows: deps.processActiveTopupFlows,
         processSingleTopupFlow: deps.processSingleTopupFlow,
         isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+        handleOrderedStageAutomessage: deps.handleOrderedStageAutomessage,
         handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
         handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
         handlePurchaseWindowAutomessage: deps.handlePurchaseWindowAutomessage,
@@ -382,6 +385,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           autolistGetTopupFlowMap: deps.autolistGetTopupFlowMap,
           processSingleTopupFlow: deps.processSingleTopupFlow,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+          handleOrderedStageAutomessage: deps.handleOrderedStageAutomessage,
           handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
           handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
           handlePurchaseWindowAutomessage: deps.handlePurchaseWindowAutomessage,
@@ -396,6 +400,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           buildProductKey: deps.buildProductKey,
           toUnixTs: deps.toUnixTs,
           handlePaidChat: deps.handlePaidChat,
+          claimNextUnusedTableCode: deps.claimNextUnusedTableCode,
           requestChatDealIdPost: deps.requestChatDealIdPost,
           loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
           runApprouteAutodelivery: deps.runApprouteAutodelivery,
@@ -441,6 +446,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           autolistGetTopupFlowMap: deps.autolistGetTopupFlowMap,
           processSingleTopupFlow: deps.processSingleTopupFlow,
           isSupercellModuleEnabled: deps.isSupercellModuleEnabled,
+          handleOrderedStageAutomessage: deps.handleOrderedStageAutomessage,
           handlePostPurchaseAutomessage: deps.handlePostPurchaseAutomessage,
           handleDealConfirmedAutomessage: deps.handleDealConfirmedAutomessage,
           handlePurchaseWindowAutomessage: deps.handlePurchaseWindowAutomessage,
@@ -455,6 +461,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
           buildProductKey: deps.buildProductKey,
           toUnixTs: deps.toUnixTs,
           handlePaidChat: deps.handlePaidChat,
+          claimNextUnusedTableCode: deps.claimNextUnusedTableCode,
           requestChatDealIdPost: deps.requestChatDealIdPost,
           loadApprouteApiKeyPlain: deps.loadApprouteApiKeyPlain,
           runApprouteAutodelivery: deps.runApprouteAutodelivery,
@@ -527,6 +534,17 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
     const payload = await readLimited()
     if (payload == null) return true
     const result = await handleConfirmDeal({
+      payload,
+      currentUserId,
+      deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, updateDealStatus: deps.updateDealStatus },
+    })
+    return sendJson(res, result.statusCode, result.data) || true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/complete-deal') {
+    const payload = await readLimited()
+    if (payload == null) return true
+    const result = await handleCompleteDeal({
       payload,
       currentUserId,
       deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, updateDealStatus: deps.updateDealStatus },

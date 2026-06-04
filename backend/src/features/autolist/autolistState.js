@@ -271,6 +271,15 @@ function buildImageAutomessageEventKey(chatId, dealId, itemKey) {
   return suffix ? `${base}::${suffix}` : base
 }
 
+function buildOrderedStageStepEventKey(stage, chatId, dealId, placeKey) {
+  const base = buildChatAutomessageEventKey('ordered_auto_msg', chatId, dealId)
+  if (!base) return ''
+  const st = String(stage || '').trim()
+  const pk = String(placeKey || '').trim()
+  if (!st || !pk) return base
+  return `${base}::${st}::${pk}`
+}
+
 function chatAutomessageLockKey(tokenHash, eventKey) {
   return `${String(tokenHash)}::${String(eventKey)}`
 }
@@ -365,6 +374,7 @@ module.exports = {
   buildPaidChatAutomessageEventKey,
   buildPurchaseWindowAutomessageEventKey,
   buildImageAutomessageEventKey,
+  buildOrderedStageStepEventKey,
   tryBeginChatAutomessageSend,
   finishChatAutomessageSend,
   tryBeginPostPurchaseAutomessageSend,

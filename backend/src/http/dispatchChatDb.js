@@ -6,7 +6,11 @@ const {
 } = require('../debug/chatSyncStepLog')
 const { getSupercellGameByCategory } = require('../functions/supercellHelpers')
 const { resolveBuyerSupercellEmailFromDeal } = require('../functions/resolveBuyerSupercellEmailFromDeal')
-const { handleTestPurchase } = require('../features/chat-db/handleTestPurchase')
+const {
+  handleTestPurchaseStart,
+  handleTestPurchaseChat,
+  handleTestPurchaseEvent,
+} = require('../features/chat-db/handleTestPurchase')
 const { logChatMessagesGap } = require('../debug/chatMessagesGapLog')
 
 const SMART_EMAIL_CACHE_TTL_MS = 2 * 60 * 1000
@@ -826,10 +830,30 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
   if (req.method === 'POST' && pathname === '/api/chat-db/test-purchase') {
     try {
       const payload = await readJsonBody(req, { fallback: {} })
-      const result = await handleTestPurchase({ payload, currentUserId, deps })
+      const result = await handleTestPurchaseStart({ payload, currentUserId, deps })
       return sendJson(res, result.statusCode, result.data) || true
     } catch (err) {
       return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'test purchase failed' }) || true
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat-db/test-purchase-message') {
+    try {
+      const payload = await readJsonBody(req, { fallback: {} })
+      const result = await handleTestPurchaseChat({ payload, currentUserId, deps })
+      return sendJson(res, result.statusCode, result.data) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'test message failed' }) || true
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat-db/test-purchase-event') {
+    try {
+      const payload = await readJsonBody(req, { fallback: {} })
+      const result = await handleTestPurchaseEvent({ payload, currentUserId, deps })
+      return sendJson(res, result.statusCode, result.data) || true
+    } catch (err) {
+      return sendJson(res, 500, { error: err && err.message ? String(err.message) : 'test event failed' }) || true
     }
   }
 

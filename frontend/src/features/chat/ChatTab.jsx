@@ -18,6 +18,9 @@ import {
   recheckChatDbChat,
   loadProductSettingsList,
   testChatPurchase,
+  sendTestPurchaseMessage,
+  sendTestPurchaseEvent,
+  automessageImageUrl,
   getProductKey,
   getGroupSettingsKey,
   startChatDbFullScan,
@@ -26,9 +29,41 @@ import {
   stopChatDbScan,
 } from '../../services/playerokApi'
 
-// Синтетический чат категории «Тест» (имитация покупок, без сайд-эффектов).
+// Синтетические чаты категории «Тест» (имитация покупок, без сайд-эффектов).
 const TEST_CHAT_ID = 'synthetic-test'
-const TEST_CHAT = { id: TEST_CHAT_ID, buyerName: 'Тестовый покупатель', category: 'Тест', itemTitle: '' }
+const TEST_CHAT_BUYER_ID = 'synthetic-test-buyer'
+const TEST_CHAT = { id: TEST_CHAT_ID, buyerName: 'Как продавец', category: 'Тест', itemTitle: '' }
+const TEST_CHAT_BUYER = { id: TEST_CHAT_BUYER_ID, buyerName: 'Как покупатель', category: 'Тест', itemTitle: '' }
+const isTestChatId = (id) => id === TEST_CHAT_ID || id === TEST_CHAT_BUYER_ID
+
+function buildTestDealsFromMessages(messages) {
+  const byId = new Map()
+  for (const m of Array.isArray(messages) ? messages : []) {
+    const dealId = m?.dealId != null ? String(m.dealId).trim() : ''
+    if (!dealId) continue
+    if (!byId.has(dealId)) {
+      byId.set(dealId, {
+        dealId,
+        label: '',
+        hasPaid: false,
+        hasSent: false,
+        hasConfirmed: false,
+      })
+    }
+    const d = byId.get(dealId)
+    const text = String(m?.text || '')
+    if (text.includes('Покупка товара:')) {
+      const label = text.split('Покупка товара:').slice(1).join('Покупка товара:').trim()
+      if (label) d.label = label
+    }
+    if (text.includes('{{ITEM_PAID}}')) d.hasPaid = true
+    if (text.includes('{{ITEM_SENT}}')) d.hasSent = true
+    if (text.includes('{{DEAL_CONFIRMED}}') || text.includes('{{DEAL_CONFIRMED_AUTOMATICALLY}}')) {
+      d.hasConfirmed = true
+    }
+  }
+  return [...byId.values()]
+}
 
 function renderReviewBadge(review, { variant = 'list' } = {}) {
   const reviewObj = review && typeof review === 'object' ? review : null
@@ -101,7 +136,13 @@ function renderDealFinCard(deal, { showTitle = false } = {}) {
   )
 }
 
-export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = true }) {
+export function ChatTab({
+  token,
+  lots = [],
+  loadingLots = false,
+  moduleSupercellEnabled = false,
+  isPageActive = true,
+}) {
   const summarizeChatForLog = useCallback((chat) => ({
     id: chat?.id ?? null,
     dealId: chat?.dealId ?? null,
@@ -124,9 +165,23 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const [draftByChatId, setDraftByChatId] = useState({})
   const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment' | 'test'
   const [testProductKey, setTestProductKey] = useState('')
+  const [testProductLabel, setTestProductLabel] = useState('')
   const [testMessages, setTestMessages] = useState([])
   const [testRunning, setTestRunning] = useState(false)
   const [testError, setTestError] = useState(null)
+  const [testSessionId, setTestSessionId] = useState(null)
+  const [testActiveDealId, setTestActiveDealId] = useState(null)
+  const [testWaiting, setTestWaiting] = useState(null) // 'game_id' | 'confirm' | 'email' | null
+  const [testDraft, setTestDraft] = useState('')
+  const [testSending, setTestSending] = useState(false)
+  const [testEventLoading, setTestEventLoading] = useState(false)
+  const [testDealActionModal, setTestDealActionModal] = useState({ open: false, kind: null })
+  const [testDealActionState, setTestDealActionState] = useState({
+    loading: false,
+    error: null,
+    candidates: [],
+    selectedDealId: null,
+  })
   const [categoryCommands, setCategoryCommands] = useState([]) // [{ category, commands }]
   const [loadingCommands, setLoadingCommands] = useState(false)
   const [requestCodeModal, setRequestCodeModal] = useState({ open: false, chatId: null })
@@ -290,50 +345,165 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     return map
   }, [productSettingsList])
 
-  // Товары для тест-покупки: только те, у кого включён какой-либо режим выдачи.
+  // Товары для тест-покупки: все активные лоты (как на вкладке «Активные»).
   const testProductOptions = useMemo(() => {
+    const seen = new Set()
     const opts = []
-    for (const entry of productSettingsList) {
-      const productKey = entry && entry.productKey
-      const s = entry && entry.settings
-      if (!productKey || !s || typeof s !== 'object') continue
-      const enabled =
-        (s.automessage && s.automessage.enabled) ||
-        (s.autodelivery && s.autodelivery.enabled) ||
-        (s.autodeliveryApi && s.autodeliveryApi.enabled) ||
-        (s.autotopupApi && s.autotopupApi.enabled) ||
-        (s.emailValidation && s.emailValidation.enabled)
-      if (!enabled) continue
-      const key = String(productKey)
-      const sep = key.indexOf('::')
-      const label = sep > 0 ? `${key.slice(0, sep).trim()} — ${key.slice(sep + 2).trim()}` : key
+    for (const lot of lots) {
+      if (!lot) continue
+      const key = getProductKey(lot)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      const game = String(lot.game || '').trim()
+      const title = String(lot.title || '').trim()
+      const label = game ? `${game} — ${title}` : title || key
       opts.push({ value: key, label })
     }
-    opts.sort((a, b) => a.label.localeCompare(b.label))
+    opts.sort((a, b) => a.label.localeCompare(b.label, 'ru'))
     return opts
-  }, [productSettingsList])
+  }, [lots])
+
+  const testSeqRef = useRef(0)
+  const mapTestMsgs = useCallback((transcript) => {
+    return (Array.isArray(transcript) ? transcript : []).map((m) => {
+      const role =
+        m && m.role === 'buyer'
+          ? 'buyer'
+          : m && m.role === 'seller'
+            ? 'seller'
+            : m && m.role === 'system'
+              ? 'system'
+              : 'bot'
+      const imageUrlRaw = m && m.imageUrl != null ? String(m.imageUrl).trim() : ''
+      const dealId = m && m.dealId != null ? String(m.dealId) : null
+      return {
+        id: `test-${testSeqRef.current++}`,
+        role,
+        text: m && m.text != null ? String(m.text) : '',
+        imageUrl: imageUrlRaw ? automessageImageUrl(imageUrlRaw) : null,
+        dealId,
+      }
+    })
+  }, [])
 
   const runTestPurchase = useCallback(async () => {
     if (!token || !testProductKey || testRunning) return
     setTestRunning(true)
     setTestError(null)
+    setTestDraft('')
+    const label =
+      testProductOptions.find((o) => o.value === testProductKey)?.label || testProductKey
+    setTestProductLabel(label)
     try {
-      const data = await testChatPurchase(token, { productKey: testProductKey })
-      const transcript = Array.isArray(data?.transcript) ? data.transcript : []
-      setTestMessages(
-        transcript.map((m, i) => ({
-          id: `test-${i}`,
-          role: m && m.role === 'buyer' ? 'buyer' : m && m.role === 'system' ? 'system' : 'bot',
-          text: m && m.text != null ? String(m.text) : '',
-        }))
-      )
+      const data = await testChatPurchase(token, {
+        productKey: testProductKey,
+        sessionId: testSessionId || undefined,
+      })
+      const chunk = mapTestMsgs(data?.transcript)
+      setTestMessages((prev) => (data?.append ? [...prev, ...chunk] : chunk))
+      setTestSessionId(data?.sessionId || null)
+      setTestActiveDealId(data?.activeDealId || null)
+      setTestWaiting(data?.waiting ?? null)
+      if (data?.productLabel) setTestProductLabel(String(data.productLabel))
     } catch (err) {
       setTestError(err && err.message ? err.message : 'Ошибка тест-покупки')
-      setTestMessages([])
     } finally {
       setTestRunning(false)
     }
-  }, [token, testProductKey, testRunning])
+  }, [token, testProductKey, testRunning, testSessionId, mapTestMsgs, testProductOptions])
+
+  const sendTestMessage = useCallback(async () => {
+    const text = testDraft.trim()
+    if (!token || !testSessionId || !text || testSending) return
+    const asRole = selectedChatId === TEST_CHAT_BUYER_ID ? 'buyer' : 'seller'
+    setTestSending(true)
+    setTestError(null)
+    setTestDraft('')
+    try {
+      const data = await sendTestPurchaseMessage(token, { sessionId: testSessionId, text, asRole })
+      setTestMessages((prev) => [...prev, ...mapTestMsgs(data?.transcript)])
+      setTestWaiting(data?.waiting ?? null)
+      if (data?.activeDealId) setTestActiveDealId(String(data.activeDealId))
+      if (data?.productLabel) setTestProductLabel(String(data.productLabel))
+    } catch (err) {
+      setTestError(err && err.message ? err.message : 'Ошибка отправки сообщения')
+      setTestDraft(text)
+    } finally {
+      setTestSending(false)
+    }
+  }, [token, testSessionId, testDraft, testSending, selectedChatId, mapTestMsgs])
+
+  const runTestPurchaseEvent = useCallback(
+    async (event, dealId) => {
+      if (!token || !testSessionId || testEventLoading || !dealId) return
+      setTestEventLoading(true)
+      setTestError(null)
+      try {
+        const data = await sendTestPurchaseEvent(token, {
+          sessionId: testSessionId,
+          event,
+          dealId,
+        })
+        setTestMessages((prev) => [...prev, ...mapTestMsgs(data?.transcript)])
+        setTestWaiting(data?.waiting ?? null)
+        if (data?.activeDealId) setTestActiveDealId(String(data.activeDealId))
+        if (data?.productLabel) setTestProductLabel(String(data.productLabel))
+      } catch (err) {
+        setTestError(err && err.message ? err.message : 'Ошибка действия по сделке')
+      } finally {
+        setTestEventLoading(false)
+      }
+    },
+    [token, testSessionId, testEventLoading, mapTestMsgs]
+  )
+
+  const closeTestDealActionModal = () => {
+    setTestDealActionModal({ open: false, kind: null })
+    setTestDealActionState({ loading: false, error: null, candidates: [], selectedDealId: null })
+  }
+
+  const openTestDealActionModal = useCallback(
+    (kind) => {
+      if (!token || !testSessionId || testEventLoading) return
+      const all = buildTestDealsFromMessages(testMessages)
+      const candidates =
+        kind === 'item_sent'
+          ? all.filter((d) => d.hasPaid && !d.hasSent)
+          : all.filter((d) => d.hasSent && !d.hasConfirmed)
+      if (candidates.length === 0) return
+      if (candidates.length === 1) {
+        void runTestPurchaseEvent(kind, candidates[0].dealId).catch(() => {})
+        return
+      }
+      setTestDealActionState({
+        loading: false,
+        error: null,
+        candidates,
+        selectedDealId: null,
+      })
+      setTestDealActionModal({ open: true, kind })
+    },
+    [token, testSessionId, testEventLoading, testMessages, runTestPurchaseEvent]
+  )
+
+  const handleTestDealActionConfirm = async () => {
+    const kind = testDealActionModal.kind
+    if (!kind) return
+    if (!testDealActionState.selectedDealId) {
+      setTestDealActionState((prev) => ({
+        ...prev,
+        error: 'Выберите сделку, с которой выполнить действие.',
+      }))
+      return
+    }
+    setTestDealActionState((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      await runTestPurchaseEvent(kind, testDealActionState.selectedDealId)
+      closeTestDealActionModal()
+    } catch {
+      setTestDealActionState((prev) => ({ ...prev, loading: false }))
+    }
+  }
 
   const resolveSettingsForChat = useCallback(
     (chat, itemTitle) => {
@@ -1026,7 +1196,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const pullMessagesForChat = useCallback(
     async (chat, { silent = false } = {}) => {
       if (!token || !chat?.id) return
-      if (chat.id === TEST_CHAT_ID) return // тест-чат синтетический, истории на бэке нет
+      if (isTestChatId(chat.id)) return // тест-чат синтетический, истории на бэке нет
       const chatId = chat.id
       const isSelected = selectedChatIdRef.current === chatId
       const hasCachedMessages = Boolean(chatStateByIdRef.current[chatId]?.messages?.length)
@@ -1216,7 +1386,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   const PRELOAD_VIEWPORT_PRIORITY = 4
 
   const chatNeedsMessagesLoad = useCallback((chatId) => {
-    if (!chatId || chatId === TEST_CHAT_ID) return false
+    if (!chatId || isTestChatId(chatId)) return false
     const chatKey = String(chatId)
     if (batchLoadInFlightRef.current.has(chatKey)) return false
     const state = chatStateByIdRef.current[chatId]
@@ -1653,7 +1823,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   const visibleChats = useMemo(() => {
     if (chatFilter === 'test') {
-      return [TEST_CHAT]
+      return [TEST_CHAT, TEST_CHAT_BUYER]
     }
     if (chatFilter === 'hide-completed') {
       const base = chats.filter((chat) => !chat.isHidden)
@@ -1769,7 +1939,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
 
   const loadMessagesForChat = async (chat, { force = false } = {}) => {
     if (!token || !chat?.id) return
-    if (chat.id === TEST_CHAT_ID) return // тест-чат синтетический, истории на бэке нет
+    if (isTestChatId(chat.id)) return // тест-чат синтетический, истории на бэке нет
     const state = chatStateByIdRef.current[chat.id]
     const hasCachedMessages = Boolean(state?.messages?.length)
     const listAhead = isListAheadOfLoadedMessages(chat)
@@ -1781,7 +1951,7 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
   }
 
   const markChatAsRead = useCallback((chatId) => {
-    if (!chatId || chatId === TEST_CHAT_ID) return
+    if (!chatId || isTestChatId(chatId)) return
     // Оптимистично гасим бейдж локально...
     setChats((prev) =>
       prev.map((chat) =>
@@ -1838,8 +2008,28 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
     })
   }
 
-  const isTestChat = selectedChatId === TEST_CHAT_ID
-  const selectedChat = isTestChat ? TEST_CHAT : chats.find((c) => c.id === selectedChatId) || null
+  const isTestChat = isTestChatId(selectedChatId)
+  const isBuyerView = selectedChatId === TEST_CHAT_BUYER_ID
+  const testChatActive = Boolean(testSessionId && testMessages.length > 0)
+  const testDealsForItemSent = useMemo(
+    () => buildTestDealsFromMessages(testMessages).filter((d) => d.hasPaid && !d.hasSent),
+    [testMessages]
+  )
+  const testDealsForConfirm = useMemo(
+    () => buildTestDealsFromMessages(testMessages).filter((d) => d.hasSent && !d.hasConfirmed),
+    [testMessages]
+  )
+  const testInputHint =
+    testWaiting === 'game_id'
+      ? 'Введите игровой ID/логин покупателя'
+      : testWaiting === 'confirm'
+        ? 'Напишите «да» для подтверждения (или «нет»)'
+        : testWaiting === 'email'
+          ? 'Введите почту покупателя'
+          : 'Сообщение от покупателя…'
+  const selectedChat = isTestChat
+    ? (isBuyerView ? TEST_CHAT_BUYER : TEST_CHAT)
+    : chats.find((c) => c.id === selectedChatId) || null
   const selectedChatState = selectedChat
     ? chatStateById[selectedChat.id] || {
         loading: Boolean(selectedChat.lastMessageId || String(selectedChat.lastMessageText || '').trim()),
@@ -3018,33 +3208,90 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                 <div className="card-text chat-header-row__info">
                   <div className="chat-header-row__text">
                     <strong>Тест покупки</strong>
+                    {testProductLabel ? (
+                      <span className="chat-header-row__buyer">Товар: {testProductLabel}</span>
+                    ) : null}
                     <span className="chat-header-row__buyer">
-                      Покупатель: {TEST_CHAT.buyerName}
+                      {isBuyerView ? 'Вид покупателя' : 'Вид продавца'}
                     </span>
                   </div>
                 </div>
+                <div className="chat-header-row__center">
+                  {testChatActive && !isBuyerView ? (
+                    <div className="chat-header-row__deal-btns" aria-label="Действия продавца">
+                      <button
+                        type="button"
+                        className="chat-header-row__deal-btn chat-header-row__deal-btn--confirm"
+                        onClick={() => openTestDealActionModal('item_sent')}
+                        disabled={!token || testEventLoading || testDealsForItemSent.length === 0}
+                        title="Отметить отправку товара и запустить автоматику"
+                      >
+                        {testEventLoading ? '…' : 'Отправить Товар'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {testChatActive && isBuyerView ? (
+                    <div className="chat-header-row__deal-btns" aria-label="Действия покупателя">
+                      <button
+                        type="button"
+                        className="chat-header-row__deal-btn chat-header-row__deal-btn--confirm"
+                        onClick={() => openTestDealActionModal('deal_confirmed')}
+                        disabled={!token || testEventLoading || testDealsForConfirm.length === 0}
+                        title="Подтвердить сделку со стороны заказчика"
+                      >
+                        {testEventLoading ? '…' : 'Сделка подтверждена'}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="chat-messages">
-                {testMessages.length === 0 ? (
-                  <p className="card-text">
-                    Выберите товар и нажмите «Тест покупки».
-                  </p>
-                ) : (
+                {testMessages.length === 0 && !isBuyerView ? (
+                  <p className="card-text">Выберите товар и нажмите «Купить».</p>
+                ) : testMessages.length === 0 ? null : (
                   testMessages.map((m) => {
-                    const cls =
-                      m.role === 'system'
-                        ? 'chat-message chat-message--system'
-                        : m.role === 'buyer'
-                          ? 'chat-message chat-message--buyer'
-                          : 'chat-message chat-message--seller'
+                    let cls
+                    if (m.role === 'system') {
+                      cls = 'chat-message chat-message--system'
+                    } else if (m.role === 'buyer') {
+                      cls = isBuyerView
+                        ? 'chat-message chat-message--seller'
+                        : 'chat-message chat-message--buyer'
+                    } else if (m.role === 'seller') {
+                      cls = isBuyerView
+                        ? 'chat-message chat-message--buyer'
+                        : 'chat-message chat-message--seller'
+                    } else {
+                      cls = isBuyerView
+                        ? 'chat-message chat-message--buyer'
+                        : 'chat-message chat-message--seller'
+                    }
+                    const text = String(m.text || '').trim()
                     return (
                       <div key={m.id} className={cls}>
                         <div className="chat-message__bubble">
-                          <div className="chat-message__text-wrapper">
-                            <div className="chat-message__text">
-                              {formatMessageText(m.text)}
+                          {text ? (
+                            <div className="chat-message__text-wrapper">
+                              <div className="chat-message__text">{formatMessageText(m.text)}</div>
                             </div>
-                          </div>
+                          ) : null}
+                          {m.imageUrl ? (
+                            <div className="chat-message__image-wrap">
+                              <a
+                                href={m.imageUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="chat-message__image-btn"
+                                title="Открыть изображение"
+                              >
+                                <img
+                                  src={m.imageUrl}
+                                  alt="Изображение в чате"
+                                  className="chat-message__image"
+                                />
+                              </a>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     )
@@ -3056,34 +3303,70 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   {testError}
                 </p>
               )}
-              <form
-                className="deal-chat-row__input"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  void runTestPurchase()
-                }}
-              >
-                <select
-                  className="deal-chat-row__input-field"
-                  value={testProductKey}
-                  onChange={(e) => setTestProductKey(e.target.value)}
-                  aria-label="Товар для тест-покупки"
+              {testChatActive && testWaiting && isBuyerView && (
+                <p className="card-text" role="status" aria-live="polite">
+                  Бот ждёт ответ покупателя: {testInputHint}
+                </p>
+              )}
+              {testChatActive && (
+                <form
+                  className="deal-chat-row__input"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void sendTestMessage()
+                  }}
                 >
-                  <option value="">Выберите товар…</option>
-                  {testProductOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
+                  <input
+                    type="text"
+                    className="deal-chat-row__input-field"
+                    value={testDraft}
+                    onChange={(e) => setTestDraft(e.target.value)}
+                    placeholder={isBuyerView ? 'Сообщение покупателя…' : 'Сообщение продавца…'}
+                    disabled={testSending}
+                    aria-label={isBuyerView ? 'Сообщение покупателя' : 'Сообщение продавца'}
+                  />
+                  <button
+                    type="submit"
+                    className="deal-chat-row__input-btn"
+                    disabled={!testDraft.trim() || testSending}
+                  >
+                    {testSending ? '…' : 'Отправить'}
+                  </button>
+                </form>
+              )}
+              {!isBuyerView && (
+                <form
+                  className="deal-chat-row__input"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void runTestPurchase()
+                  }}
+                >
+                  <select
+                    className="deal-chat-row__input-field"
+                    value={testProductKey}
+                    onChange={(e) => setTestProductKey(e.target.value)}
+                    aria-label="Товар для тест-покупки"
+                    disabled={loadingLots || testRunning}
+                  >
+                    <option value="">
+                      {loadingLots ? 'Загрузка лотов…' : 'Выберите товар…'}
                     </option>
-                  ))}
-                </select>
-                <button
-                  type="submit"
-                  className="deal-chat-row__input-btn"
-                  disabled={!token || !testProductKey || testRunning}
-                >
-                  {testRunning ? 'Тестируем…' : 'Тест покупки'}
-                </button>
-              </form>
+                    {testProductOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="deal-chat-row__input-btn"
+                    disabled={!token || !testProductKey || testRunning}
+                  >
+                    {testRunning ? 'Покупаем…' : 'Купить'}
+                  </button>
+                </form>
+              )}
             </>
           )}
           {hasToken && selectedChat && !isTestChat && (
@@ -3702,6 +3985,126 @@ export function ChatTab({ token, moduleSupercellEnabled = false, isPageActive = 
                   disabled={requestCodeState.loading || !selectedChatEmailDraftIsValid}
                 >
                   {requestCodeState.loading ? 'Запрашиваем код...' : 'Запросить код'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {testDealActionModal.open && testDealActionModal.kind && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!testDealActionState.loading) closeTestDealActionModal()
+          }}
+          role="presentation"
+        >
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              testDealActionModal.kind === 'item_sent' ? 'Отправить товар' : 'Подтвердить сделку'
+            }
+          >
+            <div className="modal__header">
+              <h3 className="modal__title">
+                {testDealActionModal.kind === 'item_sent' ? 'Отправить Товар?' : 'Сделка подтверждена?'}
+              </h3>
+              <button
+                type="button"
+                className="modal__close"
+                onClick={closeTestDealActionModal}
+                disabled={testDealActionState.loading}
+                aria-label="Закрыть"
+              >
+                x
+              </button>
+            </div>
+            <div className="modal__body">
+              <p className="card-text" style={{ marginTop: 0 }}>
+                {testDealActionModal.kind === 'item_sent'
+                  ? 'Отметить отправку товара по выбранной сделке и запустить автоматику.'
+                  : 'Подтвердить получение по выбранной сделке и запустить автоматику.'}
+              </p>
+              {testDealActionState.candidates.length > 1 && (
+                <div className="deal-action-picker">
+                  <p className="card-text deal-action-picker__hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                    В чате несколько сделок. Выберите, с какой выполнить действие:
+                  </p>
+                  <div className="deal-action-picker__list">
+                    {testDealActionState.candidates.map((d) => {
+                      const id = String(d.dealId)
+                      const checked = String(testDealActionState.selectedDealId || '') === id
+                      return (
+                        <label
+                          key={id}
+                          className={
+                            'deal-action-picker__item' +
+                            (checked ? ' deal-action-picker__item--active' : '')
+                          }
+                        >
+                          <input
+                            type="radio"
+                            name="test-deal-action-pick"
+                            value={id}
+                            checked={checked}
+                            disabled={testDealActionState.loading}
+                            onChange={() =>
+                              setTestDealActionState((prev) => ({
+                                ...prev,
+                                selectedDealId: id,
+                                error: null,
+                              }))
+                            }
+                          />
+                          <span className="deal-action-picker__item-text">
+                            <span className="deal-action-picker__item-title">
+                              {d.label || 'Без названия'}
+                            </span>
+                            <span className="deal-action-picker__item-meta">#{id.slice(0, 8)}</span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+              {testDealActionState.error && (
+                <p className="card-text card-text--error">{testDealActionState.error}</p>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  justifyContent: 'flex-end',
+                  marginTop: 16,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  className="lot-settings-btn lot-settings-btn--secondary"
+                  onClick={closeTestDealActionModal}
+                  disabled={testDealActionState.loading}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="deal-chat-row__command-btn"
+                  onClick={handleTestDealActionConfirm}
+                  disabled={
+                    testDealActionState.loading ||
+                    (testDealActionState.candidates.length > 1 && !testDealActionState.selectedDealId)
+                  }
+                >
+                  {testDealActionState.loading
+                    ? 'Выполняем…'
+                    : testDealActionModal.kind === 'item_sent'
+                      ? 'Отправить Товар'
+                      : 'Сделка подтверждена'}
                 </button>
               </div>
             </div>

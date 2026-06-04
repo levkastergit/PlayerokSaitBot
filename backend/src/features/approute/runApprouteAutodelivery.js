@@ -263,7 +263,9 @@ async function runApprouteAutodelivery({
 
   const quantity = Math.max(1, Math.min(99, Math.floor(Number(cfg.quantity) || 1)))
 
-  const autoCompleteDealEnabled = Boolean(cfg.autoCompleteDeal)
+  const autoCompleteDealEnabled = Boolean(
+    cfg.autoCompleteDeal || settings?.autodelivery?.autoCompleteDeal
+  )
 
   const referenceId = dealId ? String(dealId).trim() : undefined
 

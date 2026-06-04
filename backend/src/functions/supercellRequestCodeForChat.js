@@ -19,6 +19,7 @@ function createRequestSupercellCodeForChat({ sendChatMessageToPlayerok }) {
     chatId,
     email,
     category,
+    requestCodeMessageTemplate,
   }) {
     const trimmedEmail = String(email || '').trim()
     const trimmedCategory = String(category || '').trim()
@@ -35,7 +36,10 @@ function createRequestSupercellCodeForChat({ sendChatMessageToPlayerok }) {
       gameKey: game.gameKey,
     })
 
-    const chatMessage = formatSupercellCodeRequestedMessage(game.gameName)
+    const chatMessage = formatSupercellCodeRequestedMessage(
+      game.gameName,
+      requestCodeMessageTemplate
+    )
     const message = await sendChatMessageToPlayerok(
       token,
       userAgent,

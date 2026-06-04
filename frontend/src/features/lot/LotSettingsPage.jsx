@@ -13,11 +13,330 @@ import {
   automessageImageUrl,
 } from '../../services/playerokApi'
 import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
+import { TopupApiFlowDiagram } from './TopupApiFlowDiagram'
 
 const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
 
-function emptyImageAutomessageRow() {
-  return { trigger: 'purchase', imageId: '', ext: '', filename: '', url: '' }
+const AUTO_MESSAGE_STAGES = [
+  { trigger: 'purchase', label: 'Покупка товара' },
+  { trigger: 'sent', label: 'Отправка товара' },
+  { trigger: 'confirmed', label: 'Подтверждение товара' },
+]
+
+const AUTO_PALETTE_TILES = [
+  { id: 'text', label: 'Текст' },
+  { id: 'time', label: 'Время' },
+  { id: 'image', label: 'Картинка' },
+  { id: 'autodelivery', label: 'Автовыдача' },
+  { id: 'autodeliveryApi', label: 'API' },
+  { id: 'autoComplete', label: 'Автозавершение' },
+  { id: 'emailValidation', label: 'Валид.Почта' },
+  { id: 'supercellAutoRequestCode', label: 'Автозапрос' },
+  { id: 'autotopupApi', label: 'Api.Пополнение' },
+]
+
+const AUTO_TILE_MIME = 'application/x-lot-auto-tile'
+
+function canDropAutoTile(tileId, stageTrigger, ps) {
+  if (
+    tileId === 'time' ||
+    tileId === 'autodelivery' ||
+    tileId === 'autodeliveryApi' ||
+    tileId === 'emailValidation' ||
+    tileId === 'supercellAutoRequestCode' ||
+    tileId === 'autotopupApi'
+  ) {
+    return stageTrigger === 'purchase'
+  }
+  if (tileId === 'autoComplete') {
+    return stageTrigger === 'purchase' && canBindAutoCompleteTile(ps)
+  }
+  return AUTO_PALETTE_TILES.some((t) => t.id === tileId)
+}
+
+function normalizePurchasePlacementOrder(order) {
+  const list = dedupePlacementOrder(order)
+  if (!list.includes('c')) return list
+  const withoutC = list.filter((k) => k !== 'c')
+  if (list.includes('d')) {
+    const dIdx = withoutC.indexOf('d')
+    if (dIdx >= 0) {
+      const next = [...withoutC]
+      next.splice(dIdx + 1, 0, 'c')
+      return next
+    }
+  }
+  for (const anchor of ['a', 'u']) {
+    if (!list.includes(anchor)) continue
+    const anchorIdx = withoutC.indexOf(anchor)
+    if (anchorIdx >= 0) {
+      const next = [...withoutC]
+      next.splice(anchorIdx + 1, 0, 'c')
+      return next
+    }
+  }
+  return list
+}
+
+function canBindAutoCompleteTile(ps) {
+  return (
+    stageHasAutodeliveryBlock(ps) ||
+    purchasePlacementIncludes(ps, 'a') ||
+    purchasePlacementIncludes(ps, 'u')
+  )
+}
+
+function stageTextMessages(trigger, ps) {
+  if (!ps) return []
+  if (trigger === 'purchase') {
+    return Array.isArray(ps.automessage?.messages) ? ps.automessage.messages : []
+  }
+  if (trigger === 'sent') {
+    return Array.isArray(ps.postPurchaseAutomessage?.messages)
+      ? ps.postPurchaseAutomessage.messages
+      : []
+  }
+  if (trigger === 'confirmed') {
+    return Array.isArray(ps.dealConfirmedAutomessage?.messages)
+      ? ps.dealConfirmedAutomessage.messages
+      : []
+  }
+  return []
+}
+
+function stageHasTimeBlock(ps) {
+  return Boolean(ps?.purchaseWindowAutomessage?.enabled)
+}
+
+function stageHasAutodeliveryBlock(ps) {
+  return Boolean(ps?.autodelivery?.enabled)
+}
+
+function stageHasAutoCompleteBlock(ps) {
+  return Boolean(ps?.autodelivery?.autoCompleteDeal)
+}
+
+function purchasePlacementIncludes(ps, key) {
+  const orders = normalizeAutoPlacementOrder(ps?.autoPlacementOrder)
+  return Array.isArray(orders.purchase) && orders.purchase.includes(key)
+}
+
+function appendPurchasePlacementKey(ps, key) {
+  const orders = normalizeAutoPlacementOrder(ps.autoPlacementOrder)
+  let purchase = [...(orders.purchase || [])]
+  if (!purchase.includes(key)) purchase.push(key)
+  purchase = normalizePurchasePlacementOrder(purchase)
+  return {
+    ...ps,
+    autoPlacementOrder: { ...orders, purchase },
+  }
+}
+
+function removePurchasePlacementKey(ps, key) {
+  const orders = normalizeAutoPlacementOrder(ps.autoPlacementOrder)
+  let purchase = (orders.purchase || []).filter((k) => k !== key)
+  purchase = normalizePurchasePlacementOrder(purchase)
+  return {
+    ...ps,
+    autoPlacementOrder: { ...orders, purchase },
+  }
+}
+
+const PLACEMENT_ROW_MIME = 'application/x-lot-placement-row'
+
+function buildPlacementOrder(stage, ps) {
+  if (!ps) return []
+  const order = []
+  stageTextMessages(stage, ps).forEach((_, i) => order.push(`t:${i}`))
+  if (stage === 'purchase' && stageHasTimeBlock(ps)) order.push('w')
+  if (stage === 'purchase' && stageHasAutodeliveryBlock(ps)) order.push('d')
+  if (stage === 'purchase' && stageHasAutoCompleteBlock(ps)) order.push('c')
+  imageAutomessageEntriesForTrigger(ps.imageAutomessage?.items, stage).forEach(({ index }) => {
+    order.push(`i:${index}`)
+  })
+  return order
+}
+
+function mergePlacementOrder(prevOrder, builtOrder) {
+  const builtSet = new Set(builtOrder)
+  const kept = (prevOrder || []).filter(
+    (k) => builtSet.has(k) || k === 'a' || k === 'e' || k === 's' || k === 'u'
+  )
+  const keptSet = new Set(kept)
+  const added = builtOrder.filter((k) => !keptSet.has(k))
+  return [...kept, ...added]
+}
+
+function placementTileLabel(key) {
+  if (key === 'w') return 'Время'
+  if (key === 'd') return 'Автовыдача'
+  if (key === 'c') return 'Автозавершение'
+  if (key === 'a') return 'Автовыдача Api'
+  if (key === 'e') return 'Валид.Почта'
+  if (key === 's') return 'Автозапрос'
+  if (key === 'u') return 'Api.Пополнение'
+  if (key.startsWith('i:')) return 'Картинка'
+  return 'Текст'
+}
+
+function dedupePlacementOrder(order) {
+  const seen = new Set()
+  return order.filter((key) => {
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function applyPlacementOrderToSettings(stage, order, prev) {
+  if (!prev) return prev
+  const safeOrder = dedupePlacementOrder(order)
+  const texts = stageTextMessages(stage, prev)
+  const newTexts = safeOrder
+    .filter((k) => k.startsWith('t:'))
+    .map((k) => texts[parseInt(k.slice(2), 10)] ?? '')
+
+  const items = [...(prev.imageAutomessage?.items || [])]
+  const orderedStageImages = safeOrder
+    .filter((k) => k.startsWith('i:'))
+    .map((k) => items[parseInt(k.slice(2), 10)])
+    .filter((row) => row != null)
+  let stageImageIdx = 0
+  const newItems = items.map((row) => {
+    if ((row?.trigger ?? 'purchase') !== stage) return row
+    return orderedStageImages[stageImageIdx++] ?? row
+  })
+
+  const imagePatch = { ...(prev.imageAutomessage || {}), items: newItems }
+
+  if (stage === 'purchase') {
+    return {
+      ...prev,
+      automessage: {
+        ...(prev.automessage || {}),
+        enabled: newTexts.length > 0,
+        messages: newTexts,
+      },
+      imageAutomessage: imagePatch,
+    }
+  }
+  if (stage === 'sent') {
+    return {
+      ...prev,
+      postPurchaseAutomessage: {
+        ...(prev.postPurchaseAutomessage || {}),
+        enabled: newTexts.length > 0,
+        messages: newTexts,
+      },
+      imageAutomessage: imagePatch,
+    }
+  }
+  return {
+    ...prev,
+    dealConfirmedAutomessage: {
+      ...(prev.dealConfirmedAutomessage || {}),
+      enabled: newTexts.length > 0,
+      messages: newTexts,
+    },
+    imageAutomessage: imagePatch,
+  }
+}
+
+const EMPTY_AUTO_PLACEMENT_ORDER = { purchase: [], sent: [], confirmed: [] }
+
+function normalizeAutoPlacementOrder(loaded) {
+  if (!loaded || typeof loaded !== 'object') {
+    return { ...EMPTY_AUTO_PLACEMENT_ORDER }
+  }
+  const out = { ...EMPTY_AUTO_PLACEMENT_ORDER }
+  AUTO_MESSAGE_STAGES.forEach(({ trigger }) => {
+    const raw = loaded[trigger]
+    out[trigger] = Array.isArray(raw) ? raw.filter((k) => typeof k === 'string') : []
+  })
+  return out
+}
+
+function placementKeysSliceChanged(oldOrder, newOrder, prefix) {
+  const oldKeys = oldOrder.filter((k) => k.startsWith(prefix))
+  const newKeys = newOrder.filter((k) => k.startsWith(prefix))
+  return oldKeys.length !== newKeys.length || oldKeys.some((k, i) => newKeys[i] !== k)
+}
+
+function patchAutoPlacementOrderForStage(ps, stage) {
+  if (!ps) return ps
+  const orders = normalizeAutoPlacementOrder(ps.autoPlacementOrder)
+  const built = buildPlacementOrder(stage, ps)
+  let merged = mergePlacementOrder(orders[stage], built)
+  if (stage === 'purchase') merged = normalizePurchasePlacementOrder(merged)
+  return {
+    ...ps,
+    autoPlacementOrder: {
+      ...orders,
+      [stage]: merged,
+    },
+  }
+}
+
+function getStagePlacementOrderFromSettings(stage, ps) {
+  const built = buildPlacementOrder(stage, ps)
+  const stored = ps?.autoPlacementOrder?.[stage]
+  let order =
+    !Array.isArray(stored) || stored.length === 0 ? built : mergePlacementOrder(stored, built)
+  if (stage === 'purchase') order = normalizePurchasePlacementOrder(order)
+  return order
+}
+
+function reorderPlacementInStage(stage, fromPos, toPos, prev, order) {
+  const list = [...order]
+  if (
+    fromPos < 0 ||
+    toPos < 0 ||
+    fromPos >= list.length ||
+    toPos >= list.length ||
+    fromPos === toPos
+  ) {
+    return { ps: prev, order: list }
+  }
+  const [key] = list.splice(fromPos, 1)
+  list.splice(toPos, 0, key)
+  let newOrder = dedupePlacementOrder(list)
+  if (stage === 'purchase') newOrder = normalizePurchasePlacementOrder(newOrder)
+  const orders = normalizeAutoPlacementOrder(prev.autoPlacementOrder)
+  let next = {
+    ...prev,
+    autoPlacementOrder: { ...orders, [stage]: newOrder },
+  }
+  if (
+    placementKeysSliceChanged(order, newOrder, 't:') ||
+    placementKeysSliceChanged(order, newOrder, 'i:')
+  ) {
+    next = applyPlacementOrderToSettings(stage, newOrder, next)
+  }
+  return { ps: next, order: newOrder }
+}
+
+function emptyImageAutomessageRow(trigger = 'purchase') {
+  return { trigger, imageId: '', ext: '', filename: '', url: '' }
+}
+
+function imageAutomessageEntriesForTrigger(items, trigger) {
+  return (Array.isArray(items) ? items : [])
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => (row?.trigger ?? 'purchase') === trigger)
+}
+
+function normalizeAutomessageStageMessages(loadedCfg) {
+  const raw = loadedCfg?.messages
+  if (Array.isArray(raw)) {
+    return raw.filter((m) => typeof m === 'string')
+  }
+  if (typeof loadedCfg?.message === 'string' && loadedCfg.message.trim()) {
+    return [loadedCfg.message]
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.split('\n').map((s) => s.trim()).filter(Boolean)
+  }
+  return []
 }
 
 function normalizeImageAutomessageFromLoaded(loaded) {
@@ -58,8 +377,6 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsError, setSettingsError] = useState(null)
   const [toast, setToast] = useState(null)
-  const [codesModalOpen, setCodesModalOpen] = useState(false)
-  const [newCodeInput, setNewCodeInput] = useState('')
   const [settingsLabel, setSettingsLabel] = useState('')
   const [priorityStatuses, setPriorityStatuses] = useState([])
   const [loadingPriorityStatuses, setLoadingPriorityStatuses] = useState(false)
@@ -84,6 +401,10 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [tableTabsError, setTableTabsError] = useState(null)
   const [imageUploadingRow, setImageUploadingRow] = useState(null)
   const [imageUploadError, setImageUploadError] = useState(null)
+  const [autoDragTile, setAutoDragTile] = useState(null)
+  const [autoDropStage, setAutoDropStage] = useState(null)
+  const [placedRowDragOver, setPlacedRowDragOver] = useState(null)
+  const autoDropHandledRef = useRef(false)
   // Скрытый режим отладки: включается набором слова «дебаг» на странице.
   const [debugMode, setDebugMode] = useState(false)
   const debugBufferRef = useRef('')
@@ -148,6 +469,8 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     'brawl stars', 'clash royale', 'clash of clans',
     'бравл старс', 'клеш рояль', 'клеш оф кланс',
   ]
+  const DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE =
+    'Запросил код на вашу почту для $game_name, скиньте его пожалуйста сюда в чат, как придет'
   const lotGameNorm = (lot?.game || '').trim().toLowerCase()
   const showSupercellEmailValidation = SUPERCELL_EMAIL_GAMES.some((g) => g === lotGameNorm)
 
@@ -203,11 +526,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     },
     postPurchaseAutomessage: {
       enabled: false,
-      message: '',
+      messages: [],
     },
     dealConfirmedAutomessage: {
       enabled: false,
-      message: '',
+      messages: [],
     },
     purchaseWindowAutomessage: {
       enabled: false,
@@ -219,9 +542,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       enabled: false,
       items: [],
     },
+    autoPlacementOrder: { ...EMPTY_AUTO_PLACEMENT_ORDER },
     emailValidation: {
       enabled: false,
       invalidEmailMessage: '',
+    },
+    supercellAutoRequestCode: {
+      enabled: false,
+      requestCodeMessage: DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE,
     },
     autobump: {
       enabled: false,
@@ -546,7 +874,15 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           ...(loaded.tableBinding && typeof loaded.tableBinding === 'object' ? loaded.tableBinding : {}),
         },
         groupName: typeof loaded.groupName === 'string' ? loaded.groupName : '',
-        autodelivery: { ...base.autodelivery, ...(loaded.autodelivery || {}) },
+        autodelivery: {
+          ...base.autodelivery,
+          ...(loaded.autodelivery || {}),
+          autoCompleteDeal: Boolean(
+            loaded.autodelivery?.autoCompleteDeal ||
+              loaded.autodeliveryApi?.autoCompleteDeal ||
+              loaded.autotopupApi?.autoCompleteDeal
+          ),
+        },
         autodeliveryApi: {
           ...base.autodeliveryApi,
           ...(loaded.autodeliveryApi || {}),
@@ -623,37 +959,38 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             typeof loaded.autotopupApi?.successMessage === 'string'
               ? loaded.autotopupApi.successMessage
               : base.autotopupApi.successMessage,
-          autoCompleteDeal: Boolean(loaded.autotopupApi?.autoCompleteDeal),
         },
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
-          const raw = loadedAm.messages
-          const messages = Array.isArray(raw)
-            ? raw.filter((m) => typeof m === 'string')
-            : typeof raw === 'string' && raw.trim()
-              ? raw.split('\n').map((s) => s.trim()).filter(Boolean)
-              : []
-          return { ...base.automessage, ...loadedAm, messages }
+          const messages = normalizeAutomessageStageMessages(loadedAm)
+          return {
+            ...base.automessage,
+            ...loadedAm,
+            messages,
+            enabled: Boolean(loadedAm.enabled) || messages.length > 0,
+          }
         })(),
-        postPurchaseAutomessage: {
-          ...base.postPurchaseAutomessage,
-          ...(loaded.postPurchaseAutomessage || {}),
-          enabled: Boolean(loaded.postPurchaseAutomessage?.enabled),
-          message:
-            typeof loaded.postPurchaseAutomessage?.message === 'string'
-              ? loaded.postPurchaseAutomessage.message
-              : '',
-        },
-        dealConfirmedAutomessage: {
-          ...base.dealConfirmedAutomessage,
-          ...(loaded.dealConfirmedAutomessage || {}),
-          enabled: Boolean(loaded.dealConfirmedAutomessage?.enabled),
-          message:
-            typeof loaded.dealConfirmedAutomessage?.message === 'string'
-              ? loaded.dealConfirmedAutomessage.message
-              : '',
-        },
+        postPurchaseAutomessage: (() => {
+          const loadedPp = loaded.postPurchaseAutomessage || {}
+          const messages = normalizeAutomessageStageMessages(loadedPp)
+          return {
+            ...base.postPurchaseAutomessage,
+            ...loadedPp,
+            messages,
+            enabled: Boolean(loadedPp.enabled) || messages.length > 0,
+          }
+        })(),
+        dealConfirmedAutomessage: (() => {
+          const loadedDc = loaded.dealConfirmedAutomessage || {}
+          const messages = normalizeAutomessageStageMessages(loadedDc)
+          return {
+            ...base.dealConfirmedAutomessage,
+            ...loadedDc,
+            messages,
+            enabled: Boolean(loadedDc.enabled) || messages.length > 0,
+          }
+        })(),
         purchaseWindowAutomessage: {
           ...base.purchaseWindowAutomessage,
           ...(loaded.purchaseWindowAutomessage || {}),
@@ -674,6 +1011,44 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
               : base.purchaseWindowAutomessage.end,
         },
         imageAutomessage: normalizeImageAutomessageFromLoaded(loaded),
+        autoPlacementOrder: (() => {
+          const orders = normalizeAutoPlacementOrder(loaded.autoPlacementOrder)
+          let purchase = [...(orders.purchase || [])]
+          const before = purchase.join('|')
+          if (Boolean(loadedEmailValidation.enabled) && !purchase.includes('e')) {
+            purchase.push('e')
+          }
+          const loadedSupercell = loaded.supercellAutoRequestCode || {}
+          if (
+            Boolean(loadedSupercell.enabled) &&
+            !purchase.includes('s')
+          ) {
+            purchase.push('s')
+          }
+          const loadedTopup = loaded.autotopupApi || {}
+          if (Boolean(loadedTopup.enabled) && !purchase.includes('u')) {
+            purchase.push('u')
+          }
+          const loadedAutoComplete = Boolean(
+            loaded.autodelivery?.autoCompleteDeal ||
+              loaded.autodeliveryApi?.autoCompleteDeal ||
+              loaded.autotopupApi?.autoCompleteDeal
+          )
+          const canBindComplete =
+            Boolean(loaded.autodelivery?.enabled) ||
+            purchase.includes('d') ||
+            purchase.includes('a') ||
+            Boolean(loadedTopup.enabled) ||
+            purchase.includes('u')
+          if (loadedAutoComplete && !purchase.includes('c') && canBindComplete) {
+            purchase.push('c')
+          }
+          purchase = normalizePurchasePlacementOrder(purchase)
+          if (purchase.join('|') !== before) {
+            return { ...orders, purchase }
+          }
+          return orders
+        })(),
         emailValidation: {
           ...base.emailValidation,
           ...loadedEmailValidation,
@@ -682,6 +1057,21 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             typeof loadedEmailValidation.invalidEmailMessage === 'string'
               ? loadedEmailValidation.invalidEmailMessage
               : '',
+        },
+        supercellAutoRequestCode: {
+          ...base.supercellAutoRequestCode,
+          ...(loaded.supercellAutoRequestCode || {}),
+          enabled:
+            loaded.supercellAutoRequestCode != null &&
+            typeof loaded.supercellAutoRequestCode === 'object' &&
+            Object.prototype.hasOwnProperty.call(loaded.supercellAutoRequestCode, 'enabled')
+              ? Boolean(loaded.supercellAutoRequestCode.enabled)
+              : true,
+          requestCodeMessage:
+            typeof loaded.supercellAutoRequestCode?.requestCodeMessage === 'string' &&
+            loaded.supercellAutoRequestCode.requestCodeMessage.trim()
+              ? loaded.supercellAutoRequestCode.requestCodeMessage
+              : DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE,
         },
         autobump: {
           ...base.autobump,
@@ -819,63 +1209,6 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     }
   }
 
-  const setAutodelivery = (field, value) => {
-    setProductSettings((prev) => ({
-      ...prev,
-      autodelivery: { ...(prev?.autodelivery || {}), [field]: value },
-    }))
-  }
-
-  const persistCodes = async (nextSettings) => {
-    if (!token || !effectiveProductKey) return
-    const label = (settingsLabel || '').trim()
-    try {
-      const { groupSettings, itemSettings, trimmedLabel } = splitSettingsForSave(nextSettings, label)
-      const groupKeyToSave = trimmedLabel ? getGroupSettingsKey(trimmedLabel) : null
-      if (trimmedLabel && groupKeyToSave) {
-        await Promise.all([
-          saveProductSettings(token, groupKeyToSave, groupSettings),
-          saveProductSettings(token, baseProductKey, itemSettings).catch(() => { }),
-        ])
-      } else {
-        await saveProductSettings(token, baseProductKey, itemSettings)
-      }
-      loadProductSettingsList(token).catch(() => { })
-      setToast({ type: 'success', message: 'Коды сохранены' })
-    } catch (e) {
-      setToast({ type: 'error', message: e instanceof Error ? e.message : 'Не удалось сохранить коды' })
-    }
-  }
-
-  const addCode = (code) => {
-    const trimmed = String(code).trim()
-    if (!trimmed) return
-    setProductSettings((prev) => {
-      const next = {
-        ...prev,
-        autodelivery: {
-          ...(prev?.autodelivery || {}),
-          codes: [...(prev?.autodelivery?.codes || []), trimmed],
-        },
-      }
-      persistCodes(next)
-      return next
-    })
-  }
-
-  const removeCode = (index) => {
-    setProductSettings((prev) => {
-      const codes = [...(prev?.autodelivery?.codes || [])]
-      codes.splice(index, 1)
-      const next = {
-        ...prev,
-        autodelivery: { ...(prev?.autodelivery || {}), codes },
-      }
-      persistCodes(next)
-      return next
-    })
-  }
-
   const setFeature = (name, field, value) => {
     setProductSettings((prev) => ({
       ...prev,
@@ -929,12 +1262,18 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     })
   }
 
-  const addImageAutomessageRow = () => {
+  const addImageAutomessageRowForTrigger = (trigger) => {
     setProductSettings((prev) => ({
       ...prev,
       imageAutomessage: {
         ...(prev?.imageAutomessage || {}),
-        items: [...(prev?.imageAutomessage?.items || []), emptyImageAutomessageRow()],
+        enabled: true,
+        items: [
+          ...(prev?.imageAutomessage?.items || []),
+          emptyImageAutomessageRow(
+            IMAGE_AUTO_TRIGGERS.includes(trigger) ? trigger : 'purchase'
+          ),
+        ],
       },
     }))
   }
@@ -943,10 +1282,18 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     setProductSettings((prev) => {
       const items = [...(prev?.imageAutomessage?.items || [])]
       items.splice(index, 1)
-      return {
+      let next = {
         ...prev,
-        imageAutomessage: { ...(prev?.imageAutomessage || {}), items },
+        imageAutomessage: {
+          ...(prev.imageAutomessage || {}),
+          enabled: items.length > 0 ? Boolean(prev.imageAutomessage?.enabled) : false,
+          items,
+        },
       }
+      AUTO_MESSAGE_STAGES.forEach(({ trigger: stageTrigger }) => {
+        next = patchAutoPlacementOrderForStage(next, stageTrigger)
+      })
+      return next
     })
   }
 
@@ -976,24 +1323,21 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     }))
   }
 
-  const addAutomessageRow = () => {
-    setProductSettings((prev) => ({
-      ...prev,
-      automessage: {
-        ...(prev?.automessage || {}),
-        messages: [...(prev?.automessage?.messages || []), ''],
-      },
-    }))
-  }
-
   const removeAutomessageRow = (index) => {
     setProductSettings((prev) => {
       const messages = [...(prev?.automessage?.messages || [])]
       messages.splice(index, 1)
-      return {
-        ...prev,
-        automessage: { ...(prev?.automessage || {}), messages },
-      }
+      return patchAutoPlacementOrderForStage(
+        {
+          ...prev,
+          automessage: {
+            ...(prev?.automessage || {}),
+            enabled: messages.length > 0,
+            messages,
+          },
+        },
+        'purchase'
+      )
     })
   }
 
@@ -1004,8 +1348,400 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       messages[index] = value
       return {
         ...prev,
-        automessage: { ...(prev?.automessage || {}), messages },
+        automessage: {
+          ...(prev?.automessage || {}),
+          enabled: messages.length > 0,
+          messages,
+        },
       }
+    })
+  }
+
+  const removePostPurchaseAutomessageRow = (index) => {
+    setProductSettings((prev) => {
+      const messages = [...(prev?.postPurchaseAutomessage?.messages || [])]
+      messages.splice(index, 1)
+      return patchAutoPlacementOrderForStage(
+        {
+          ...prev,
+          postPurchaseAutomessage: {
+            ...(prev?.postPurchaseAutomessage || {}),
+            enabled: messages.length > 0,
+            messages,
+          },
+        },
+        'sent'
+      )
+    })
+  }
+
+  const updatePostPurchaseAutomessageRow = (index, value) => {
+    setProductSettings((prev) => {
+      const messages = [...(prev?.postPurchaseAutomessage?.messages || [])]
+      if (messages[index] === undefined) return prev
+      messages[index] = value
+      return {
+        ...prev,
+        postPurchaseAutomessage: {
+          ...(prev?.postPurchaseAutomessage || {}),
+          enabled: messages.length > 0,
+          messages,
+        },
+      }
+    })
+  }
+
+  const removeDealConfirmedAutomessageRow = (index) => {
+    setProductSettings((prev) => {
+      const messages = [...(prev?.dealConfirmedAutomessage?.messages || [])]
+      messages.splice(index, 1)
+      return patchAutoPlacementOrderForStage(
+        {
+          ...prev,
+          dealConfirmedAutomessage: {
+            ...(prev?.dealConfirmedAutomessage || {}),
+            enabled: messages.length > 0,
+            messages,
+          },
+        },
+        'confirmed'
+      )
+    })
+  }
+
+  const updateDealConfirmedAutomessageRow = (index, value) => {
+    setProductSettings((prev) => {
+      const messages = [...(prev?.dealConfirmedAutomessage?.messages || [])]
+      if (messages[index] === undefined) return prev
+      messages[index] = value
+      return {
+        ...prev,
+        dealConfirmedAutomessage: { ...(prev?.dealConfirmedAutomessage || {}), messages },
+      }
+    })
+  }
+
+  const handleAutoPaletteDragStart = (e, tileId) => {
+    setAutoDragTile(tileId)
+    e.dataTransfer.setData(AUTO_TILE_MIME, tileId)
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+
+  const handleAutoPaletteDragEnd = () => {
+    setAutoDragTile(null)
+    setAutoDropStage(null)
+  }
+
+  const beginAutoDropGuard = () => {
+    autoDropHandledRef.current = true
+    window.setTimeout(() => {
+      autoDropHandledRef.current = false
+    }, 0)
+  }
+
+  const handlePlacedRowDragStart = (e, stage, pos) => {
+    e.stopPropagation()
+    setAutoDragTile(null)
+    setAutoDropStage(null)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData(PLACEMENT_ROW_MIME, `${stage}:${pos}`)
+  }
+
+  const handlePlacedRowDragEnd = () => {
+    setPlacedRowDragOver(null)
+  }
+
+  const handlePlacedRowDragOver = (e, stage, pos) => {
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    setPlacedRowDragOver({ stage, pos })
+  }
+
+  const handlePlacedRowDragLeave = (e, stage, pos) => {
+    if (placedRowDragOver?.stage !== stage || placedRowDragOver?.pos !== pos) return
+    const related = e.relatedTarget
+    if (related && e.currentTarget.contains(related)) return
+    setPlacedRowDragOver(null)
+  }
+
+  const handlePlacedRowDrop = (e, stage, toPos) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (autoDropHandledRef.current) return
+    const raw = e.dataTransfer.getData(PLACEMENT_ROW_MIME)
+    if (!raw) return
+    const colon = raw.indexOf(':')
+    if (colon < 0) return
+    const fromStage = raw.slice(0, colon)
+    const fromPos = parseInt(raw.slice(colon + 1), 10)
+    if (fromStage !== stage || Number.isNaN(fromPos)) return
+    beginAutoDropGuard()
+    setProductSettings((prev) => {
+      if (!prev) return prev
+      const order = getStagePlacementOrderFromSettings(stage, prev)
+      const { ps } = reorderPlacementInStage(stage, fromPos, toPos, prev, order)
+      return ps
+    })
+    setPlacedRowDragOver(null)
+  }
+
+  const handleAutoStageDragOver = (e, stageTrigger) => {
+    const tileId = autoDragTile
+    if (!tileId || !canDropAutoTile(tileId, stageTrigger, productSettings)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setAutoDropStage(stageTrigger)
+  }
+
+  const handleAutoStageDragLeave = (e, stageTrigger) => {
+    if (autoDropStage !== stageTrigger) return
+    const related = e.relatedTarget
+    if (related && e.currentTarget.contains(related)) return
+    setAutoDropStage(null)
+  }
+
+  const applyAutoTileToStage = (tileId, stageTrigger) => {
+    setProductSettings((prev) => {
+      if (!prev || !canDropAutoTile(tileId, stageTrigger, prev)) return prev
+      if (tileId === 'time' && stageHasTimeBlock(prev)) return prev
+      if (tileId === 'autodelivery' && stageHasAutodeliveryBlock(prev)) return prev
+      if (tileId === 'autodeliveryApi' && purchasePlacementIncludes(prev, 'a')) return prev
+      if (tileId === 'emailValidation' && purchasePlacementIncludes(prev, 'e')) return prev
+      if (tileId === 'supercellAutoRequestCode' && purchasePlacementIncludes(prev, 's')) return prev
+      if (tileId === 'autotopupApi' && purchasePlacementIncludes(prev, 'u')) return prev
+      if (tileId === 'autoComplete') {
+        if (!canBindAutoCompleteTile(prev) || stageHasAutoCompleteBlock(prev)) return prev
+      }
+
+      let next = prev
+      if (tileId === 'text') {
+        if (stageTrigger === 'purchase') {
+          const messages = [...(prev.automessage?.messages || []), '']
+          next = {
+            ...prev,
+            automessage: { ...(prev.automessage || {}), enabled: true, messages },
+          }
+        } else if (stageTrigger === 'sent') {
+          const messages = [...(prev.postPurchaseAutomessage?.messages || []), '']
+          next = {
+            ...prev,
+            postPurchaseAutomessage: {
+              ...(prev.postPurchaseAutomessage || {}),
+              enabled: true,
+              messages,
+            },
+          }
+        } else {
+          const messages = [...(prev.dealConfirmedAutomessage?.messages || []), '']
+          next = {
+            ...prev,
+            dealConfirmedAutomessage: {
+              ...(prev.dealConfirmedAutomessage || {}),
+              enabled: true,
+              messages,
+            },
+          }
+        }
+      } else if (tileId === 'time') {
+        next = {
+          ...prev,
+          purchaseWindowAutomessage: {
+            ...(prev.purchaseWindowAutomessage || {}),
+            enabled: true,
+          },
+        }
+      } else if (tileId === 'image') {
+        next = {
+          ...prev,
+          imageAutomessage: {
+            ...(prev.imageAutomessage || {}),
+            enabled: true,
+            items: [
+              ...(prev.imageAutomessage?.items || []),
+              emptyImageAutomessageRow(stageTrigger),
+            ],
+          },
+        }
+      } else if (tileId === 'autodelivery') {
+        next = {
+          ...prev,
+          autodelivery: { ...(prev.autodelivery || {}), enabled: true },
+        }
+      } else if (tileId === 'autoComplete') {
+        next = {
+          ...prev,
+          autodelivery: { ...(prev.autodelivery || {}), autoCompleteDeal: true },
+        }
+      } else if (tileId === 'autodeliveryApi') {
+        next = {
+          ...prev,
+          autodeliveryApi: {
+            ...(prev.autodeliveryApi || {}),
+            enabled: true,
+            deliveryMessage:
+              typeof prev.autodeliveryApi?.deliveryMessage === 'string' &&
+              prev.autodeliveryApi.deliveryMessage.trim()
+                ? prev.autodeliveryApi.deliveryMessage
+                : '{delivery}',
+          },
+        }
+        next = appendPurchasePlacementKey(next, 'a')
+      } else if (tileId === 'emailValidation') {
+        next = {
+          ...prev,
+          emailValidation: { ...(prev.emailValidation || {}), enabled: true },
+        }
+        next = appendPurchasePlacementKey(next, 'e')
+      } else if (tileId === 'supercellAutoRequestCode') {
+        const prevMsg = prev.supercellAutoRequestCode?.requestCodeMessage
+        next = {
+          ...prev,
+          supercellAutoRequestCode: {
+            ...(prev.supercellAutoRequestCode || {}),
+            enabled: true,
+            requestCodeMessage:
+              typeof prevMsg === 'string' && prevMsg.trim()
+                ? prevMsg
+                : DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE,
+          },
+        }
+        next = appendPurchasePlacementKey(next, 's')
+      } else if (tileId === 'autotopupApi') {
+        const prevAsk = prev.autotopupApi?.askIdMessage
+        next = {
+          ...prev,
+          autotopupApi: {
+            ...(prev.autotopupApi || {}),
+            enabled: true,
+            askIdMessage:
+              typeof prevAsk === 'string' && prevAsk.trim()
+                ? prevAsk
+                : defaultProductSettings().autotopupApi.askIdMessage,
+          },
+        }
+        next = appendPurchasePlacementKey(next, 'u')
+      }
+      return patchAutoPlacementOrderForStage(next, stageTrigger)
+    })
+  }
+
+  const handleAutoStageDrop = (e, stageTrigger) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.getData(PLACEMENT_ROW_MIME)) return
+    if (autoDropHandledRef.current) return
+    const tileId = e.dataTransfer.getData(AUTO_TILE_MIME) || autoDragTile
+    if (!tileId) return
+    beginAutoDropGuard()
+    applyAutoTileToStage(tileId, stageTrigger)
+    handleAutoPaletteDragEnd()
+  }
+
+  const removeAutoBlockFromStage = (stageTrigger, tileId) => {
+    setProductSettings((prev) => {
+      if (!prev) return prev
+      if (tileId === 'time') {
+        return patchAutoPlacementOrderForStage(
+          {
+            ...prev,
+            purchaseWindowAutomessage: {
+              ...(prev.purchaseWindowAutomessage || {}),
+              enabled: false,
+            },
+          },
+          stageTrigger
+        )
+      }
+      if (tileId === 'image') {
+        const items = (prev.imageAutomessage?.items || []).filter(
+          (row) => (row?.trigger ?? 'purchase') !== stageTrigger
+        )
+        return patchAutoPlacementOrderForStage(
+          {
+            ...prev,
+            imageAutomessage: {
+              ...(prev.imageAutomessage || {}),
+              enabled: items.length > 0 ? Boolean(prev.imageAutomessage?.enabled) : false,
+              items,
+            },
+          },
+          stageTrigger
+        )
+      }
+      if (tileId === 'autodelivery') {
+        return patchAutoPlacementOrderForStage(
+          {
+            ...prev,
+            autodelivery: {
+              ...(prev.autodelivery || {}),
+              enabled: false,
+              autoCompleteDeal: false,
+            },
+          },
+          stageTrigger
+        )
+      }
+      if (tileId === 'autoComplete') {
+        return patchAutoPlacementOrderForStage(
+          {
+            ...prev,
+            autodelivery: { ...(prev.autodelivery || {}), autoCompleteDeal: false },
+          },
+          stageTrigger
+        )
+      }
+      if (tileId === 'autodeliveryApi') {
+        let next = {
+          ...prev,
+          autodeliveryApi: { ...(prev.autodeliveryApi || {}), enabled: false },
+        }
+        next = removePurchasePlacementKey(next, 'a')
+        if (!canBindAutoCompleteTile(next) && stageHasAutoCompleteBlock(next)) {
+          next = {
+            ...next,
+            autodelivery: { ...(next.autodelivery || {}), autoCompleteDeal: false },
+          }
+          next = removePurchasePlacementKey(next, 'c')
+        }
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      if (tileId === 'emailValidation') {
+        let next = {
+          ...prev,
+          emailValidation: {
+            ...(prev.emailValidation || {}),
+            enabled: false,
+            invalidEmailMessage: '',
+          },
+        }
+        next = removePurchasePlacementKey(next, 'e')
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      if (tileId === 'supercellAutoRequestCode') {
+        let next = {
+          ...prev,
+          supercellAutoRequestCode: {
+            ...(prev.supercellAutoRequestCode || {}),
+            enabled: false,
+            requestCodeMessage: DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE,
+          },
+        }
+        next = removePurchasePlacementKey(next, 's')
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      if (tileId === 'autotopupApi') {
+        let next = removePurchasePlacementKey(prev, 'u')
+        if (!canBindAutoCompleteTile(next) && stageHasAutoCompleteBlock(next)) {
+          next = {
+            ...next,
+            autodelivery: { ...(next.autodelivery || {}), autoCompleteDeal: false },
+          }
+          next = removePurchasePlacementKey(next, 'c')
+        }
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      return prev
     })
   }
 
@@ -1257,7 +1993,554 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                   </label>
                 </section>
                 <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Привязка к таблице</h3>
+                  <h3 className="lot-settings-block__title">Автовыставление</h3>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autolist?.enabled)}
+                      onChange={(e) => setFeature('autolist', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыставление</span>
+                  </label>
+                </section>
+                </>
+                )}
+                {settingsTab === 'automessage' && (
+                <>
+                <section className="lot-settings-block lot-settings-block--auto-stages">
+                  <div className="lot-settings-auto-layout">
+                    <aside className="lot-settings-auto-palette" aria-label="Плитки автосообщений">
+                      {AUTO_PALETTE_TILES.filter((tile) => {
+                        if (
+                          tile.id === 'emailValidation' ||
+                          tile.id === 'supercellAutoRequestCode'
+                        ) {
+                          return showSupercellEmailValidation
+                        }
+                        return true
+                      }).map((tile) => {
+                        const paletteLocked =
+                          tile.id === 'autoComplete' && !canBindAutoCompleteTile(productSettings)
+                        return (
+                          <div
+                            key={tile.id}
+                            className={
+                              'lot-settings-auto-palette__tile' +
+                              (autoDragTile === tile.id
+                                ? ' lot-settings-auto-palette__tile--dragging'
+                                : '') +
+                              (paletteLocked ? ' lot-settings-auto-palette__tile--locked' : '')
+                            }
+                            draggable={!paletteLocked}
+                            onDragStart={(e) => {
+                              if (paletteLocked) return
+                              handleAutoPaletteDragStart(e, tile.id)
+                            }}
+                            onDragEnd={handleAutoPaletteDragEnd}
+                          >
+                            {tile.label}
+                          </div>
+                        )
+                      })}
+                    </aside>
+                    <div className="lot-settings-auto-stages-wrap">
+                      <div className="lot-settings-auto-stages">
+                        {AUTO_MESSAGE_STAGES.map((stage) => {
+                          const dropActive =
+                            autoDropStage === stage.trigger &&
+                            autoDragTile &&
+                            canDropAutoTile(autoDragTile, stage.trigger, productSettings)
+                          return (
+                            <div key={stage.trigger} className="lot-settings-auto-stage">
+                              <h4 className="lot-settings-auto-stage__title">{stage.label}</h4>
+                              <div
+                                className={
+                                  'lot-settings-auto-stage__body lot-settings-auto-stage__drop' +
+                                  (dropActive ? ' lot-settings-auto-stage__drop--over' : '')
+                                }
+                                onDragOver={(e) => handleAutoStageDragOver(e, stage.trigger)}
+                                onDragLeave={(e) => handleAutoStageDragLeave(e, stage.trigger)}
+                                onDrop={(e) => handleAutoStageDrop(e, stage.trigger)}
+                              >
+                                {getStagePlacementOrderFromSettings(
+                                  stage.trigger,
+                                  productSettings
+                                ).map(
+                                  (placeKey, pos) => {
+                                    const purchaseOrder =
+                                      stage.trigger === 'purchase'
+                                        ? getStagePlacementOrderFromSettings(
+                                            'purchase',
+                                            productSettings
+                                          )
+                                        : []
+                                    const rowOver =
+                                      placedRowDragOver?.stage === stage.trigger &&
+                                      placedRowDragOver?.pos === pos
+                                    const rowClass =
+                                      'lot-settings-auto-placed lot-settings-auto-placed--row' +
+                                      (rowOver ? ' lot-settings-auto-placed--row-over' : '') +
+                                      ((placeKey === 'd' ||
+                                        placeKey === 'a' ||
+                                        placeKey === 'u') &&
+                                      purchaseOrder[pos + 1] === 'c'
+                                        ? ' lot-settings-auto-placed--bind-next'
+                                        : '') +
+                                      (placeKey === 'c' &&
+                                      (purchaseOrder[pos - 1] === 'd' ||
+                                        purchaseOrder[pos - 1] === 'a' ||
+                                        purchaseOrder[pos - 1] === 'u')
+                                        ? ' lot-settings-auto-placed--after-d'
+                                        : '')
+
+                                    const rowDragHandlers = {
+                                      onDragOver: (e) => {
+                                        if (e.dataTransfer.types.includes(PLACEMENT_ROW_MIME)) {
+                                          handlePlacedRowDragOver(e, stage.trigger, pos)
+                                          return
+                                        }
+                                        if (autoDragTile) {
+                                          handleAutoStageDragOver(e, stage.trigger)
+                                          return
+                                        }
+                                        handlePlacedRowDragOver(e, stage.trigger, pos)
+                                      },
+                                      onDragLeave: (e) => {
+                                        if (autoDragTile) {
+                                          handleAutoStageDragLeave(e, stage.trigger)
+                                          return
+                                        }
+                                        handlePlacedRowDragLeave(e, stage.trigger, pos)
+                                      },
+                                      onDrop: (e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        if (e.dataTransfer.getData(PLACEMENT_ROW_MIME)) {
+                                          handlePlacedRowDrop(e, stage.trigger, pos)
+                                          return
+                                        }
+                                        if (autoDragTile || e.dataTransfer.getData(AUTO_TILE_MIME)) {
+                                          handleAutoStageDrop(e, stage.trigger)
+                                        }
+                                      },
+                                    }
+
+                                    const tileEl = (
+                                      <div
+                                        className="lot-settings-auto-palette__tile lot-settings-auto-placed__tile-draggable"
+                                        draggable
+                                        onDragStart={(e) =>
+                                          handlePlacedRowDragStart(e, stage.trigger, pos)
+                                        }
+                                        onDragEnd={handlePlacedRowDragEnd}
+                                      >
+                                        {placementTileLabel(placeKey)}
+                                      </div>
+                                    )
+
+                                    if (placeKey.startsWith('t:')) {
+                                      const index = parseInt(placeKey.slice(2), 10)
+                                      const text =
+                                        stageTextMessages(stage.trigger, productSettings)[index] ??
+                                        ''
+                                      const removeTextRow =
+                                        stage.trigger === 'purchase'
+                                          ? removeAutomessageRow
+                                          : stage.trigger === 'sent'
+                                            ? removePostPurchaseAutomessageRow
+                                            : removeDealConfirmedAutomessageRow
+                                      const updateTextRow =
+                                        stage.trigger === 'purchase'
+                                          ? updateAutomessageRow
+                                          : stage.trigger === 'sent'
+                                            ? updatePostPurchaseAutomessageRow
+                                            : updateDealConfirmedAutomessageRow
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-${placeKey}`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={text}
+                                            onChange={(e) =>
+                                              updateTextRow(index, e.target.value)
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() => removeTextRow(index)}
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'w' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-time`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <div className="lot-settings-auto-placed__field lot-settings-auto-placed__field--time">
+                                            <input
+                                              type="text"
+                                              className="lot-settings-input lot-settings-auto-placed__time-message"
+                                              value={
+                                                productSettings?.purchaseWindowAutomessage?.message ??
+                                                ''
+                                              }
+                                              onChange={(e) =>
+                                                setPurchaseWindowAutomessage('message', e.target.value)
+                                              }
+                                            />
+                                            <span className="lot-settings-auto-placed__time-label">
+                                              С (МСК)
+                                            </span>
+                                            <input
+                                              type="time"
+                                              className="lot-settings-input lot-settings-input--time"
+                                              value={
+                                                productSettings?.purchaseWindowAutomessage?.start ??
+                                                '12:00'
+                                              }
+                                              onChange={(e) =>
+                                                setPurchaseWindowAutomessage('start', e.target.value)
+                                              }
+                                            />
+                                            <span className="lot-settings-auto-placed__time-label">
+                                              До (МСК)
+                                            </span>
+                                            <input
+                                              type="time"
+                                              className="lot-settings-input lot-settings-input--time"
+                                              value={
+                                                productSettings?.purchaseWindowAutomessage?.end ??
+                                                '13:00'
+                                              }
+                                              onChange={(e) =>
+                                                setPurchaseWindowAutomessage('end', e.target.value)
+                                              }
+                                            />
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(stage.trigger, 'time')
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'd' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-autodelivery`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <div className="lot-settings-auto-placed__field lot-settings-auto-placed__field--bind">
+                                            {purchaseOrder[pos + 1] === 'c' ? (
+                                              <span
+                                                className="lot-settings-auto-placed__bind-label"
+                                                aria-hidden="true"
+                                              >
+                                                ↓
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(stage.trigger, 'autodelivery')
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'c' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-auto-complete`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <div className="lot-settings-auto-placed__field lot-settings-auto-placed__field--bind">
+                                            {purchaseOrder[pos - 1] === 'd' ? (
+                                              <span className="lot-settings-auto-placed__bind-label">
+                                                После успешной автовыдачи
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(stage.trigger, 'autoComplete')
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'a' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-autodelivery-api`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.autodeliveryApi?.deliveryMessage ??
+                                              '{delivery}'
+                                            }
+                                            onChange={(e) =>
+                                              setFeature(
+                                                'autodeliveryApi',
+                                                'deliveryMessage',
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'autodeliveryApi'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'e' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-email-validation`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.emailValidation
+                                                ?.invalidEmailMessage ?? ''
+                                            }
+                                            onChange={(e) =>
+                                              setEmailValidation(
+                                                'invalidEmailMessage',
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'emailValidation'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'u' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-autotopup-api`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.autotopupApi?.askIdMessage ?? ''
+                                            }
+                                            onChange={(e) =>
+                                              setFeature(
+                                                'autotopupApi',
+                                                'askIdMessage',
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'autotopupApi'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 's' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-supercell-auto-request`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.supercellAutoRequestCode
+                                                ?.requestCodeMessage ??
+                                              DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE
+                                            }
+                                            onChange={(e) =>
+                                              setFeature(
+                                                'supercellAutoRequestCode',
+                                                'requestCodeMessage',
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'supercellAutoRequestCode'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey.startsWith('i:')) {
+                                      const index = parseInt(placeKey.slice(2), 10)
+                                      const row =
+                                        productSettings?.imageAutomessage?.items?.[index]
+                                      if (!row) return null
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-${placeKey}`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <div className="lot-settings-auto-placed__field lot-settings-auto-placed__field--image">
+                                            {row.url ? (
+                                              <img
+                                                src={automessageImageUrl(row.url)}
+                                                alt=""
+                                                className="lot-settings-image-auto__preview"
+                                              />
+                                            ) : null}
+                                            <label
+                                              className={
+                                                'lot-settings-file-picker' +
+                                                (imageUploadingRow === index
+                                                  ? ' lot-settings-file-picker--loading'
+                                                  : '')
+                                              }
+                                            >
+                                              <input
+                                                type="file"
+                                                accept="image/png,image/jpeg,image/gif,image/webp"
+                                                className="lot-settings-file-picker__input"
+                                                disabled={imageUploadingRow === index}
+                                                onChange={(e) => {
+                                                  const file = e.target.files && e.target.files[0]
+                                                  if (file) {
+                                                    setImageAutomessage('enabled', true)
+                                                    void handleImageAutomessageUpload(index, file)
+                                                  }
+                                                  e.target.value = ''
+                                                }}
+                                              />
+                                              <span className="lot-settings-file-picker__text">
+                                                {imageUploadingRow === index
+                                                  ? 'Загрузка…'
+                                                  : row.url
+                                                    ? 'Заменить'
+                                                    : 'Выбрать файл'}
+                                              </span>
+                                            </label>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() => removeImageAutomessageRow(index)}
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    return null
+                                  }
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  {imageUploadError && (
+                    <span className="lot-settings-field__hint">{imageUploadError}</span>
+                  )}
+                </section>
+                <section className="lot-settings-block lot-settings-block--logic-work">
+                  <h3 className="lot-settings-block__title">Логика работы</h3>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Привязка к таблице</h4>
                   <label className="lot-settings-field">
                     <span className="lot-settings-field__label">Таблица</span>
                     <select
@@ -1325,80 +2608,9 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                         </span>
                       )}
                   </label>
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автовыдача</h3>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.autodelivery?.enabled)}
-                      onChange={(e) => setAutodelivery('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">Включить автовыдачу</span>
-                  </label>
-                  {Boolean(productSettings?.autodelivery?.enabled) && (
-                    <div className="lot-settings-autodelivery-extra">
-                      <div className="lot-settings-row">
-                        <input
-                          type="text"
-                          className="lot-settings-input"
-                          placeholder="Ввести код"
-                          value={newCodeInput}
-                          onChange={(e) => setNewCodeInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              addCode(newCodeInput)
-                              setNewCodeInput('')
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="lot-settings-btn lot-settings-btn--secondary"
-                          onClick={() => { addCode(newCodeInput); setNewCodeInput('') }}
-                        >
-                          Добавить код
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        className="lot-settings-btn lot-settings-btn--secondary"
-                        onClick={() => setCodesModalOpen(true)}
-                      >
-                        Посмотреть все коды
-                      </button>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение при покупке</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          value={productSettings?.autodelivery?.messageOnPurchase ?? ''}
-                          onChange={(e) => setAutodelivery('messageOnPurchase', e.target.value)}
-                          placeholder="Текст сообщения покупателю после выдачи кода"
-                          rows={3}
-                        />
-                      </label>
-                      <label className="lot-settings-toggle">
-                        <input
-                          type="checkbox"
-                          className="lot-settings-toggle__input"
-                          checked={Boolean(productSettings?.autodelivery?.autoCompleteDeal)}
-                          onChange={(e) => setAutodelivery('autoCompleteDeal', e.target.checked)}
-                        />
-                        <span className="lot-settings-toggle__switch">
-                          <span className="lot-settings-toggle__knob" />
-                        </span>
-                        <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи кода</span>
-                      </label>
-                    </div>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автовыдача Api</h3>
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача Api</h4>
                   <label className="lot-settings-toggle">
                     <input
                       type="checkbox"
@@ -1528,36 +2740,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           />
                         </label>
                       )}
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение с выдачей ({'{delivery}'}, {'{Kod}'})</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          value={productSettings?.autodeliveryApi?.deliveryMessage ?? '{delivery}'}
-                          onChange={(e) => setFeature('autodeliveryApi', 'deliveryMessage', e.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                      <label className="lot-settings-toggle">
-                        <input
-                          type="checkbox"
-                          className="lot-settings-toggle__input"
-                          checked={Boolean(productSettings?.autodeliveryApi?.autoCompleteDeal)}
-                          onChange={(e) => setFeature('autodeliveryApi', 'autoCompleteDeal', e.target.checked)}
-                        />
-                        <span className="lot-settings-toggle__switch">
-                          <span className="lot-settings-toggle__knob" />
-                        </span>
-                        <span className="lot-settings-toggle__label">Автозавершение сделки</span>
-                      </label>
                     </div>
                   )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автопополнение по API</h3>
-                  <p className="card-text">
-                    После оплаты бот попросит покупателя прислать игровой ID/логин, проверит его через
-                    AppRoute и переспросит подтверждение. После «да» — пополнит аккаунт напрямую.
-                  </p>
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автопополнение по API</h4>
                   <label className="lot-settings-toggle">
                     <input
                       type="checkbox"
@@ -1665,358 +2852,19 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           />
                         </label>
                       )}
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение «запросить ID/логин»</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          rows={2}
-                          value={productSettings?.autotopupApi?.askIdMessage ?? ''}
-                          onChange={(e) => setFeature('autotopupApi', 'askIdMessage', e.target.value)}
-                        />
-                      </label>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение подтверждения ({'{id}'} — подставится ID)</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          rows={2}
-                          value={productSettings?.autotopupApi?.confirmTemplate ?? ''}
-                          onChange={(e) => setFeature('autotopupApi', 'confirmTemplate', e.target.value)}
-                        />
-                      </label>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение при неверном ID</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          rows={2}
-                          value={productSettings?.autotopupApi?.invalidIdMessage ?? ''}
-                          onChange={(e) => setFeature('autotopupApi', 'invalidIdMessage', e.target.value)}
-                        />
-                      </label>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение об успешном пополнении</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          rows={2}
-                          value={productSettings?.autotopupApi?.successMessage ?? ''}
-                          onChange={(e) => setFeature('autotopupApi', 'successMessage', e.target.value)}
-                        />
-                      </label>
-                      <label className="lot-settings-toggle">
-                        <input
-                          type="checkbox"
-                          className="lot-settings-toggle__input"
-                          checked={Boolean(productSettings?.autotopupApi?.autoCompleteDeal)}
-                          onChange={(e) => setFeature('autotopupApi', 'autoCompleteDeal', e.target.checked)}
-                        />
-                        <span className="lot-settings-toggle__switch">
-                          <span className="lot-settings-toggle__knob" />
-                        </span>
-                        <span className="lot-settings-toggle__label">Автозавершение сделки после пополнения</span>
-                      </label>
-                    </div>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автовыставление</h3>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.autolist?.enabled)}
-                      onChange={(e) => setFeature('autolist', 'enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">Включить автовыставление</span>
-                  </label>
-                </section>
-                </>
-                )}
-                {settingsTab === 'automessage' && (
-                <>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автосообщение</h3>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.automessage?.enabled)}
-                      onChange={(e) => setAutomessage('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">Включить автосообщение</span>
-                  </label>
-                  {Boolean(productSettings?.automessage?.enabled) && (
-                    <div className="lot-settings-automessage-list">
-                      <span className="lot-settings-field__label">Сообщения (отправляются по порядку)</span>
-                      {(productSettings?.automessage?.messages || []).map((text, index) => (
-                        <div key={index} className="lot-settings-automessage-row">
-                          <input
-                            type="text"
-                            className="lot-settings-input"
-                            value={text}
-                            onChange={(e) => updateAutomessageRow(index, e.target.value)}
-                            placeholder={`Сообщение ${index + 1}`}
-                          />
-                          <button
-                            type="button"
-                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-automessage-remove"
-                            onClick={() => removeAutomessageRow(index)}
-                            title="Удалить сообщение"
-                          >
-                            Удалить
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        className="lot-settings-btn lot-settings-btn--secondary"
-                        onClick={addAutomessageRow}
-                      >
-                        + Добавить сообщение
-                      </button>
-                    </div>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автосообщение после покупки товара</h3>
-                  <p className="card-text">
-                    Отправляется в чат после системного сообщения «Товар отправлен».
-                  </p>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.postPurchaseAutomessage?.enabled)}
-                      onChange={(e) => setPostPurchaseAutomessage('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">
-                      Включить автосообщение после покупки товара
-                    </span>
-                  </label>
-                  {Boolean(productSettings?.postPurchaseAutomessage?.enabled) && (
-                    <label className="lot-settings-field">
-                      <span className="lot-settings-field__label">Текст сообщения</span>
-                      <textarea
-                        className="lot-settings-textarea"
-                        rows={4}
-                        value={productSettings?.postPurchaseAutomessage?.message ?? ''}
-                        onChange={(e) => setPostPurchaseAutomessage('message', e.target.value)}
-                        placeholder="Сообщение покупателю после отправки товара"
+                      <TopupApiFlowDiagram
+                        settings={productSettings?.autotopupApi}
+                        onFieldChange={(field, value) => setFeature('autotopupApi', field, value)}
+                        autoCompleteDeal={Boolean(productSettings?.autodelivery?.autoCompleteDeal)}
                       />
-                    </label>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автосообщение после подтверждения сделки</h3>
-                  <p className="card-text">
-                    Отправляется в чат после системного сообщения «Сделка подтверждена» (или «подтверждена автоматически»).
-                  </p>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.dealConfirmedAutomessage?.enabled)}
-                      onChange={(e) => setDealConfirmedAutomessage('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">
-                      Включить автосообщение после подтверждения сделки
-                    </span>
-                  </label>
-                  {Boolean(productSettings?.dealConfirmedAutomessage?.enabled) && (
-                    <label className="lot-settings-field">
-                      <span className="lot-settings-field__label">Текст сообщения</span>
-                      <textarea
-                        className="lot-settings-textarea"
-                        rows={4}
-                        value={productSettings?.dealConfirmedAutomessage?.message ?? ''}
-                        onChange={(e) => setDealConfirmedAutomessage('message', e.target.value)}
-                        placeholder="Сообщение покупателю после подтверждения сделки"
-                      />
-                    </label>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автосообщение по времени покупки</h3>
-                  <p className="card-text">
-                    Если покупатель оплатит товар в указанный промежуток времени (по МСК), ему
-                    отправится это сообщение. Если покупка вне промежутка — сообщение не отправляется,
-                    задание считается выполненным.
-                  </p>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.purchaseWindowAutomessage?.enabled)}
-                      onChange={(e) => setPurchaseWindowAutomessage('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">
-                      Включить автосообщение по времени покупки
-                    </span>
-                  </label>
-                  {Boolean(productSettings?.purchaseWindowAutomessage?.enabled) && (
-                    <>
-                      <div className="lot-settings-time-window">
-                        <label className="lot-settings-field lot-settings-time-window__field">
-                          <span className="lot-settings-field__label">С (МСК)</span>
-                          <input
-                            type="time"
-                            className="lot-settings-input"
-                            value={productSettings?.purchaseWindowAutomessage?.start ?? '12:00'}
-                            onChange={(e) => setPurchaseWindowAutomessage('start', e.target.value)}
-                          />
-                        </label>
-                        <label className="lot-settings-field lot-settings-time-window__field">
-                          <span className="lot-settings-field__label">До (МСК)</span>
-                          <input
-                            type="time"
-                            className="lot-settings-input"
-                            value={productSettings?.purchaseWindowAutomessage?.end ?? '13:00'}
-                            onChange={(e) => setPurchaseWindowAutomessage('end', e.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Текст сообщения</span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          rows={4}
-                          value={productSettings?.purchaseWindowAutomessage?.message ?? ''}
-                          onChange={(e) => setPurchaseWindowAutomessage('message', e.target.value)}
-                          placeholder="Сообщение покупателю при покупке в заданное время"
-                        />
-                      </label>
-                    </>
-                  )}
-                </section>
-                <section className="lot-settings-block">
-                  <h3 className="lot-settings-block__title">Автосообщение (картинка)</h3>
-                  <label className="lot-settings-toggle">
-                    <input
-                      type="checkbox"
-                      className="lot-settings-toggle__input"
-                      checked={Boolean(productSettings?.imageAutomessage?.enabled)}
-                      onChange={(e) => setImageAutomessage('enabled', e.target.checked)}
-                    />
-                    <span className="lot-settings-toggle__switch">
-                      <span className="lot-settings-toggle__knob" />
-                    </span>
-                    <span className="lot-settings-toggle__label">Включить отправку картинки</span>
-                  </label>
-                  {Boolean(productSettings?.imageAutomessage?.enabled) && (
-                    <div className="lot-settings-image-auto">
-                      <div className="lot-settings-image-auto__head">
-                        <span>Когда отправлять</span>
-                        <span>Картинка</span>
-                        <span className="lot-settings-image-auto__head-actions" />
-                      </div>
-                      {(productSettings?.imageAutomessage?.items || []).map((row, index) => (
-                        <div key={index} className="lot-settings-image-auto__row">
-                          <select
-                            className="lot-settings-input"
-                            value={row.trigger ?? 'purchase'}
-                            onChange={(e) => setImageAutomessageRow(index, { trigger: e.target.value })}
-                          >
-                            <option value="purchase">При покупке</option>
-                            <option value="sent">После отправки товара</option>
-                            <option value="confirmed">После подтверждения сделки</option>
-                          </select>
-                          <div className="lot-settings-image-auto__image">
-                            {row.url ? (
-                              <img
-                                src={automessageImageUrl(row.url)}
-                                alt=""
-                                className="lot-settings-image-auto__preview"
-                              />
-                            ) : null}
-                            <input
-                              type="file"
-                              accept="image/png,image/jpeg,image/gif,image/webp"
-                              className="lot-settings-input"
-                              disabled={imageUploadingRow === index}
-                              onChange={(e) => {
-                                const file = e.target.files && e.target.files[0]
-                                if (file) void handleImageAutomessageUpload(index, file)
-                                e.target.value = ''
-                              }}
-                            />
-                            {imageUploadingRow === index && (
-                              <span className="lot-settings-field__hint">Загрузка…</span>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-image-auto__remove"
-                            onClick={() => removeImageAutomessageRow(index)}
-                          >
-                            Удалить
-                          </button>
-                        </div>
-                      ))}
-                      {imageUploadError && (
-                        <span className="lot-settings-field__hint">{imageUploadError}</span>
-                      )}
-                      <button
-                        type="button"
-                        className="lot-settings-btn lot-settings-btn--secondary"
-                        onClick={addImageAutomessageRow}
-                      >
-                        + Добавить
-                      </button>
                     </div>
                   )}
+                </div>
                 </section>
                 </>
                 )}
                 {settingsTab === 'general' && (
                 <>
-                {showSupercellEmailValidation && (
-                  <section className="lot-settings-block">
-                    <h3 className="lot-settings-block__title">Проверка почты Supercell ID</h3>
-                    <label className="lot-settings-toggle">
-                      <input
-                        type="checkbox"
-                        className="lot-settings-toggle__input"
-                        checked={Boolean(productSettings?.emailValidation?.enabled)}
-                        onChange={(e) => setEmailValidation('enabled', e.target.checked)}
-                      />
-                      <span className="lot-settings-toggle__switch">
-                        <span className="lot-settings-toggle__knob" />
-                      </span>
-                      <span className="lot-settings-toggle__label">
-                        Включить проверку валидности почты
-                      </span>
-                    </label>
-                    {Boolean(productSettings?.emailValidation?.enabled) && (
-                      <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">
-                          Сообщение покупателю при невалидной почте
-                        </span>
-                        <textarea
-                          className="lot-settings-textarea"
-                          value={productSettings?.emailValidation?.invalidEmailMessage ?? ''}
-                          onChange={(e) =>
-                            setEmailValidation('invalidEmailMessage', e.target.value)
-                          }
-                          placeholder="Текст сообщения, которое автоматически отправится в чат, если почта Supercell ID невалидна"
-                          rows={3}
-                        />
-                      </label>
-                    )}
-                  </section>
-                )}
                 <section className="lot-settings-block">
                   <h3 className="lot-settings-block__title">Автоподнятие</h3>
                   <div className="lot-settings-row" style={{ alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: '0.75rem' }}>
@@ -2158,31 +3006,6 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                   )}
                 </section>
                 </>
-                )}
-
-                {codesModalOpen && (
-                  <div className="modal-backdrop" onClick={() => setCodesModalOpen(false)} role="presentation">
-                    <div className="modal" onClick={(e) => e.stopPropagation()}>
-                      <div className="modal__header">
-                        <h3 className="modal__title">Все коды</h3>
-                        <button type="button" className="modal__close" onClick={() => setCodesModalOpen(false)} aria-label="Закрыть">×</button>
-                      </div>
-                      <div className="modal__body">
-                        {(productSettings?.autodelivery?.codes?.length ?? 0) === 0 ? (
-                          <p className="card-text">Кодов пока нет. Добавьте их в поле «Ввести код» выше.</p>
-                        ) : (
-                          <ul className="codes-list">
-                            {productSettings.autodelivery.codes.map((code, index) => (
-                              <li key={`${code}-${index}`} className="codes-list__item">
-                                <span className="codes-list__code">{code}</span>
-                                <button type="button" className="codes-list__delete" onClick={() => removeCode(index)} title="Удалить">Удалить</button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </div>
-                  </div>
                 )}
 
                 <div className="lot-settings-page__actions">

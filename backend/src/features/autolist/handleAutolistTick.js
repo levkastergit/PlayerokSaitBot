@@ -55,6 +55,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     normalizeKeyPart,
     buildProductKey,
     handlePaidChat,
+    claimNextUnusedTableCode,
     requestDealById,
     toUnixTs,
     dealPurchaseUnixTs,
@@ -74,6 +75,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     processActiveTopupFlows,
     processSingleTopupFlow,
     isSupercellModuleEnabled,
+    handleOrderedStageAutomessage,
     handlePostPurchaseAutomessage,
     handleDealConfirmedAutomessage,
     handlePurchaseWindowAutomessage,
@@ -454,11 +456,15 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         createChatMessage,
         sleep,
         supercellModuleEnabled,
+        claimNextUnusedTableCode,
         loadApprouteApiKeyPlain,
         runApprouteAutodelivery,
         updateDealStatus,
         chatMessages: Array.isArray(scopedMessages) ? scopedMessages : [],
         viewerUsername: viewer?.username || null,
+        toUnixTs,
+        sendChatImage,
+        automessageImagesDir,
       })
 
       if (approuteChatPending) {
@@ -483,30 +489,27 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
     const chatAutomessageScans = [
       {
-        handler: handlePostPurchaseAutomessage,
-        markers: [ITEM_SENT_MARKER],
-        buildEventKey: buildPostPurchaseAutomessageEventKey,
-        logLabel: 'post-purchase-automessage',
-      },
-      {
-        handler: handleDealConfirmedAutomessage,
-        markers: DEAL_CONFIRMED_MARKERS,
-        buildEventKey: buildDealConfirmedAutomessageEventKey,
-        logLabel: 'deal-confirmed-automessage',
-      },
-      {
-        handler: handlePurchaseWindowAutomessage,
+        handler: handleOrderedStageAutomessage
+          ? (p) => handleOrderedStageAutomessage(p, 'purchase')
+          : handlePurchaseWindowAutomessage,
         markers: [ITEM_PAID_MARKER],
-        buildEventKey: buildPurchaseWindowAutomessageEventKey,
-        logLabel: 'purchase-window-automessage',
+        logLabel: 'purchase-stage-automessage',
+        skipProcessedPreCheck: true,
       },
       {
-        handler: handleImageAutomessage,
-        // Маркер зависит от настройки cfg.trigger — сканируем по всем трём,
-        // обработчик внутри сверяет нужный.
-        markers: [ITEM_PAID_MARKER, ITEM_SENT_MARKER, ...DEAL_CONFIRMED_MARKERS],
-        buildEventKey: buildImageAutomessageEventKey,
-        logLabel: 'image-automessage',
+        handler: handleOrderedStageAutomessage
+          ? (p) => handleOrderedStageAutomessage(p, 'sent')
+          : handlePostPurchaseAutomessage,
+        markers: [ITEM_SENT_MARKER],
+        logLabel: 'sent-stage-automessage',
+        skipProcessedPreCheck: true,
+      },
+      {
+        handler: handleOrderedStageAutomessage
+          ? (p) => handleOrderedStageAutomessage(p, 'confirmed')
+          : handleDealConfirmedAutomessage,
+        markers: DEAL_CONFIRMED_MARKERS,
+        logLabel: 'confirmed-stage-automessage',
         skipProcessedPreCheck: true,
       },
     ]

@@ -61,7 +61,10 @@ export function AutoDeliveryTab({
   const filteredLots = useMemo(() => {
     return allLots.filter((lot) => {
       const s = resolveSettingsForLot(lot)
-      return Boolean(s?.autodelivery?.enabled)
+      return (
+        Boolean(s?.autodelivery?.enabled) &&
+        Boolean(String(s?.tableBinding?.subtabId ?? '').trim())
+      )
     })
   }, [allLots, settingsByKey])
 

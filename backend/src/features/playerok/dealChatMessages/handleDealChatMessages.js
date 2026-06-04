@@ -169,11 +169,26 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
         ? String(entryPayload.itemId).trim()
         : null
 
+  const handleOrderedStageAutomessageFn = deps.handleOrderedStageAutomessage
   const automessageHandlers = [
-    { fn: handlePostPurchaseAutomessageFn, logLabel: 'post-purchase-automessage' },
-    { fn: handleDealConfirmedAutomessageFn, logLabel: 'deal-confirmed-automessage' },
-    { fn: handlePurchaseWindowAutomessageFn, logLabel: 'purchase-window-automessage' },
-    { fn: handleImageAutomessageFn, logLabel: 'image-automessage' },
+    {
+      fn: handleOrderedStageAutomessageFn
+        ? (p) => handleOrderedStageAutomessageFn(p, 'purchase')
+        : handlePurchaseWindowAutomessageFn,
+      logLabel: 'purchase-stage-automessage',
+    },
+    {
+      fn: handleOrderedStageAutomessageFn
+        ? (p) => handleOrderedStageAutomessageFn(p, 'sent')
+        : handlePostPurchaseAutomessageFn,
+      logLabel: 'sent-stage-automessage',
+    },
+    {
+      fn: handleOrderedStageAutomessageFn
+        ? (p) => handleOrderedStageAutomessageFn(p, 'confirmed')
+        : handleDealConfirmedAutomessageFn,
+      logLabel: 'confirmed-stage-automessage',
+    },
   ]
 
   const automationEvents = []

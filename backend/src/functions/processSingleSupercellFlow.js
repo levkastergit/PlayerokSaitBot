@@ -110,11 +110,14 @@ function createProcessSingleSupercellFlow({
           messages,
         }) || dealId
 
+      const requestCodeMessageTemplate = String(state.requestCodeMessage || '').trim() || null
+
       const alreadyRequested = hasSupercellCodeRequestedMessage(
         messages,
         viewerUsername || null,
         game.gameName,
-        effectiveDealId
+        effectiveDealId,
+        requestCodeMessageTemplate
       )
 
       if (alreadyRequested) {
@@ -186,6 +189,7 @@ function createProcessSingleSupercellFlow({
         chatId,
         email: effectiveEmail,
         category,
+        requestCodeMessageTemplate,
       })
 
       flowMap[String(chatId)] = {

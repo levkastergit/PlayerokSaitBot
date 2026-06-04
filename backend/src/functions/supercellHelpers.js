@@ -1,6 +1,6 @@
 'use strict'
 
-const SUPERCELL_CODE_MESSAGE_TEMPLATE =
+const DEFAULT_SUPERCELL_CODE_MESSAGE_TEMPLATE =
   'Запросил код на вашу почту для $game_name, скиньте его пожалуйста сюда в чат, как придет'
 
 const SUPERCELL_EMAIL_CANDIDATE_REGEX =
@@ -110,8 +110,18 @@ function pickSupercellCategoryFromDeal(fullDeal) {
   return dealCat || ''
 }
 
-function formatSupercellCodeRequestedMessage(gameName) {
-  return SUPERCELL_CODE_MESSAGE_TEMPLATE.replace('$game_name', gameName || 'игры')
+function getSupercellCodeMessageTemplate(settings) {
+  const raw = settings?.supercellAutoRequestCode?.requestCodeMessage
+  const trimmed = typeof raw === 'string' ? raw.trim() : ''
+  return trimmed || DEFAULT_SUPERCELL_CODE_MESSAGE_TEMPLATE
+}
+
+function formatSupercellCodeRequestedMessage(gameName, template) {
+  const tpl =
+    typeof template === 'string' && template.trim()
+      ? template.trim()
+      : DEFAULT_SUPERCELL_CODE_MESSAGE_TEMPLATE
+  return tpl.replace(/\$game_name/g, gameName || 'игры')
 }
 
 function normalizeComparableUsername(value) {
@@ -483,8 +493,16 @@ function scopeMessagesToDeal(messages, dealId) {
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const m = sorted[i]
     if (!String(m?.text || '').includes(ITEM_PAID_MARKER)) continue
-    const mid = messageDealId(m)
-    if (!mid || mid === wantDeal) {
+    if (messageDealId(m) === wantDeal) {
+      paidAnchorIndex = i
+      break
+    }
+  }
+  if (paidAnchorIndex < 0) {
+    for (let i = sorted.length - 1; i >= 0; i -= 1) {
+      const m = sorted[i]
+      if (!String(m?.text || '').includes(ITEM_PAID_MARKER)) continue
+      if (messageDealId(m)) continue
       paidAnchorIndex = i
       break
     }
@@ -553,8 +571,25 @@ function pickLatestDealIdFromMessages(messages) {
   return null
 }
 
+function dealIdAppearsInMessages(messages, dealId) {
+  const want = dealId != null ? String(dealId).trim() : ''
+  if (!want) return false
+  const list = Array.isArray(messages) ? messages : []
+  for (const m of list) {
+    if (messageDealId(m) === want) return true
+  }
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const m = list[i]
+    if (messageDealId(m) !== want) continue
+    if (String(m?.text || '').includes(ITEM_PAID_MARKER)) return true
+  }
+  return false
+}
+
 /**
- * dealId из списка чатов может указывать на старую сделку; в истории сообщений — на актуальную.
+ * dealId из списка чатов может указывать на старую сделку без следов в истории —
+ * тогда берём самую свежую из сообщений. Если по запрошенной сделке есть история,
+ * не подменять на другую (несколько покупок в одном чате).
  */
 function resolveEffectiveDealIdForChat({ dealIdFromRequest, messages }) {
   const requested = dealIdFromRequest != null ? String(dealIdFromRequest).trim() : ''
@@ -562,11 +597,18 @@ function resolveEffectiveDealIdForChat({ dealIdFromRequest, messages }) {
   if (!requested) return fromMessages || null
   if (!fromMessages) return requested
   if (requested === fromMessages) return requested
+  if (dealIdAppearsInMessages(messages, requested)) return requested
   return fromMessages
 }
 
-function hasSupercellCodeRequestedMessage(messages, viewerUsername, gameName, dealId = null) {
-  const expectedText = formatSupercellCodeRequestedMessage(gameName)
+function hasSupercellCodeRequestedMessage(
+  messages,
+  viewerUsername,
+  gameName,
+  dealId = null,
+  messageTemplate = null
+) {
+  const expectedText = formatSupercellCodeRequestedMessage(gameName, messageTemplate)
   const normalizedViewer = normalizeComparableUsername(viewerUsername)
   const list = scopeMessagesToDeal(messages, dealId)
   return list.some((msg) => {
@@ -578,7 +620,17 @@ function hasSupercellCodeRequestedMessage(messages, viewerUsername, gameName, de
   })
 }
 
+function isSupercellAutoRequestCodeEnabled(settings) {
+  if (!settings || typeof settings !== 'object') return true
+  const cfg = settings.supercellAutoRequestCode
+  if (!cfg || typeof cfg !== 'object') return true
+  return Boolean(cfg.enabled)
+}
+
 module.exports = {
+  DEFAULT_SUPERCELL_CODE_MESSAGE_TEMPLATE,
+  isSupercellAutoRequestCodeEnabled,
+  getSupercellCodeMessageTemplate,
   getSupercellGameByCategory,
   formatSupercellCodeRequestedMessage,
   extractSupercellEmailFromFields,
@@ -594,6 +646,7 @@ module.exports = {
   pickSupercellCategoryFromItemHints,
   pickSupercellCategoryFromDeal,
   pickLatestDealIdFromMessages,
+  dealIdAppearsInMessages,
   resolveEffectiveDealIdForChat,
   scopeMessagesToDeal,
   messageDealId,

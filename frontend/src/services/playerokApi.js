@@ -49,6 +49,8 @@ const BACKEND_CHAT_DB_MESSAGES_URL = `${BACKEND_ORIGIN}/api/chat-db/messages`
 const BACKEND_CHAT_DB_MARK_READ_URL = `${BACKEND_ORIGIN}/api/chat-db/mark-read`
 const BACKEND_CHAT_DB_SEND_URL = `${BACKEND_ORIGIN}/api/chat-db/send`
 const BACKEND_CHAT_DB_TEST_PURCHASE_URL = `${BACKEND_ORIGIN}/api/chat-db/test-purchase`
+const BACKEND_CHAT_DB_TEST_PURCHASE_MESSAGE_URL = `${BACKEND_ORIGIN}/api/chat-db/test-purchase-message`
+const BACKEND_CHAT_DB_TEST_PURCHASE_EVENT_URL = `${BACKEND_ORIGIN}/api/chat-db/test-purchase-event`
 const BACKEND_CHAT_DB_FULL_SCAN_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan`
 const BACKEND_CHAT_DB_FULL_SCAN_RESET_URL = `${BACKEND_ORIGIN}/api/chat-db/full-scan-reset`
 const BACKEND_CHAT_DB_RECHECK_CHAT_URL = `${BACKEND_ORIGIN}/api/chat-db/recheck-chat`
@@ -563,7 +565,7 @@ export async function sendChatDbMessage(token, { dealId, chatId, text, clientMes
 }
 
 /** Тест-покупка: прогон реальной логики выдачи без сайд-эффектов, возвращает транскрипт. */
-export async function testChatPurchase(token, { productKey }) {
+export async function testChatPurchase(token, { productKey, sessionId }) {
   const response = await trackedFetch(BACKEND_CHAT_DB_TEST_PURCHASE_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
@@ -571,10 +573,47 @@ export async function testChatPurchase(token, { productKey }) {
     body: JSON.stringify({
       ...(token ? { token } : {}),
       productKey,
+      ...(sessionId ? { sessionId } : {}),
     }),
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `Ошибка тест-покупки: ${response.status}`)
+  return data
+}
+
+/** Интерактивная тест-покупка: сообщение продавца или покупателя (флоу продвигается при ответе покупателя). */
+export async function sendTestPurchaseMessage(token, { sessionId, text, asRole = 'buyer' }) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_TEST_PURCHASE_MESSAGE_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      sessionId,
+      text,
+      asRole: asRole === 'seller' ? 'seller' : 'buyer',
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка отправки: ${response.status}`)
+  return data
+}
+
+/** Тест-покупка: системное событие «Товар отправлен» или «Сделка подтверждена» + автоматика. */
+export async function sendTestPurchaseEvent(token, { sessionId, event, dealId }) {
+  const response = await trackedFetch(BACKEND_CHAT_DB_TEST_PURCHASE_EVENT_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(token ? { token } : {}),
+      sessionId,
+      event,
+      ...(dealId ? { dealId } : {}),
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `Ошибка события теста: ${response.status}`)
   return data
 }
 

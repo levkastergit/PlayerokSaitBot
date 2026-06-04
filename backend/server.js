@@ -339,6 +339,7 @@ const {
   deleteCodeById,
   deleteCodesByCategory,
   getCodeById,
+  claimNextUnusedCode,
 } = setupTableCodesRepo(db)
 const {
   getColumnsBySubtab,
@@ -407,6 +408,7 @@ const {
 const { scanCompletedAndRelist } = require('./src/features/autolist/scanCompletedAndRelist')
 const { handlePaidChat } = require('./src/features/autolist/handlePaidChat')
 const {
+  handleOrderedStageAutomessage,
   handlePostPurchaseAutomessage,
   handleDealConfirmedAutomessage,
   handlePurchaseWindowAutomessage,
@@ -923,6 +925,7 @@ const server = http.createServer(async (req, res) => {
         computeProfitAnalyticsList,
         usdRateService,
         resolveEffectiveProductSettings,
+        automessageImagesDir,
       },
     })
     if (handled) return
@@ -1033,6 +1036,7 @@ const server = http.createServer(async (req, res) => {
         normalizeKeyPart,
         buildProductKey,
         handlePaidChat,
+        claimNextUnusedTableCode: claimNextUnusedCode,
         loadApprouteApiKeyPlain,
         runApprouteAutodelivery,
         requestDealById,
@@ -1055,6 +1059,7 @@ const server = http.createServer(async (req, res) => {
         processActiveTopupFlows,
         processSingleTopupFlow,
         isSupercellModuleEnabled,
+        handleOrderedStageAutomessage,
         handlePostPurchaseAutomessage,
         handleDealConfirmedAutomessage,
         handlePurchaseWindowAutomessage,

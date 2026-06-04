@@ -1,5 +1,10 @@
 const { isAutolistRetryableMessage } = require('./autolistErrorClassify')
-const { logSupercellDebug, scopeMessagesToDeal } = require('../../functions/supercellHelpers')
+const {
+  logSupercellDebug,
+  scopeMessagesToDeal,
+  isSupercellAutoRequestCodeEnabled,
+  getSupercellCodeMessageTemplate,
+} = require('../../functions/supercellHelpers')
 const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
 const { toUnixTs } = require('../../functions/toUnixTs')
 const { shouldSkipApprouteAutodelivery } = require('../approute/approuteAutodeliveryGuards')
@@ -11,15 +16,13 @@ const {
 } = require('../../functions/approuteDealKeys')
 const {
   buildPaidChatAutomessageEventKey,
-  tryBeginChatAutomessageSend,
-  finishChatAutomessageSend,
   tryBeginApprouteChatSend,
   finishApprouteChatSend,
   autolistWasAutomessageSent: autolistWasAutomessageSentDefault,
   autolistMarkAutomessageSent: autolistMarkAutomessageSentDefault,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
-const { hasSellerMessageText } = require('./handleChatAutomessage')
+const { handleOrderedStageAutomessage } = require('./handleChatAutomessage')
 
 async function handlePaidChat({
   currentUserId,
@@ -70,6 +73,10 @@ async function handlePaidChat({
   // autolistState; в тест-песочнице подменяются на no-op, чтобы не писать в БД.
   autolistWasAutomessageSent = autolistWasAutomessageSentDefault,
   autolistMarkAutomessageSent = autolistMarkAutomessageSentDefault,
+  toUnixTs,
+  sendChatImage,
+  automessageImagesDir,
+  claimNextUnusedTableCode,
 }) {
   // 2.2 Фиксируем продажу и выполняем автосообщения/автовыдачу для этого товара
   let item = null
@@ -399,7 +406,12 @@ async function handlePaidChat({
     ''
   const supercellGame = getSupercellGameByCategory(effectiveCategory)
 
-  if (supercellModuleEnabled && supercellGame && lastChat?.id) {
+  if (
+    supercellModuleEnabled &&
+    supercellGame &&
+    lastChat?.id &&
+    isSupercellAutoRequestCodeEnabled(effectiveSettings)
+  ) {
     const flowMap = autolistGetSupercellFlowMap(tokenHash)
     const flowChatId = String(lastChat.id)
 
@@ -410,6 +422,8 @@ async function handlePaidChat({
 
     const invalidEmailMessage =
       validation.enabled && typeof validation.invalidEmailMessage === 'string' ? validation.invalidEmailMessage.trim() : ''
+
+    const requestCodeMessage = getSupercellCodeMessageTemplate(effectiveSettings)
 
     logSupercellDebug('paidChat:flowActivated', {
       chatId: flowChatId,
@@ -451,6 +465,7 @@ async function handlePaidChat({
       productKey,
       category: effectiveCategory,
       invalidEmailMessage,
+      requestCodeMessage,
       invalidMessageSent: isNewDealInChat ? false : Boolean(prevFlow.invalidMessageSent),
       requestCodeRequested: isNewDealInChat ? false : Boolean(prevFlow.requestCodeRequested),
       latestEmail: emailFromNewDeal || (isNewDealInChat ? null : prevFlow.latestEmail || null),
@@ -474,7 +489,13 @@ async function handlePaidChat({
       dealId: dealId || null,
       userId: currentUserId,
       productKey,
-      cfg: effectiveSettings.autotopupApi,
+      cfg: {
+        ...effectiveSettings.autotopupApi,
+        autoCompleteDeal: Boolean(
+          effectiveSettings.autotopupApi?.autoCompleteDeal ||
+            effectiveSettings.autodelivery?.autoCompleteDeal
+        ),
+      },
       stage: isNewDeal ? 'await_id' : prev.stage || 'await_id',
       askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
       confirmMsgTs: isNewDeal ? 0 : Number(prev.confirmMsgTs || 0),
@@ -509,17 +530,16 @@ async function handlePaidChat({
     return
   }
 
-  // Автосообщение
-  const am = s.automessage
-  if (am?.enabled && lastChat?.id) {
+  // Автосообщения этапа «покупка» — порядок из autoPlacementOrder (текст / время / картинки)
+  if (lastChat?.id && typeof handleOrderedStageAutomessage === 'function') {
     const chatIdStr = String(lastChat.id)
-    const automessageEventKey = buildPaidChatAutomessageEventKey(chatIdStr, dealId)
     const dealTsForAutomessage =
       (Number(dealTs) > 0 ? Number(dealTs) : 0) || dealPurchaseUnixTs(fullDealSnapshot, toUnixTs) || 0
     const isAutomessageDealExpired =
       dealTsForAutomessage > 0 && nowTs - dealTsForAutomessage > PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC
 
     if (isAutomessageDealExpired) {
+      const automessageEventKey = buildPaidChatAutomessageEventKey(chatIdStr, dealId)
       if (automessageEventKey && typeof autolistMarkProcessed === 'function') {
         autolistMarkProcessed(tokenHash, automessageEventKey, nowTs)
       }
@@ -529,82 +549,49 @@ async function handlePaidChat({
         dealAgeSec: nowTs - dealTsForAutomessage,
         maxAgeSec: PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
       })
-    } else if (
-      automessageEventKey &&
-      typeof tryBeginChatAutomessageSend === 'function' &&
-      typeof finishChatAutomessageSend === 'function' &&
-      tryBeginChatAutomessageSend(tokenHash, automessageEventKey)
-    ) {
-      let automessageSuccess = false
+    } else {
       try {
-        const raw = am.messages
-        const textsToSend = Array.isArray(raw)
-          ? raw.map((m) => String(m).trim()).filter(Boolean)
-          : typeof raw === 'string' && raw.trim()
-            ? raw.split('\n').map((line) => line.trim()).filter(Boolean)
-            : []
-
-        // Персистентный дедуп (журнал в БД): не отправляем лот-автосообщение повторно
-        // по этой сделке — переживает перезапуск и устаревание загруженных сообщений.
-        const lotAutoAlreadySent = autolistWasAutomessageSent(currentUserId, chatIdStr, dealId, 'lot_automessage')
-
-        // Дубль ищем ТОЛЬКО в рамках текущей сделки (повторные покупки в одном чате):
-        // иначе автосообщение из прошлой сделки покупателя ошибочно считается уже
-        // отправленным, и для новой сделки оно не уходит.
-        const history = scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId)
-        const allAlreadyInChat =
-          textsToSend.length > 0 &&
-          history.length > 0 &&
-          textsToSend.every((line) => hasSellerMessageText(history, line, viewerUsername))
-
-        if (lotAutoAlreadySent || allAlreadyInChat) {
-          automessageSuccess = true
-        } else if (textsToSend.length > 0) {
-          let sentCount = 0
-          let failedIndex = -1
-
-          for (let i = 0; i < textsToSend.length; i++) {
-            if (history.length > 0 && hasSellerMessageText(history, textsToSend[i], viewerUsername)) {
-              sentCount += 1
-              continue
-            }
-            try {
-              await withRetry(
-                () => createChatMessage(token, userAgent, chatIdStr, textsToSend[i]),
-                { label: 'createChatMessage(automessage)', retries: 3, shouldRetry: isPlayerokRateLimitError }
-              )
-              sentCount += 1
-              if (i < textsToSend.length - 1) {
-                await sleep(900)
-              }
-            } catch (err) {
-              failedIndex = i
-              warnAutolistTick('automessage не отправлено', {
-                reason: 'automessage_send_failed',
-                chatId: chatIdStr,
-                dealId: dealId || null,
-                index: i,
-                error: err?.message || String(err),
-              })
-              break
-            }
-          }
-
-          automessageSuccess = sentCount === textsToSend.length && failedIndex < 0
-        }
-      } finally {
-        if (automessageSuccess) {
-          autolistMarkAutomessageSent(currentUserId, chatIdStr, dealId, 'lot_automessage', nowTs)
-        }
-        finishChatAutomessageSend(tokenHash, automessageEventKey, {
-          success: automessageSuccess,
-          nowTs,
+        await handleOrderedStageAutomessage(
+          {
+            currentUserId,
+            tokenHash,
+            token,
+            userAgent,
+            nowTs,
+            chatId: chatIdStr,
+            dealId,
+            dealItemId,
+            messages: scopeMessagesToDeal(Array.isArray(chatMessages) ? chatMessages : [], dealId),
+            itemTitle: rawTitle,
+            itemCategory: rawGame || itemCategoryName,
+            viewerUsername,
+            withRetry,
+            isPlayerokRateLimitError,
+            requestDealById,
+            requestItemById,
+            resolveEffectiveProductSettings,
+            createChatMessage,
+            normalizeKeyPart,
+            buildProductKey,
+            toUnixTs,
+            sendChatImage,
+            automessageImagesDir,
+          },
+          'purchase',
+          { skipMarkerCheck: true }
+        )
+      } catch (err) {
+        warnAutolistTick('paid_chat: ordered purchase automessage failed', {
+          chatId: chatIdStr,
+          dealId: dealId || null,
+          error: err?.message || String(err),
         })
       }
     }
   }
 
-  // Автовыдача
+  // Автовыдача: код из привязанной таблицы; автозавершение — только если код ушёл в чат
+  let autodeliveryCodeSent = false
   if (s.autodelivery?.enabled && lastChat?.id) {
     const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
 
@@ -619,24 +606,80 @@ async function handlePaidChat({
       }
     }
 
-    if (Array.isArray(s.autodelivery.codes) && s.autodelivery.codes.length > 0) {
-      const codeToSend = String(s.autodelivery.codes[0]).trim()
-      if (codeToSend) {
+    const subtabIdRaw = s.tableBinding?.subtabId
+    const subtabId = subtabIdRaw != null ? String(subtabIdRaw).trim() : ''
+    if (!subtabId) {
+      warnAutolistTick('автодоставка: нет привязки к таблице', {
+        productKey: String(effectiveKey || ''),
+        dealId: dealId || null,
+      })
+    } else if (typeof claimNextUnusedTableCode !== 'function') {
+      warnAutolistTick('автодоставка: claimNextUnusedTableCode не подключён', {
+        productKey: String(effectiveKey || ''),
+        dealId: dealId || null,
+      })
+    } else {
+      const category = `subtab:${subtabId}`
+      const claimed = claimNextUnusedTableCode(currentUserId, category, {
+        dealId: dealId || null,
+        itemId: dealItemId || null,
+        chatId: String(lastChat.id),
+        nowTs,
+      })
+      const codeToSend = claimed?.code ? String(claimed.code).trim() : ''
+      if (!codeToSend) {
+        warnAutolistTick('автодоставка: нет свободных кодов в таблице', {
+          productKey: String(effectiveKey || ''),
+          dealId: dealId || null,
+          subtabId,
+        })
+      } else {
         try {
           await withRetry(
             () => createChatMessage(token, userAgent, lastChat.id, codeToSend),
-            { label: 'createChatMessage(code)', retries: 3, shouldRetry: isPlayerokRateLimitError }
+            { label: 'createChatMessage(tableCode)', retries: 3, shouldRetry: isPlayerokRateLimitError }
           )
-
-          const newCodes = s.autodelivery.codes.slice(1)
-          const updated = {
-            ...s,
-            autodelivery: { ...s.autodelivery, codes: newCodes },
-          }
-          const updatedAt = Math.floor(Date.now() / 1000)
-          upsertSettings.run(currentUserId, effectiveKey, JSON.stringify(updated), updatedAt)
+          autodeliveryCodeSent = true
+          logAutolistTick('автодоставка: код из таблицы отправлен', {
+            productKey: String(effectiveKey || ''),
+            dealId: dealId || null,
+            codeId: claimed.id,
+            subtabId,
+          })
         } catch (err) {
-          warnAutolistTick('автодоставка отправка кода не удалась', { productKey: effectiveKey, error: err?.message })
+          warnAutolistTick('автодоставка отправка кода не удалась', {
+            productKey: effectiveKey,
+            error: err?.message,
+            codeId: claimed.id,
+          })
+        }
+      }
+    }
+
+    if (
+      autodeliveryCodeSent &&
+      s.autodelivery?.autoCompleteDeal &&
+      dealId &&
+      typeof updateDealStatus === 'function'
+    ) {
+      const statusNorm = String(dealStatus || fullDealSnapshot?.status || '')
+        .trim()
+        .toUpperCase()
+      if (statusNorm !== 'SENT' && statusNorm !== 'CONFIRMED') {
+        try {
+          await withRetry(
+            () => updateDealStatus(token, userAgent, dealId, 'SENT'),
+            {
+              label: 'updateDealStatus(autodelivery autoComplete)',
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            }
+          )
+        } catch (err) {
+          warnAutolistTick('автозавершение после автовыдачи не удалось', {
+            dealId: dealId || null,
+            error: err?.message || String(err),
+          })
         }
       }
     }
