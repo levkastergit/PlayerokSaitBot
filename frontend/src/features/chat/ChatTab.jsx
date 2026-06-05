@@ -65,6 +65,354 @@ function buildTestDealsFromMessages(messages) {
   return [...byId.values()]
 }
 
+// ----------------------------------------------------------------------------
+// «Логика работы» товара: показываем в чате РЕАЛЬНУЮ автоматику, которую бот
+// выполнит по купленному товару. Источник истины — рантайм бэкенда
+// (handlePaidChat.js / handleChatAutomessage.js), а не наивная копия формы /lot/.
+// Поэтому здесь воспроизводятся ключевые правила:
+//  - сгруппированный товар = слияние групповой записи и индивидуальной (mergeProductSettings);
+//  - порядок autoPlacementOrder соблюдается ТОЛЬКО для текст/время/картинка (t/w/i),
+//    а доставка (таблица → API → Supercell → пополнение) идёт фиксированным порядком;
+//  - autoCompleteDeal логически OR-ится с autodelivery.autoCompleteDeal;
+//  - активность шага считается по фактическим условиям рантайма (непустой текст,
+//    наличие привязки/сервиса, временное окно, Supercell-категория).
+// ----------------------------------------------------------------------------
+
+// Дефолты сообщений автопополнения — те же, что подставляет бэкенд при пустых полях.
+const TOPUP_DEFAULT_MESSAGES = {
+  askIdMessage: 'Для пополнения напишите ваш игровой ID/логин.',
+  confirmTemplate: 'Подтвердите: ваш ID/логин — {id}. Всё верно? Напишите «да» или «нет».',
+  invalidIdMessage: 'ID/логин не прошёл проверку. Пришлите, пожалуйста, корректный ID/логин.',
+  successMessage: 'Готово! Пополнение выполнено. Спасибо за покупку.',
+}
+const SUPERCELL_CODE_DEFAULT_MESSAGE =
+  'Запросил код на вашу почту для $game_name, скиньте его пожалуйста сюда в чат, как придет'
+
+// Каноническое имя игры Supercell — как его подставляет бэкенд
+// (getSupercellGameByCategory → gameName). Нужно, чтобы превью «Запрос кода»
+// показывало ровно тот текст, что реально отправит бот, даже если категория
+// записана по-русски/в нижнем регистре ('бравл старс' → 'Brawl Stars').
+const SUPERCELL_GAME_NAME_PATTERNS = [
+  { re: /brawl\s*stars|brawlstars|бравл\s*стар/i, label: 'Brawl Stars' },
+  { re: /clash\s*royale|clashroyale|клеш\s*роял|клеш\s*рояль/i, label: 'Clash Royale' },
+  { re: /clash\s*of\s*clans|clashofclans|\bcoc\b|клеш\s*оф\s*клан|клеш\s*кланс|клеш\s*кленс/i, label: 'Clash of Clans' },
+]
+function canonicalSupercellGameName(category) {
+  const raw = String(category || '').trim()
+  if (!raw) return ''
+  for (const p of SUPERCELL_GAME_NAME_PATTERNS) {
+    if (p.re.test(raw)) return p.label
+  }
+  return raw
+}
+
+/** Слияние autodeliveryApi/autotopupApi (item поверх group) — копия mergeProductSettings бэкенда. */
+function mergeWorkApiBlock(itemApi, groupApi) {
+  const item = itemApi && typeof itemApi === 'object' ? itemApi : null
+  const group = groupApi && typeof groupApi === 'object' ? groupApi : null
+  if (!item && !group) return null
+  const merged = { ...(group || {}), ...(item || {}) }
+  merged.enabled = Boolean(item?.enabled || group?.enabled)
+  return merged
+}
+
+/**
+ * Эффективные настройки товара = слияние групповой записи (база) и индивидуальной
+ * (поверх — settingsLabel/groupName/autobump/autodeliveryApi/autotopupApi).
+ * Точная копия backend mergeProductSettings, чтобы панель показывала ровно то,
+ * что исполнит бот.
+ */
+function mergeWorkSettings(groupSettings, itemSettings) {
+  if (!groupSettings && !itemSettings) return null
+  if (!groupSettings) return itemSettings
+  if (!itemSettings) return groupSettings
+  const merged = {
+    ...groupSettings,
+    settingsLabel:
+      typeof itemSettings.settingsLabel === 'string' && itemSettings.settingsLabel.trim()
+        ? itemSettings.settingsLabel.trim()
+        : groupSettings.settingsLabel,
+    groupName:
+      typeof itemSettings.groupName === 'string' && itemSettings.groupName.trim()
+        ? itemSettings.groupName
+        : groupSettings.groupName,
+  }
+  if (itemSettings.autobump && typeof itemSettings.autobump === 'object') {
+    merged.autobump = itemSettings.autobump
+  }
+  const api = mergeWorkApiBlock(itemSettings.autodeliveryApi, groupSettings.autodeliveryApi)
+  if (api) merged.autodeliveryApi = api
+  const topupApi = mergeWorkApiBlock(itemSettings.autotopupApi, groupSettings.autotopupApi)
+  if (topupApi) merged.autotopupApi = topupApi
+  return merged
+}
+
+function workStageTextMessages(stage, s) {
+  const field =
+    stage === 'purchase' ? 'automessage' : stage === 'sent' ? 'postPurchaseAutomessage' : 'dealConfirmedAutomessage'
+  const arr = s?.[field]?.messages
+  return Array.isArray(arr) ? arr : []
+}
+
+function workImageEntriesForStage(items, stage) {
+  return (Array.isArray(items) ? items : [])
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => (row?.trigger ?? 'purchase') === stage)
+}
+
+/**
+ * Порядок плиток текст/время/картинка для стадии, как его исполняет бэкенд
+ * (resolveOrderedStageSteps): сохранённый autoPlacementOrder для существующих
+ * t/w/i-ключей, затем недостающие в каноничном порядке.
+ */
+function workOrderedTwiKeys(stage, s) {
+  const built = []
+  workStageTextMessages(stage, s).forEach((_, i) => built.push(`t:${i}`))
+  if (stage === 'purchase' && s?.purchaseWindowAutomessage?.enabled) built.push('w')
+  workImageEntriesForStage(s?.imageAutomessage?.items, stage).forEach(({ index }) => built.push(`i:${index}`))
+  const builtSet = new Set(built)
+  const isTwi = (k) =>
+    typeof k === 'string' && (k.startsWith('t:') || (k === 'w' && stage === 'purchase') || k.startsWith('i:'))
+  const storedRaw = Array.isArray(s?.autoPlacementOrder?.[stage]) ? s.autoPlacementOrder[stage] : []
+  const stored = storedRaw.filter((k) => isTwi(k) && builtSet.has(k))
+  // Дедуп так же, как backend resolveOrderedStageSteps (dedupePlacementOrder),
+  // иначе дублированный ключ в сохранённом порядке отрисовал бы шаг дважды.
+  const seen = new Set()
+  const merged = []
+  for (const k of stored) {
+    if (!seen.has(k)) {
+      merged.push(k)
+      seen.add(k)
+    }
+  }
+  for (const k of built) {
+    if (!seen.has(k)) {
+      merged.push(k)
+      seen.add(k)
+    }
+  }
+  return merged
+}
+
+/** Шаги текст/время/картинка для стадии (с учётом фактической активности). */
+function buildTwiSteps(stage, s, imageUrlBuilder) {
+  const steps = []
+  const texts = workStageTextMessages(stage, s)
+  const items = Array.isArray(s?.imageAutomessage?.items) ? s.imageAutomessage.items : []
+  const textCfg =
+    stage === 'purchase' ? s?.automessage : stage === 'sent' ? s?.postPurchaseAutomessage : s?.dealConfirmedAutomessage
+  const textEnabled = Boolean(textCfg?.enabled)
+  const imgEnabled = Boolean(s?.imageAutomessage?.enabled)
+  for (const key of workOrderedTwiKeys(stage, s)) {
+    if (key.startsWith('t:')) {
+      const idx = parseInt(key.slice(2), 10)
+      const text = texts[idx] != null ? String(texts[idx]) : ''
+      if (!text.trim()) continue
+      steps.push({
+        kind: 'text',
+        label: 'Текст',
+        text: text.trim(),
+        active: textEnabled,
+        inactiveReason: textEnabled ? '' : 'блок текстовых автосообщений выключен',
+      })
+    } else if (key === 'w') {
+      const cfg = s?.purchaseWindowAutomessage || {}
+      const text = String(cfg.message || '').trim()
+      if (!text) continue
+      const start = String(cfg.start || '').trim()
+      const end = String(cfg.end || '').trim()
+      // Бэкенд (isWithinPurchaseWindow) парсит границы как «ЧЧ:ММ» и при пустых/
+      // некорректных границах НЕ отправляет — повторяем эту проверку, а не
+      // подставляем фиктивное окно 00:00–23:59.
+      const hm = /^\d{1,2}:\d{2}$/
+      const boundsOk = hm.test(start) && hm.test(end) && start !== end
+      const enabled = Boolean(cfg.enabled)
+      let inactiveReason = ''
+      if (!enabled) inactiveReason = 'блок «Время» выключен'
+      else if (!boundsOk) inactiveReason = 'окно времени задано некорректно — сообщение не будет отправлено'
+      steps.push({
+        kind: 'time',
+        label: 'Время',
+        text,
+        active: enabled && boundsOk,
+        inactiveReason,
+        note: boundsOk
+          ? `Отправится, только если оплата пришла в окно ${start}–${end} (МСК)`
+          : 'Окно времени не задано — сообщение не будет отправлено',
+      })
+    } else if (key.startsWith('i:')) {
+      const idx = parseInt(key.slice(2), 10)
+      const row = items[idx]
+      const imageId = row && String(row.imageId || '').trim()
+      const ext = row && String(row.ext || '').trim()
+      if (!imageId || !ext) continue
+      steps.push({
+        kind: 'image',
+        label: 'Картинка',
+        imageUrl: row.url ? imageUrlBuilder(row.url) : '',
+        filename: String(row.filename || ''),
+        active: imgEnabled,
+        inactiveReason: imgEnabled ? '' : 'блок картинок выключен',
+      })
+    }
+  }
+  return steps
+}
+
+/**
+ * Главная функция: эффективные настройки → упорядоченный по стадиям список шагов,
+ * отражающий реальное поведение бота. ctx = { supercellCategoryMatch, supercellModuleEnabled, supercellGameName }.
+ */
+function buildWorkLogic(s, ctx, imageUrlBuilder) {
+  if (!s) return { resolved: false, stages: [] }
+
+  // ----- СТАДИЯ «Покупка» -----
+  const purchaseSteps = buildTwiSteps('purchase', s, imageUrlBuilder)
+
+  const ad = s.autodelivery || {}
+  if (ad.enabled) {
+    const subtabName = String(s.tableBinding?.subtabName || s.tableBinding?.subtabId || '').trim()
+    const hasBinding = Boolean(String(s.tableBinding?.subtabId || '').trim())
+    const sub = []
+    const msgOnPurchase = String(ad.messageOnPurchase || '').trim()
+    if (msgOnPurchase) sub.push({ label: 'Сообщение при покупке', text: msgOnPurchase })
+    sub.push({
+      label: 'Код из таблицы',
+      text: hasBinding
+        ? `Следующий свободный код из «${subtabName}»`
+        : 'нет привязки к таблице — код не будет отправлен',
+    })
+    purchaseSteps.push({
+      kind: 'autodelivery',
+      label: 'Автовыдача (таблица)',
+      active: hasBinding,
+      inactiveReason: hasBinding ? '' : 'не выбрана таблица с кодами',
+      substeps: sub,
+      autoComplete: Boolean(ad.autoCompleteDeal),
+    })
+  }
+
+  const api = s.autodeliveryApi || {}
+  if (api.enabled) {
+    const sub = []
+    const msgOnPurchase = String(api.messageOnPurchase || '').trim()
+    if (msgOnPurchase) sub.push({ label: 'Сообщение при покупке', text: msgOnPurchase })
+    const tmpl = String(api.deliveryMessage || '').trim() || '{delivery}'
+    sub.push({ label: 'Выдача', text: tmpl })
+    const svc = [String(api.serviceName || '').trim(), String(api.variantName || '').trim()]
+      .filter(Boolean)
+      .join(' · ')
+    // Бэкенд (runApprouteAutodelivery) пропускает выдачу без serviceId, а если
+    // variantRequired — то и без variantId. Повторяем это условие активности.
+    const apiHasService = Boolean(String(api.serviceId ?? '').trim())
+    const apiVariantOk = !(api.variantRequired && !String(api.variantId ?? '').trim())
+    const apiActive = apiHasService && apiVariantOk
+    let apiInactiveReason = ''
+    if (!apiHasService) apiInactiveReason = 'не выбран сервис AppRoute — выдача не сработает'
+    else if (!apiVariantOk) apiInactiveReason = 'не выбран вариант/номинал AppRoute — выдача не сработает'
+    purchaseSteps.push({
+      kind: 'autodeliveryApi',
+      label: 'Автовыдача Api (AppRoute)',
+      active: apiActive,
+      inactiveReason: apiInactiveReason,
+      detail: svc || null,
+      substeps: sub,
+      autoComplete: Boolean(api.autoCompleteDeal || ad.autoCompleteDeal),
+    })
+  }
+
+  const sc = s.supercellAutoRequestCode || {}
+  if (sc.enabled) {
+    const categoryOk = Boolean(ctx?.supercellCategoryMatch)
+    const moduleOk = Boolean(ctx?.supercellModuleEnabled)
+    const active = categoryOk && moduleOk
+    const sub = []
+    const ev = s.emailValidation || {}
+    if (ev.enabled) {
+      const invalidMsg = String(ev.invalidEmailMessage || '').trim()
+      sub.push({ label: 'Проверка почты', text: invalidMsg || '(сообщение о неверной почте не задано)' })
+    }
+    const reqMsg = (String(sc.requestCodeMessage || '').trim() || SUPERCELL_CODE_DEFAULT_MESSAGE).replace(
+      /\$game_name/g,
+      canonicalSupercellGameName(ctx?.supercellGameName) || 'игры'
+    )
+    sub.push({ label: 'Запрос кода', text: reqMsg })
+    let inactiveReason = ''
+    if (!categoryOk) {
+      inactiveReason = 'категория не Supercell (Brawl Stars / Clash Royale / Clash of Clans) — флоу не запустится'
+    } else if (!moduleOk) {
+      inactiveReason = 'модуль Supercell выключен'
+    }
+    purchaseSteps.push({
+      kind: 'supercell',
+      label: 'Автозапрос кода Supercell',
+      active,
+      inactiveReason,
+      waitsForBuyer: true,
+      substeps: sub,
+    })
+  }
+
+  const tu = s.autotopupApi || {}
+  if (tu.enabled) {
+    const sub = [
+      { label: 'Запрос ID', text: String(tu.askIdMessage || '').trim() || TOPUP_DEFAULT_MESSAGES.askIdMessage },
+      {
+        label: 'Подтверждение',
+        text: String(tu.confirmTemplate || '').trim() || TOPUP_DEFAULT_MESSAGES.confirmTemplate,
+      },
+      {
+        label: 'Если ID неверный',
+        text: String(tu.invalidIdMessage || '').trim() || TOPUP_DEFAULT_MESSAGES.invalidIdMessage,
+      },
+      { label: 'Успех', text: String(tu.successMessage || '').trim() || TOPUP_DEFAULT_MESSAGES.successMessage },
+    ]
+    const svc = [String(tu.serviceName || '').trim(), String(tu.variantName || '').trim()]
+      .filter(Boolean)
+      .join(' · ')
+    // Бэкенд (runApprouteTopup → resolveDenominationId) определяет номинал по
+    // цепочке denominationId → variantId → variantOrderServiceId → serviceId и
+    // без него короткозамыкает в no_config. Повторяем это условие активности.
+    const topupDenom =
+      [tu.denominationId, tu.variantId, tu.variantOrderServiceId, tu.serviceId]
+        .map((v) => (v != null ? String(v).trim() : ''))
+        .find(Boolean) || ''
+    const topupActive = Boolean(topupDenom)
+    purchaseSteps.push({
+      kind: 'topup',
+      label: 'Автопополнение (AppRoute API)',
+      active: topupActive,
+      inactiveReason: topupActive ? '' : 'не выбран номинал/сервис AppRoute — пополнение не сработает',
+      detail: svc || null,
+      waitsForBuyer: true,
+      substeps: sub,
+      autoComplete: Boolean(tu.autoCompleteDeal || ad.autoCompleteDeal),
+    })
+  }
+
+  const anyAutoComplete = purchaseSteps.some((st) => st.autoComplete && st.active)
+
+  const sentSteps = buildTwiSteps('sent', s, imageUrlBuilder)
+  const confirmedSteps = buildTwiSteps('confirmed', s, imageUrlBuilder)
+
+  const stages = [
+    { key: 'purchase', label: 'Покупка товара', marker: '{{ITEM_PAID}}', steps: purchaseSteps },
+    {
+      key: 'sent',
+      label: 'Отправка товара',
+      marker: '{{ITEM_SENT}}',
+      conditional: true,
+      conditionNote: anyAutoComplete
+        ? 'Сработает автоматически после автозавершения сделки.'
+        : 'Сработает только после ручной отправки товара (автозавершение не включено).',
+      steps: sentSteps,
+    },
+    { key: 'confirmed', label: 'Подтверждение товара', marker: '{{DEAL_CONFIRMED}}', steps: confirmedSteps },
+  ]
+
+  return { resolved: true, stages, anyAutoComplete, hasAnySteps: stages.some((st) => st.steps.length > 0) }
+}
+
 function renderReviewBadge(review, { variant = 'list' } = {}) {
   const reviewObj = review && typeof review === 'object' ? review : null
   const left = reviewObj?.left === true
@@ -207,6 +555,7 @@ export function ChatTab({
   const [fullScanState, setFullScanState] = useState({ loading: false, status: null, error: null })
   const [fullScanTick, setFullScanTick] = useState(0)
   const [showChatExtraInfo, setShowChatExtraInfo] = useState(false)
+  const [workLogicOpen, setWorkLogicOpen] = useState(false)
   const [isMobileChatLayout, setIsMobileChatLayout] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(max-width: 900px)').matches
@@ -505,18 +854,23 @@ export function ChatTab({
     }
   }
 
-  const resolveSettingsForChat = useCallback(
+  // Эффективные настройки товара для чата = слияние групповой и индивидуальной
+  // записей ровно как на бэкенде (mergeProductSettings). Для сгруппированного товара
+  // (непустой settingsLabel) группа — база, а индивидуальные
+  // autodeliveryApi/autotopupApi/autobump накладываются поверх. Так панель показывает
+  // ровно то, что реально исполнит бот, а не только групповую запись.
+  const resolveEffectiveSettingsForChat = useCallback(
     (chat, itemTitle) => {
       const title = String(itemTitle || chat?.itemTitle || '').trim()
       const game = String(chat?.category || '').trim()
       const key = getProductKey({ game, title })
-      let s = settingsByKey[key]
-      const label = s && typeof s.settingsLabel === 'string' ? s.settingsLabel.trim() : ''
-      if (label) {
-        const gk = getGroupSettingsKey(label)
-        if (settingsByKey[gk]) s = settingsByKey[gk]
-      }
-      return s
+      const item = settingsByKey[key]
+      if (!item) return null
+      const label = typeof item.settingsLabel === 'string' ? item.settingsLabel.trim() : ''
+      if (!label) return item
+      const group = settingsByKey[getGroupSettingsKey(label)]
+      if (!group) return item
+      return mergeWorkSettings(group, item)
     },
     [settingsByKey]
   )
@@ -2085,16 +2439,32 @@ export function ChatTab({
     deals: selectedChatDeals,
   })
 
-  const selectedChatApprouteEnabled = useMemo(() => {
-    if (!selectedChat) return false
-    const s = resolveSettingsForChat(selectedChat, currentItemTitle)
-    return Boolean(s?.autodeliveryApi?.enabled)
-  }, [selectedChat, currentItemTitle, resolveSettingsForChat])
+  const selectedChatEffectiveSettings = useMemo(
+    () => (selectedChat ? resolveEffectiveSettingsForChat(selectedChat, currentItemTitle) : null),
+    [selectedChat, currentItemTitle, resolveEffectiveSettingsForChat]
+  )
+
+  const selectedChatApprouteEnabled = Boolean(selectedChatEffectiveSettings?.autodeliveryApi?.enabled)
+
+  const selectedChatWorkLogic = useMemo(
+    () =>
+      buildWorkLogic(
+        selectedChatEffectiveSettings,
+        {
+          supercellCategoryMatch: selectedChatIsSupercell,
+          supercellModuleEnabled: moduleSupercellEnabled,
+          supercellGameName: selectedChatSupercellCategory,
+        },
+        automessageImageUrl
+      ),
+    [selectedChatEffectiveSettings, selectedChatIsSupercell, moduleSupercellEnabled, selectedChatSupercellCategory]
+  )
 
   useEffect(() => {
     setApprouteRescanState({ loading: false, error: null, notice: null })
     setRecheckState({ loading: false, error: null, notice: null })
     setShowChatExtraInfo(false)
+    setWorkLogicOpen(false)
   }, [selectedChatId])
 
   useLayoutEffect(() => {
@@ -3412,6 +3782,14 @@ export function ChatTab({
                 <div className="chat-header-row__actions">
                   <button
                     type="button"
+                    className="chat-header-row__hide-btn chat-header-row__logic-btn"
+                    title="Показать логику работы бота по этому товару"
+                    onClick={() => setWorkLogicOpen(true)}
+                  >
+                    Логика работы
+                  </button>
+                  <button
+                    type="button"
                     className="chat-header-row__hide-btn"
                     disabled={!token || recheckState.loading}
                     title="Загрузить чат с Playerok и добавить недостающие сообщения в БД"
@@ -3987,6 +4365,122 @@ export function ChatTab({
                   {requestCodeState.loading ? 'Запрашиваем код...' : 'Запросить код'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {workLogicOpen && selectedChat && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setWorkLogicOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="modal modal--wide chat-logic-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Логика работы товара"
+          >
+            <div className="modal__header">
+              <h3 className="modal__title">Логика работы</h3>
+              <button
+                type="button"
+                className="modal__close"
+                onClick={() => setWorkLogicOpen(false)}
+                aria-label="Закрыть"
+              >
+                x
+              </button>
+            </div>
+            <div className="modal__body">
+              <p className="card-text chat-logic-modal__subtitle" style={{ marginTop: 0 }}>
+                {currentItemTitle || 'Товар'}
+                {selectedChat.category ? ` · ${selectedChat.category}` : ''}
+              </p>
+              {selectedChatEffectiveSettings &&
+                String(selectedChatEffectiveSettings.settingsLabel || '').trim() && (
+                  <p className="card-text chat-logic-modal__group">
+                    Группа настроек:{' '}
+                    <strong>{String(selectedChatEffectiveSettings.settingsLabel).trim()}</strong>
+                  </p>
+                )}
+              {!selectedChatEffectiveSettings ? (
+                <p className="card-text card-text--error">
+                  Настройки для этого товара не найдены — категория/название не совпали с настройками
+                  в разделе «Лоты». Бот не выполнит автоматику по этому товару.
+                </p>
+              ) : !selectedChatWorkLogic.hasAnySteps ? (
+                <p className="card-text">
+                  Для этого товара не настроена автоматика (автосообщения, автовыдача, пополнение
+                  и т.д.).
+                </p>
+              ) : (
+                <div className="chat-logic">
+                  {selectedChatWorkLogic.stages
+                    .filter((stage) => stage.steps.length > 0)
+                    .map((stage) => (
+                      <section className="chat-logic-stage" key={stage.key}>
+                        <header className="chat-logic-stage__head">
+                          <span className="chat-logic-stage__title">{stage.label}</span>
+                          <span className="chat-logic-stage__marker">{stage.marker}</span>
+                        </header>
+                        {stage.conditional && stage.conditionNote && (
+                          <p className="chat-logic-stage__cond">{stage.conditionNote}</p>
+                        )}
+                        <ol className="chat-logic-steps">
+                          {stage.steps.map((step, i) => (
+                            <li
+                              key={i}
+                              className={'chat-logic-step' + (step.active ? '' : ' chat-logic-step--off')}
+                            >
+                              <div className="chat-logic-step__row">
+                                <span className="chat-logic-step__badge">{step.label}</span>
+                                {step.detail && (
+                                  <span className="chat-logic-step__detail">{step.detail}</span>
+                                )}
+                                {step.waitsForBuyer && (
+                                  <span className="chat-logic-step__tag chat-logic-step__tag--wait">
+                                    ⏸ ждёт ответа покупателя
+                                  </span>
+                                )}
+                                {step.autoComplete && (
+                                  <span className="chat-logic-step__tag chat-logic-step__tag--auto">
+                                    → отметит «Товар отправлен»
+                                  </span>
+                                )}
+                                {!step.active && step.inactiveReason && (
+                                  <span className="chat-logic-step__tag chat-logic-step__tag--off">
+                                    {step.inactiveReason}
+                                  </span>
+                                )}
+                              </div>
+                              {step.note && <div className="chat-logic-step__note">{step.note}</div>}
+                              {step.text && <div className="chat-logic-step__text">{step.text}</div>}
+                              {step.imageUrl && (
+                                <img
+                                  src={step.imageUrl}
+                                  alt={step.filename || 'Картинка автосообщения'}
+                                  className="chat-logic-step__img"
+                                />
+                              )}
+                              {Array.isArray(step.substeps) && step.substeps.length > 0 && (
+                                <div className="chat-logic-substeps">
+                                  {step.substeps.map((sub, j) => (
+                                    <div className="chat-logic-substep" key={j}>
+                                      <span className="chat-logic-substep__label">{sub.label}:</span>
+                                      <span className="chat-logic-substep__text">{sub.text}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ol>
+                      </section>
+                    ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

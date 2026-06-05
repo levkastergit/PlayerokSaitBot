@@ -4218,8 +4218,24 @@ body {
   flex: 0 0 7.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0;
   padding: 0.25rem 0;
+}
+
+.lot-settings-auto-palette__group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.lot-settings-auto-palette__group--delivery {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.lot-settings-auto-palette__group--auto-complete {
+  margin-top: 0.4rem;
 }
 
 .lot-settings-auto-palette__tile {
@@ -4639,9 +4655,23 @@ body {
 
   .lot-settings-auto-palette {
     flex: none;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .lot-settings-auto-palette__group {
     flex-direction: row;
     flex-wrap: wrap;
     width: 100%;
+  }
+
+  .lot-settings-auto-palette__group--delivery {
+    margin-top: 0.55rem;
+    padding-top: 0.55rem;
+  }
+
+  .lot-settings-auto-palette__group--auto-complete {
+    margin-top: 0.35rem;
   }
 
   .lot-settings-auto-palette__tile {
@@ -5009,6 +5039,218 @@ body {
 .modal__body {
   padding: 1.25rem;
   overflow: auto;
+}
+
+.modal--wide {
+  max-width: 40rem;
+}
+
+/* Кнопка «Логика работы» в шапке чата — лёгкий акцент. */
+.chat-header-row__logic-btn {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.chat-header-row__logic-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+/* Панель «Логика работы»: стадии оплаты → отправки → подтверждения. */
+.chat-logic-modal__subtitle {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.chat-logic-modal__group {
+  margin-top: -0.4rem;
+  color: var(--text-muted);
+}
+
+.chat-logic {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.chat-logic-stage {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface-muted, rgba(127, 127, 127, 0.06));
+}
+
+.chat-logic-stage__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.chat-logic-stage__title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.chat-logic-stage__marker {
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-muted);
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.chat-logic-stage__cond {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chat-logic-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  counter-reset: chat-logic-step;
+}
+
+.chat-logic-step {
+  position: relative;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem 0.4rem 1.9rem;
+  background: var(--bg-panel);
+  counter-increment: chat-logic-step;
+}
+
+.chat-logic-step::before {
+  content: counter(chat-logic-step);
+  position: absolute;
+  left: 0.5rem;
+  top: 0.45rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-logic-step--off {
+  opacity: 0.6;
+}
+
+.chat-logic-step--off::before {
+  background: var(--border-subtle);
+  color: var(--text-muted);
+}
+
+.chat-logic-step__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chat-logic-step__badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 0.05rem 0.4rem;
+}
+
+.chat-logic-step--off .chat-logic-step__badge {
+  color: var(--text-muted);
+  background: var(--border-subtle);
+}
+
+.chat-logic-step__detail {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.chat-logic-step__tag {
+  font-size: 0.7rem;
+  border-radius: 6px;
+  padding: 0.05rem 0.4rem;
+  white-space: nowrap;
+}
+
+.chat-logic-step__tag--wait {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.chat-logic-step__tag--auto {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.chat-logic-step__tag--off {
+  color: var(--color-error);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.chat-logic-step__note {
+  margin-top: 0.25rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chat-logic-step__text {
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--text-main);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-logic-step__img {
+  margin-top: 0.4rem;
+  max-width: 9rem;
+  max-height: 9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  display: block;
+}
+
+.chat-logic-substeps {
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border-subtle);
+}
+
+.chat-logic-substep {
+  font-size: 0.8rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.chat-logic-substep__label {
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.chat-logic-substep__text {
+  color: var(--text-main);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .codes-list {

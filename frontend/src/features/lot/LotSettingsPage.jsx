@@ -23,16 +23,24 @@ const AUTO_MESSAGE_STAGES = [
   { trigger: 'confirmed', label: 'Подтверждение товара' },
 ]
 
+const AUTO_PALETTE_DELIVERY_TILE_IDS = new Set([
+  'autodelivery',
+  'autodeliveryApi',
+  'autotopupApi',
+])
+
+const AUTO_PALETTE_AUTO_COMPLETE_TILE_ID = 'autoComplete'
+
 const AUTO_PALETTE_TILES = [
   { id: 'text', label: 'Текст' },
   { id: 'time', label: 'Время' },
   { id: 'image', label: 'Картинка' },
-  { id: 'autodelivery', label: 'Автовыдача' },
-  { id: 'autodeliveryApi', label: 'API' },
-  { id: 'autoComplete', label: 'Автозавершение' },
   { id: 'emailValidation', label: 'Валид.Почта' },
   { id: 'supercellAutoRequestCode', label: 'Автозапрос' },
+  { id: 'autodelivery', label: 'Автовыдача' },
+  { id: 'autodeliveryApi', label: 'API' },
   { id: 'autotopupApi', label: 'Api.Пополнение' },
+  { id: 'autoComplete', label: 'Автозавершение' },
 ]
 
 const AUTO_TILE_MIME = 'application/x-lot-auto-tile'
@@ -2082,40 +2090,77 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                 <section className="lot-settings-block lot-settings-block--auto-stages">
                   <div className="lot-settings-auto-layout">
                     <aside className="lot-settings-auto-palette" aria-label="Плитки автосообщений">
-                      {AUTO_PALETTE_TILES.filter((tile) => {
-                        if (
-                          tile.id === 'emailValidation' ||
-                          tile.id === 'supercellAutoRequestCode'
-                        ) {
-                          return showSupercellEmailValidation
-                        }
-                        return true
-                      }).map((tile) => {
-                        const paletteLocked =
-                          tile.id === 'autoComplete' && !canBindAutoCompleteTile(productSettings)
+                      {[
+                        {
+                          key: 'main',
+                          tiles: AUTO_PALETTE_TILES.filter(
+                            (tile) =>
+                              !AUTO_PALETTE_DELIVERY_TILE_IDS.has(tile.id) &&
+                              tile.id !== AUTO_PALETTE_AUTO_COMPLETE_TILE_ID
+                          ),
+                        },
+                        {
+                          key: 'delivery',
+                          className: ' lot-settings-auto-palette__group--delivery',
+                          tiles: AUTO_PALETTE_TILES.filter((tile) =>
+                            AUTO_PALETTE_DELIVERY_TILE_IDS.has(tile.id)
+                          ),
+                        },
+                        {
+                          key: 'autoComplete',
+                          className: ' lot-settings-auto-palette__group--auto-complete',
+                          tiles: AUTO_PALETTE_TILES.filter(
+                            (tile) => tile.id === AUTO_PALETTE_AUTO_COMPLETE_TILE_ID
+                          ),
+                        },
+                      ].map((group) => {
+                        const visibleTiles = group.tiles.filter((tile) => {
+                          if (
+                            tile.id === 'emailValidation' ||
+                            tile.id === 'supercellAutoRequestCode'
+                          ) {
+                            return showSupercellEmailValidation
+                          }
+                          return true
+                        })
+                        if (!visibleTiles.length) return null
                         return (
                           <div
-                            key={tile.id}
+                            key={group.key}
                             className={
-                              'lot-settings-auto-palette__tile' +
-                              (autoDragTile === tile.id
-                                ? ' lot-settings-auto-palette__tile--dragging'
-                                : '') +
-                              (paletteLocked ? ' lot-settings-auto-palette__tile--locked' : '')
+                              'lot-settings-auto-palette__group' + (group.className || '')
                             }
-                            draggable={!paletteLocked}
-                            onDragStart={(e) => {
-                              if (paletteLocked) return
-                              handleAutoPaletteDragStart(e, tile.id)
-                            }}
-                            onDragEnd={handleAutoPaletteDragEnd}
                           >
-                            <span className="lot-settings-auto-palette__tile-icon">
-                              <AutoTileIcon kind={tile.id} />
-                            </span>
-                            <span className="lot-settings-auto-palette__tile-label">
-                              {tile.label}
-                            </span>
+                            {visibleTiles.map((tile) => {
+                              const paletteLocked =
+                                tile.id === 'autoComplete' &&
+                                !canBindAutoCompleteTile(productSettings)
+                              return (
+                                <div
+                                  key={tile.id}
+                                  className={
+                                    'lot-settings-auto-palette__tile' +
+                                    (autoDragTile === tile.id
+                                      ? ' lot-settings-auto-palette__tile--dragging'
+                                      : '') +
+                                    (paletteLocked ? ' lot-settings-auto-palette__tile--locked' : '')
+                                  }
+                                  draggable={!paletteLocked}
+                                  onDragStart={(e) => {
+                                    if (paletteLocked) return
+                                    handleAutoPaletteDragStart(e, tile.id)
+                                  }}
+                                  onDragEnd={handleAutoPaletteDragEnd}
+                                >
+                                  <span className="lot-settings-auto-palette__tile-icon">
+                                    <AutoTileIcon kind={tile.id} />
+                                  </span>
+                                  <span className="lot-settings-auto-palette__tile-label">
+                                    {tile.label}
+                                  </span>
+                                </div>
+                              )
+                            })}
                           </div>
                         )
                       })}
