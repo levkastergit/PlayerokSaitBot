@@ -282,6 +282,9 @@ const {
 const { setupApprouteRepo } = require('./src/db/approuteRepo')
 const { loadApprouteApiKeyPlain, saveApprouteApiKey, getApprouteSettingsMeta } = setupApprouteRepo(db)
 
+const { setupClodeRepo } = require('./src/db/clodeRepo')
+const { loadClodeApiKeyPlain, saveClodeApiKey, getClodeSettingsMeta } = setupClodeRepo(db)
+
 const { setupUsdRateService } = require('./src/features/fx/usdRateService')
 const usdRateService = setupUsdRateService(db)
 
@@ -340,6 +343,7 @@ const {
   deleteCodesByCategory,
   getCodeById,
   claimNextUnusedCode,
+  releaseCode,
 } = setupTableCodesRepo(db)
 const {
   getColumnsBySubtab,
@@ -405,6 +409,24 @@ const {
   createApprouteDtuOrderAndConfirm,
   isApprouteValidationError: isApprouteValidationErrorFn,
 } = require('./src/integrations/approute/approuteClient')
+const { processActiveClodeFlows } = require('./src/features/autolist/processActiveClodeFlows')
+const { createProcessSingleClodeFlow } = require('./src/features/clode/runClodeRedeemFlow')
+const {
+  redeemClaudeAndConfirm,
+  isClodeValidationError,
+  extractClaudeUserId,
+  normalizeClodePlan,
+} = require('./src/integrations/clode/clodeClient')
+const { processActiveGptFlows } = require('./src/features/autolist/processActiveGptFlows')
+const { createProcessSingleGptFlow } = require('./src/features/gpt/runGptRedeemFlow')
+const {
+  redeemGptAndConfirm,
+  isGptTokenFaultError,
+  isGptStockError,
+  extractGoogleDocId,
+  fetchGoogleDocText,
+  extractGptAccessToken,
+} = require('./src/integrations/gpt/gptClient')
 const { scanCompletedAndRelist } = require('./src/features/autolist/scanCompletedAndRelist')
 const { handlePaidChat } = require('./src/features/autolist/handlePaidChat')
 const {
@@ -491,6 +513,10 @@ const {
   autolistPruneSupercellFlowMap,
   autolistGetTopupFlowMap,
   autolistPruneTopupFlowMap,
+  autolistGetClodeFlowMap,
+  autolistPruneClodeFlowMap,
+  autolistGetGptFlowMap,
+  autolistPruneGptFlowMap,
 } = require('./src/features/autolist/autolistState')
 
 const getViewer = createGetViewer({
@@ -707,6 +733,41 @@ const processSingleTopupFlow = createProcessSingleTopupFlow({
   toUnixTs,
 })
 
+const processSingleClodeFlow = createProcessSingleClodeFlow({
+  autolistGetClodeFlowMap,
+  fetchDealChatMessagesFromPlayerok,
+  withRetry,
+  isPlayerokRateLimitError,
+  createChatMessage,
+  loadClodeApiKeyPlain,
+  redeemClaudeAndConfirm,
+  extractClaudeUserId,
+  normalizeClodePlan,
+  isClodeValidationError,
+  claimNextUnusedTableCode: claimNextUnusedCode,
+  releaseTableCode: releaseCode,
+  updateDealStatus,
+  toUnixTs,
+})
+
+const processSingleGptFlow = createProcessSingleGptFlow({
+  autolistGetGptFlowMap,
+  fetchDealChatMessagesFromPlayerok,
+  withRetry,
+  isPlayerokRateLimitError,
+  createChatMessage,
+  extractGoogleDocId,
+  fetchGoogleDocText,
+  extractGptAccessToken,
+  redeemGptAndConfirm,
+  isGptTokenFaultError,
+  isGptStockError,
+  claimNextUnusedTableCode: claimNextUnusedCode,
+  releaseTableCode: releaseCode,
+  updateDealStatus,
+  toUnixTs,
+})
+
 /** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
 const { createFetchAllDealsFromPlayerok } = require('./src/functions/playerokFetchAllDealsFromPlayerok')
 
@@ -826,6 +887,9 @@ const server = http.createServer(async (req, res) => {
         loadApprouteApiKeyPlain,
         saveApprouteApiKey,
         getApprouteSettingsMeta,
+        loadClodeApiKeyPlain,
+        saveClodeApiKey,
+        getClodeSettingsMeta,
       },
     })
     if (handled) return
@@ -1050,6 +1114,10 @@ const server = http.createServer(async (req, res) => {
         autolistGetSupercellFlowMap,
         autolistGetTopupFlowMap,
         autolistPruneTopupFlowMap,
+        autolistGetClodeFlowMap,
+        autolistPruneClodeFlowMap,
+        autolistGetGptFlowMap,
+        autolistPruneGptFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
@@ -1058,6 +1126,10 @@ const server = http.createServer(async (req, res) => {
         processSingleSupercellFlow,
         processActiveTopupFlows,
         processSingleTopupFlow,
+        processActiveClodeFlows,
+        processSingleClodeFlow,
+        processActiveGptFlows,
+        processSingleGptFlow,
         isSupercellModuleEnabled,
         handleOrderedStageAutomessage,
         handlePostPurchaseAutomessage,
@@ -1158,6 +1230,7 @@ server.listen(PORT, () => {
   const { setupAutobumpBackgroundJob } = require('./src/jobs/autobumpBackgroundJob')
   const { setupChatsWarmupBackgroundJob } = require('./src/jobs/chatsWarmupBackgroundJob')
   const { setupChatsSyncBackgroundJob } = require('./src/jobs/chatsSyncBackgroundJob')
+  const { setupDealStatusWatchBackgroundJob } = require('./src/jobs/dealStatusWatchBackgroundJob')
 
   setupAutolistBackgroundJob({
     postLocal,
@@ -1195,6 +1268,34 @@ server.listen(PORT, () => {
     chatDbRepo,
     isAllActionsStopped,
     intervalMs: 500,
+  })
+
+  // Наблюдатель статусов сделок: триггерит автосообщения этапов «Отправка/Подтверждение
+  // товара», когда продавец отмечает выполнение/подтверждает сделку прямо на playerok.com.
+  setupDealStatusWatchBackgroundJob({
+    getAllStoredTokens,
+    loadStoredTokenPlain,
+    getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    getViewer,
+    requestDealsPage,
+    isAllActionsStopped,
+    intervalMs: 6000,
+    triggerChatAutomation: async ({ userId, token, userAgent, chatId, dealId, dealItemId }) => {
+      if (!postLocalRef || !chatId) return
+      try {
+        await postLocalRef('/api/playerok/deal-chat-messages', {
+          userId,
+          token,
+          userAgent,
+          chatId,
+          ...(dealId ? { dealId } : {}),
+          ...(dealItemId ? { dealItemId } : {}),
+          automessagesOnly: true,
+        })
+      } catch (_) {
+        // ignore automation bridge errors
+      }
+    },
   })
 })
 

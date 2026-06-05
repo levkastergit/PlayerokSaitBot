@@ -41,6 +41,12 @@ function mergeProductSettings(groupSettings, itemSettings) {
   const topupApi = mergeAutodeliveryApi(itemSettings.autotopupApi, groupSettings.autotopupApi)
   if (topupApi) merged.autotopupApi = topupApi
 
+  const clode = mergeAutodeliveryApi(itemSettings.autoclode, groupSettings.autoclode)
+  if (clode) merged.autoclode = clode
+
+  const gpt = mergeAutodeliveryApi(itemSettings.autogpt, groupSettings.autogpt)
+  if (gpt) merged.autogpt = gpt
+
   return merged
 }
 

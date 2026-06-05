@@ -57,6 +57,8 @@ async function handlePaidChat({
   pickSupercellCategoryFromItemHints,
   autolistGetSupercellFlowMap,
   autolistGetTopupFlowMap,
+  autolistGetClodeFlowMap,
+  autolistGetGptFlowMap,
   extractSupercellEmailFromFields,
   upsertSettings,
   createChatMessage,
@@ -507,6 +509,88 @@ async function handlePaidChat({
     }
     logApprouteAutodelivery('topup: flow activated', {
       chatId: topupChatId,
+      dealId: dealId || null,
+      productKey,
+    })
+  }
+
+  // Автовыдача Clode: активируем чат-флоу (бот спросит Claude user ID у покупателя).
+  // CDK из таблицы НЕ берём здесь — он claim-ится в момент активации после подтверждения.
+  if (typeof autolistGetClodeFlowMap === 'function' && effectiveSettings?.autoclode?.enabled && lastChat?.id) {
+    const clodeMap = autolistGetClodeFlowMap(tokenHash)
+    const clodeChatId = String(lastChat.id)
+    const prev = clodeMap[clodeChatId] || {}
+    const prevDealId = prev.dealId != null ? String(prev.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDeal = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+    clodeMap[clodeChatId] = {
+      ...prev,
+      chatId: clodeChatId,
+      dealId: dealId || null,
+      itemId: dealItemId || null,
+      userId: currentUserId,
+      productKey,
+      subtabId: String(effectiveSettings?.tableBinding?.subtabId || '').trim(),
+      cfg: {
+        ...effectiveSettings.autoclode,
+        autoCompleteDeal: Boolean(
+          effectiveSettings.autoclode?.autoCompleteDeal ||
+            effectiveSettings.autodelivery?.autoCompleteDeal
+        ),
+      },
+      stage: isNewDeal ? 'await_id' : prev.stage || 'await_id',
+      askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
+      confirmMsgTs: isNewDeal ? 0 : Number(prev.confirmMsgTs || 0),
+      candidateId: isNewDeal ? '' : prev.candidateId || '',
+      redeemed: isNewDeal ? false : Boolean(prev.redeemed),
+      active: true,
+      createdAt: isNewDeal ? nowTs : Number(prev.createdAt || nowTs),
+      updatedAt: nowTs,
+    }
+    logApprouteAutodelivery('clode: flow activated', {
+      chatId: clodeChatId,
+      dealId: dealId || null,
+      productKey,
+    })
+  }
+
+  // Автовыдача GPT: активируем чат-флоу (бот попросит ссылку на Google-док с токеном).
+  // card_key из таблицы НЕ берём здесь — он claim-ится в момент активации.
+  if (typeof autolistGetGptFlowMap === 'function' && effectiveSettings?.autogpt?.enabled && lastChat?.id) {
+    const gptMap = autolistGetGptFlowMap(tokenHash)
+    const gptChatId = String(lastChat.id)
+    const prev = gptMap[gptChatId] || {}
+    const prevDealId = prev.dealId != null ? String(prev.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDeal = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+    gptMap[gptChatId] = {
+      ...prev,
+      chatId: gptChatId,
+      dealId: dealId || null,
+      itemId: dealItemId || null,
+      userId: currentUserId,
+      productKey,
+      subtabId: String(effectiveSettings?.tableBinding?.subtabId || '').trim(),
+      cfg: {
+        ...effectiveSettings.autogpt,
+        autoCompleteDeal: Boolean(
+          effectiveSettings.autogpt?.autoCompleteDeal ||
+            effectiveSettings.autodelivery?.autoCompleteDeal
+        ),
+      },
+      stage: isNewDeal ? 'await_link' : prev.stage || 'await_link',
+      askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
+      lastCheckTs: isNewDeal ? 0 : Number(prev.lastCheckTs || 0),
+      lastActivateTs: isNewDeal ? 0 : Number(prev.lastActivateTs || 0),
+      docId: isNewDeal ? '' : prev.docId || '',
+      accessToken: isNewDeal ? '' : prev.accessToken || '',
+      redeemed: isNewDeal ? false : Boolean(prev.redeemed),
+      active: true,
+      createdAt: isNewDeal ? nowTs : Number(prev.createdAt || nowTs),
+      updatedAt: nowTs,
+    }
+    logApprouteAutodelivery('gpt: flow activated', {
+      chatId: gptChatId,
       dealId: dealId || null,
       productKey,
     })

@@ -14,6 +14,11 @@ import {
   saveApprouteApiKey,
   clearApprouteApiKey,
 } from '../../services/approuteApi'
+import {
+  fetchClodeSettings,
+  saveClodeApiKey,
+  clearClodeApiKey,
+} from '../../services/clodeApi'
 
 const SETTINGS_SUB_TABS = [
   { id: '', label: 'Основные' },
@@ -55,6 +60,12 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   const [approuteSaving, setApprouteSaving] = useState(false)
   const [approuteMessage, setApprouteMessage] = useState(null)
   const [approuteError, setApprouteError] = useState(null)
+  const [clodeKeyValue, setClodeKeyValue] = useState('')
+  const [clodeConfigured, setClodeConfigured] = useState(false)
+  const [clodeLoading, setClodeLoading] = useState(true)
+  const [clodeSaving, setClodeSaving] = useState(false)
+  const [clodeMessage, setClodeMessage] = useState(null)
+  const [clodeError, setClodeError] = useState(null)
 
   useEffect(() => {
     setValue(token ?? '')
@@ -116,6 +127,22 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
         setApprouteError(r.error || null)
       }
       setApprouteLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setClodeLoading(true)
+    setClodeError(null)
+    fetchClodeSettings().then((r) => {
+      if (cancelled) return
+      if (r.ok) {
+        setClodeConfigured(Boolean(r.configured))
+      } else {
+        setClodeError(r.error || null)
+      }
+      setClodeLoading(false)
     })
     return () => { cancelled = true }
   }, [])
@@ -203,6 +230,37 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
       setApprouteMessage(null)
     } else {
       setApprouteError(r.error || 'Ошибка')
+    }
+  }
+
+  const handleSaveClodeKey = async (event) => {
+    event.preventDefault()
+    setClodeSaving(true)
+    setClodeMessage(null)
+    setClodeError(null)
+    const r = await saveClodeApiKey(clodeKeyValue)
+    setClodeSaving(false)
+    if (r.ok) {
+      setClodeConfigured(Boolean(r.configured))
+      setClodeKeyValue('')
+      setClodeMessage('Ключ Clode сохранён')
+    } else {
+      setClodeError(r.error || 'Ошибка сохранения')
+    }
+  }
+
+  const handleClearClodeKey = async () => {
+    setClodeSaving(true)
+    setClodeMessage(null)
+    setClodeError(null)
+    const r = await clearClodeApiKey()
+    setClodeSaving(false)
+    if (r.ok) {
+      setClodeConfigured(false)
+      setClodeKeyValue('')
+      setClodeMessage(null)
+    } else {
+      setClodeError(r.error || 'Ошибка')
     }
   }
 
@@ -331,6 +389,54 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
               )}
               {approuteError && (
                 <p className="settings-message settings-message--error">{approuteError}</p>
+              )}
+            </form>
+          )}
+        </section>
+
+        <section className="card settings-card settings-card--clode">
+          <h2 className="card-title">Clode API</h2>
+          <p className="card-text settings-hint">
+            Ключ для автовыдачи Claude (активация CDK) через{' '}
+            <a href="https://dlsapi.6661231.xyz/" target="_blank" rel="noopener noreferrer">
+              dlsapi.6661231.xyz
+            </a>
+            . Заголовок запроса: Authorization: Bearer.
+          </p>
+          {clodeLoading ? (
+            <p className="card-text">Загрузка…</p>
+          ) : (
+            <form className="settings-form" onSubmit={handleSaveClodeKey}>
+              <label htmlFor="clode-api-key" className="settings-label">
+                API-ключ
+              </label>
+              <input
+                id="clode-api-key"
+                className="input-theme"
+                type="password"
+                value={clodeKeyValue}
+                onChange={(e) => setClodeKeyValue(e.target.value)}
+                placeholder={clodeConfigured ? 'Ключ сохранён (скрыт)' : 'Вставьте API-ключ (sk_…)'}
+                autoComplete="off"
+              />
+              <div className="token-actions">
+                <button type="submit" className="btn-primary" disabled={clodeSaving}>
+                  Сохранить ключ
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={clodeSaving}
+                  onClick={handleClearClodeKey}
+                >
+                  Очистить
+                </button>
+              </div>
+              {clodeMessage && (
+                <p className="settings-message settings-message--success">{clodeMessage}</p>
+              )}
+              {clodeError && (
+                <p className="settings-message settings-message--error">{clodeError}</p>
               )}
             </form>
           )}

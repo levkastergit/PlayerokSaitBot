@@ -621,10 +621,15 @@ function hasSupercellCodeRequestedMessage(
 }
 
 function isSupercellAutoRequestCodeEnabled(settings) {
+  // Для Supercell-лотов автозапрос включён по умолчанию; выключается только
+  // при явном enabled === false (пользователь удалил плитку на /lot).
   if (!settings || typeof settings !== 'object') return true
   const cfg = settings.supercellAutoRequestCode
   if (!cfg || typeof cfg !== 'object') return true
-  return Boolean(cfg.enabled)
+  if (Object.prototype.hasOwnProperty.call(cfg, 'enabled')) {
+    return Boolean(cfg.enabled)
+  }
+  return true
 }
 
 module.exports = {

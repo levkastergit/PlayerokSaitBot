@@ -238,6 +238,48 @@ function autolistPruneTopupFlowMap(tokenHash, nowTs) {
   }
 }
 
+function autolistGetClodeFlowMap(tokenHash) {
+  global.__autolistClodeFlowByTokenHash = global.__autolistClodeFlowByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistClodeFlowByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistClodeFlowByTokenHash[key] = {}
+  return global.__autolistClodeFlowByTokenHash[key]
+}
+
+function autolistPruneClodeFlowMap(tokenHash, nowTs) {
+  const map = autolistGetClodeFlowMap(tokenHash)
+  for (const [chatId, state] of Object.entries(map)) {
+    const updatedAt = Number(state?.updatedAt || state?.createdAt || 0)
+    const ageSec = updatedAt ? nowTs - updatedAt : Number.MAX_SAFE_INTEGER
+    const maxAgeSec = state?.active ? 24 * 60 * 60 : 60 * 60
+    if (ageSec > maxAgeSec) {
+      delete map[chatId]
+    }
+  }
+}
+
+function autolistGetGptFlowMap(tokenHash) {
+  global.__autolistGptFlowByTokenHash = global.__autolistGptFlowByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistGptFlowByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistGptFlowByTokenHash[key] = {}
+  return global.__autolistGptFlowByTokenHash[key]
+}
+
+function autolistPruneGptFlowMap(tokenHash, nowTs) {
+  const map = autolistGetGptFlowMap(tokenHash)
+  for (const [chatId, state] of Object.entries(map)) {
+    const updatedAt = Number(state?.updatedAt || state?.createdAt || 0)
+    const ageSec = updatedAt ? nowTs - updatedAt : Number.MAX_SAFE_INTEGER
+    const maxAgeSec = state?.active ? 24 * 60 * 60 : 60 * 60
+    if (ageSec > maxAgeSec) {
+      delete map[chatId]
+    }
+  }
+}
+
 function buildChatAutomessageEventKey(prefix, chatId, dealId) {
   const c = String(chatId || '').trim()
   const d = String(dealId || '').trim()
@@ -369,6 +411,10 @@ module.exports = {
   autolistPruneSupercellFlowMap,
   autolistGetTopupFlowMap,
   autolistPruneTopupFlowMap,
+  autolistGetClodeFlowMap,
+  autolistPruneClodeFlowMap,
+  autolistGetGptFlowMap,
+  autolistPruneGptFlowMap,
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   buildPaidChatAutomessageEventKey,

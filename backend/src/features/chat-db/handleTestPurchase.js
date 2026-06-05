@@ -15,6 +15,10 @@ const path = require('path')
 
 const { handlePaidChat } = require('../autolist/handlePaidChat')
 const { createProcessSingleTopupFlow } = require('../approute/runApprouteTopup')
+const { createProcessSingleClodeFlow } = require('../clode/runClodeRedeemFlow')
+const { extractClaudeUserId, normalizeClodePlan } = require('../../integrations/clode/clodeClient')
+const { createProcessSingleGptFlow } = require('../gpt/runGptRedeemFlow')
+const { extractGoogleDocId, extractGptAccessToken } = require('../../integrations/gpt/gptClient')
 const { createProcessSingleSupercellFlow } = require('../../functions/processSingleSupercellFlow')
 const {
   getSupercellGameByCategory,
@@ -55,6 +59,33 @@ function createEmptyProductSettings() {
       confirmTemplate: 'Подтвердите: ваш ID/логин — {id}. Всё верно? Напишите «да» или «нет».',
       invalidIdMessage: 'ID/логин не прошёл проверку. Пришлите, пожалуйста, корректный ID/логин ещё раз.',
       successMessage: 'Готово! Пополнение выполнено. Спасибо за покупку.',
+      autoCompleteDeal: false,
+    },
+    autoclode: {
+      enabled: false,
+      tier: 'pro',
+      askIdMessage: 'Напишите ваш Claude user ID (UUID) для активации подписки.',
+      confirmTemplate: 'Это ваш id: {id}? Напишите «да» или «нет».',
+      invalidIdMessage: 'Не получилось распознать ваш Claude user ID. Пришлите корректный UUID ещё раз.',
+      successMessage: 'Готово! Подписка активирована. Спасибо за покупку.',
+      noStockMessage: 'Извините, коды временно закончились.',
+      failMessage: 'Не удалось активировать подписку. Проверьте ID и пришлите ещё раз.',
+      autoCompleteDeal: false,
+    },
+    autogpt: {
+      enabled: false,
+      inputMode: 'link',
+      askLinkMessage: 'Пришлите ссылку на Google-документ с вашим ChatGPT Access Token.',
+      askIdMessage: 'Напишите ваш ChatGPT ID (app_user_id, UUID) для активации.',
+      askAutoMessage: 'Пришлите ваш ChatGPT ID (UUID) или ссылку на Google-документ с токеном.',
+      invalidLinkMessage: 'Не вижу ссылку на Google-документ. Пришлите корректную ссылку.',
+      invalidIdMessage: 'Не получилось распознать ваш ID. Пришлите корректный UUID ещё раз.',
+      invalidAutoMessage: 'Не распознал ввод. Пришлите ID (UUID) или ссылку на документ.',
+      noAccessMessage: 'Нет доступа к документу. Откройте доступ «всем, у кого есть ссылка».',
+      tokenNotFoundMessage: 'В документе не нашёл Access Token. Пришлите ссылку ещё раз.',
+      successMessage: 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.',
+      noStockMessage: 'Извините, коды временно закончились.',
+      failMessage: 'Не удалось активировать подписку. Пришлите данные ещё раз.',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -113,6 +144,10 @@ function splitProductKey(productKey) {
 function computeWaiting(ctx) {
   const tp = ctx.topupMap[TEST_CHAT_ID]
   if (tp && tp.active) return tp.stage === 'await_confirm' ? 'confirm' : 'game_id'
+  const cl = ctx.clodeMap[TEST_CHAT_ID]
+  if (cl && cl.active) return cl.stage === 'await_confirm' ? 'confirm' : 'game_id'
+  const gp = ctx.gptMap[TEST_CHAT_ID]
+  if (gp && gp.active) return 'game_id'
   const sc = ctx.supercellMap[TEST_CHAT_ID]
   if (sc && sc.active) return 'email'
   return null
@@ -134,6 +169,8 @@ function configureCtxForProduct(ctx, productKey, currentUserId, resolveEffective
   const isSupercell = Boolean(getSupercellGameByCategory(categoryName))
   const cfgDelivery = (settings.autodeliveryApi && typeof settings.autodeliveryApi === 'object') ? settings.autodeliveryApi : {}
   const cfgTopup = (settings.autotopupApi && typeof settings.autotopupApi === 'object') ? settings.autotopupApi : {}
+  const cfgClode = (settings.autoclode && typeof settings.autoclode === 'object') ? settings.autoclode : {}
+  const cfgGpt = (settings.autogpt && typeof settings.autogpt === 'object') ? settings.autogpt : {}
 
   const resolveForTest = (_userId, key) => {
     if (normalizeProductKey(key) === normalizedKey) {
@@ -159,6 +196,16 @@ function configureCtxForProduct(ctx, productKey, currentUserId, resolveEffective
   ctx.topupAutoComplete = Boolean(
     cfgTopup.enabled &&
       (cfgTopup.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
+  )
+  ctx.cfgClode = cfgClode
+  ctx.clodeAutoComplete = Boolean(
+    cfgClode.enabled &&
+      (cfgClode.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
+  )
+  ctx.cfgGpt = cfgGpt
+  ctx.gptAutoComplete = Boolean(
+    cfgGpt.enabled &&
+      (cfgGpt.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
   )
   ctx.resolveEffectiveProductSettings = resolveForTest
   ctx.dealId = nextDealId
@@ -197,6 +244,8 @@ function loadDealContext(ctx, dealId, resolveEffectiveProductSettings) {
   const isSupercell = Boolean(getSupercellGameByCategory(categoryName))
   const cfgDelivery = (settings.autodeliveryApi && typeof settings.autodeliveryApi === 'object') ? settings.autodeliveryApi : {}
   const cfgTopup = (settings.autotopupApi && typeof settings.autotopupApi === 'object') ? settings.autotopupApi : {}
+  const cfgClode = (settings.autoclode && typeof settings.autoclode === 'object') ? settings.autoclode : {}
+  const cfgGpt = (settings.autogpt && typeof settings.autogpt === 'object') ? settings.autogpt : {}
 
   const resolveForTest = (_userId, key) => {
     if (normalizeProductKey(key) === normalizedKey) {
@@ -221,6 +270,16 @@ function loadDealContext(ctx, dealId, resolveEffectiveProductSettings) {
     cfgTopup.enabled &&
       (cfgTopup.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
   )
+  ctx.cfgClode = cfgClode
+  ctx.clodeAutoComplete = Boolean(
+    cfgClode.enabled &&
+      (cfgClode.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
+  )
+  ctx.cfgGpt = cfgGpt
+  ctx.gptAutoComplete = Boolean(
+    cfgGpt.enabled &&
+      (cfgGpt.autoCompleteDeal || settings.autodelivery?.autoCompleteDeal)
+  )
   ctx.resolveEffectiveProductSettings = resolveForTest
   ctx.dealId = id
   ctx.activeDealId = id
@@ -232,6 +291,8 @@ function createSandbox({ productKey, currentUserId, resolveEffectiveProductSetti
   const ctx = {
     supercellMap: {},
     topupMap: {},
+    clodeMap: {},
+    gptMap: {},
     testTokenHash: `TEST::${rand4()}${rand4()}`,
     seq: 0,
     captured: [],
@@ -479,6 +540,8 @@ async function runPaidChat(ctx) {
     pickSupercellCategoryFromItemHints,
     autolistGetSupercellFlowMap: () => ctx.supercellMap,
     autolistGetTopupFlowMap: () => ctx.topupMap,
+    autolistGetClodeFlowMap: () => ctx.clodeMap,
+    autolistGetGptFlowMap: () => ctx.gptMap,
     extractSupercellEmailFromFields,
     upsertSettings: { run: noop },
     createChatMessage: ctx.captureChatMessage,
@@ -524,6 +587,88 @@ async function stepTopup(ctx, buyerText) {
     checkApprouteDtuOrder: async () => ({ ok: true }),
     createApprouteDtuOrderAndConfirm: async () => ({ failed: false, completed: true, orderStatus: 'completed' }),
     isApprouteValidationError: () => false,
+    updateDealStatus: async () => ({}),
+    toUnixTs: (v) => Number(v) || 0,
+  })
+  ctx.nowTs += 10
+  return proc(TEST_CHAT_ID, ctx.testTokenHash, 'TEST', TEST_VIEWER, ctx.nowTs)
+}
+
+// Один шаг Clode-флоу с сообщением покупателя (или null — для первичного запроса ID).
+async function stepClode(ctx, buyerText) {
+  ctx.captured = []
+  const withRetry = async (fn) => fn()
+  const st = ctx.clodeMap[TEST_CHAT_ID] || {}
+  const stage = String(st.stage || 'await_id')
+  const baseTs = stage === 'await_confirm' ? Number(st.confirmMsgTs || 0) : Number(st.askMsgTs || 0)
+  const text = buyerText != null ? String(buyerText) : ''
+
+  const fetchClode = async () => {
+    const messages = []
+    if (text.trim()) {
+      messages.push({ user: { username: TEST_BUYER }, text, createdAt: (baseTs || ctx.nowTs) + 1 })
+    }
+    return { messages, viewerUsername: TEST_VIEWER }
+  }
+
+  const proc = createProcessSingleClodeFlow({
+    autolistGetClodeFlowMap: () => ctx.clodeMap,
+    fetchDealChatMessagesFromPlayerok: fetchClode,
+    withRetry,
+    isPlayerokRateLimitError: () => false,
+    createChatMessage: ctx.captureChatMessage,
+    loadClodeApiKeyPlain: () => 'TEST',
+    redeemClaudeAndConfirm: async () => ({ completed: true, failed: false }),
+    extractClaudeUserId,
+    normalizeClodePlan,
+    isClodeValidationError: () => false,
+    claimNextUnusedTableCode: () => ({ id: 1, code: 'bbc-TEST' }),
+    releaseTableCode: () => true,
+    updateDealStatus: async () => ({}),
+    toUnixTs: (v) => Number(v) || 0,
+  })
+  ctx.nowTs += 10
+  return proc(TEST_CHAT_ID, ctx.testTokenHash, 'TEST', TEST_VIEWER, ctx.nowTs)
+}
+
+// Один шаг GPT-флоу с сообщением покупателя (или null — для первичного запроса ссылки).
+// Скачивание Google-дока и активация заглушены (счастливый путь): любой документ
+// «доступен» и содержит валидный токен, активация всегда успешна.
+async function stepGpt(ctx, buyerText) {
+  ctx.captured = []
+  const withRetry = async (fn) => fn()
+  const st = ctx.gptMap[TEST_CHAT_ID] || {}
+  const baseTs = Math.max(
+    Number(st.askMsgTs || 0),
+    Number(st.lastCheckTs || 0),
+    Number(st.lastActivateTs || 0)
+  )
+  const text = buyerText != null ? String(buyerText) : ''
+
+  const fetchGpt = async () => {
+    const messages = []
+    if (text.trim()) {
+      messages.push({ user: { username: TEST_BUYER }, text, createdAt: (baseTs || ctx.nowTs) + 1 })
+    }
+    return { messages, viewerUsername: TEST_VIEWER }
+  }
+
+  const proc = createProcessSingleGptFlow({
+    autolistGetGptFlowMap: () => ctx.gptMap,
+    fetchDealChatMessagesFromPlayerok: fetchGpt,
+    withRetry,
+    isPlayerokRateLimitError: () => false,
+    createChatMessage: ctx.captureChatMessage,
+    // Извлечение реальное (ID/ссылка распознаются как в проде); скачивание дока
+    // и активация заглушены — любой документ «доступен» и содержит валидный токен.
+    extractGoogleDocId,
+    fetchGoogleDocText: async () => ({ ok: true, text: 'token eyJtest.payload.signature here' }),
+    extractGptAccessToken,
+    redeemGptAndConfirm: async () => ({ completed: true, failed: false }),
+    isGptTokenFaultError: () => false,
+    isGptStockError: () => false,
+    claimNextUnusedTableCode: () => ({ id: 1, code: 'gpt-TEST' }),
+    releaseTableCode: () => true,
     updateDealStatus: async () => ({}),
     toUnixTs: (v) => Number(v) || 0,
   })
@@ -579,6 +724,8 @@ function computeModes(settings, isSupercell) {
   if (settings.autodelivery && settings.autodelivery.enabled) modes.push('autodelivery')
   if (settings.autodeliveryApi && settings.autodeliveryApi.enabled) modes.push('autodeliveryApi')
   if (settings.autotopupApi && settings.autotopupApi.enabled) modes.push('autotopupApi')
+  if (settings.autoclode && settings.autoclode.enabled) modes.push('autoclode')
+  if (settings.autogpt && settings.autogpt.enabled) modes.push('autogpt')
   if (settings.imageAutomessage && settings.imageAutomessage.enabled) modes.push('imageAutomessage')
   if (isSupercell && isSupercellAutoRequestCodeEnabled(settings)) modes.push('supercell')
   return modes
@@ -625,6 +772,14 @@ async function handleTestPurchaseStart({ payload, currentUserId, deps }) {
     // DTU: первый шаг отправляет запрос ID (Supercell ждёт почту — без шага).
     if (ctx.topupMap[TEST_CHAT_ID] && ctx.topupMap[TEST_CHAT_ID].active) {
       await stepTopup(ctx, null)
+      initial.push(...ctx.captured)
+    }
+    if (ctx.clodeMap[TEST_CHAT_ID] && ctx.clodeMap[TEST_CHAT_ID].active) {
+      await stepClode(ctx, null)
+      initial.push(...ctx.captured)
+    }
+    if (ctx.gptMap[TEST_CHAT_ID] && ctx.gptMap[TEST_CHAT_ID].active) {
+      await stepGpt(ctx, null)
       initial.push(...ctx.captured)
     }
 
@@ -695,6 +850,10 @@ async function handleTestPurchaseChat({ payload, currentUserId, deps }) {
     if (waitingBefore) {
       if (waitingBefore === 'email') {
         await stepSupercell(ctx, text)
+      } else if (ctx.clodeMap[TEST_CHAT_ID] && ctx.clodeMap[TEST_CHAT_ID].active) {
+        await stepClode(ctx, text)
+      } else if (ctx.gptMap[TEST_CHAT_ID] && ctx.gptMap[TEST_CHAT_ID].active) {
+        await stepGpt(ctx, text)
       } else {
         await stepTopup(ctx, text)
       }
@@ -708,7 +867,7 @@ async function handleTestPurchaseChat({ payload, currentUserId, deps }) {
       appendTranscript(ctx, botLines)
 
       const waitingAfter = computeWaiting(ctx)
-      if (!waitingAfter && waitingBefore !== 'email' && ctx.topupAutoComplete) {
+      if (!waitingAfter && waitingBefore !== 'email' && (ctx.topupAutoComplete || ctx.clodeAutoComplete || ctx.gptAutoComplete)) {
         const sent = { role: 'system', text: '{{ITEM_SENT}}', dealId }
         out.push(sent)
         appendTranscript(ctx, [sent])

@@ -48,6 +48,13 @@ function setupTableCodesRepo(db) {
     WHERE id = ? AND user_id = ? AND used = 0
   `)
 
+  // Возврат кода в пул (used=0) при провале активации — чтобы код не пропадал.
+  const releaseCodeStmt = db.prepare(`
+    UPDATE table_codes
+    SET used = 0, status_changed_at = ?, deal_id = NULL, item_id = NULL, chat_id = NULL
+    WHERE id = ? AND user_id = ?
+  `)
+
   const claimNextUnusedCodeTx = db.transaction((userId, category, meta) => {
     const row = selectOldestUnusedCode.get(userId, category)
     if (!row) return null
@@ -70,6 +77,15 @@ function setupTableCodesRepo(db) {
     const cat = String(category || '').trim()
     if (!Number.isFinite(uid) || uid <= 0 || !cat) return null
     return claimNextUnusedCodeTx(uid, cat, meta)
+  }
+
+  function releaseCode(userId, codeId, meta = {}) {
+    const uid = Number(userId)
+    const cid = Number(codeId)
+    if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(cid) || cid <= 0) return false
+    const nowTs =
+      Number(meta?.nowTs) > 0 ? Math.floor(Number(meta.nowTs)) : Math.floor(Date.now() / 1000)
+    return Boolean(releaseCodeStmt.run(nowTs, cid, uid).changes)
   }
 
   const insertCodesBulk = db.transaction((userId, category, codesList) => {
@@ -101,6 +117,7 @@ function setupTableCodesRepo(db) {
     deleteCodesByCategory,
     getCodeById,
     claimNextUnusedCode,
+    releaseCode,
   }
 }
 

@@ -36,6 +36,34 @@ function finishTopupFlowRun(lockKey) {
   topupFlowInFlightByKey.delete(lockKey)
 }
 
+const clodeFlowInFlightByKey = new Set()
+
+function beginClodeFlowRun(tokenHash, chatId) {
+  const key = `${String(tokenHash || '')}::${String(chatId || '')}`
+  if (!tokenHash || !chatId || clodeFlowInFlightByKey.has(key)) return null
+  clodeFlowInFlightByKey.add(key)
+  return key
+}
+
+function finishClodeFlowRun(lockKey) {
+  if (!lockKey) return
+  clodeFlowInFlightByKey.delete(lockKey)
+}
+
+const gptFlowInFlightByKey = new Set()
+
+function beginGptFlowRun(tokenHash, chatId) {
+  const key = `${String(tokenHash || '')}::${String(chatId || '')}`
+  if (!tokenHash || !chatId || gptFlowInFlightByKey.has(key)) return null
+  gptFlowInFlightByKey.add(key)
+  return key
+}
+
+function finishGptFlowRun(lockKey) {
+  if (!lockKey) return
+  gptFlowInFlightByKey.delete(lockKey)
+}
+
 async function resolveViewer({ token, userAgent, withRetry, isPlayerokRateLimitError, getViewer }) {
   try {
     return await withRetry(() => getViewer(token, userAgent), {
@@ -88,6 +116,10 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     processSingleSupercellFlow,
     autolistGetTopupFlowMap,
     processSingleTopupFlow,
+    autolistGetClodeFlowMap,
+    processSingleClodeFlow,
+    autolistGetGptFlowMap,
+    processSingleGptFlow,
     isSupercellModuleEnabled,
     handlePostPurchaseAutomessage: handlePostPurchaseAutomessageFn,
     handleDealConfirmedAutomessage: handleDealConfirmedAutomessageFn,
@@ -193,6 +225,12 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
 
   const automationEvents = []
   const messagesOnly = entryWantsMessagesOnly(entryPayload, sharedPayload)
+  // automessagesOnly: прогнать ТОЛЬКО автосообщения этапов (покупка/отправка/подтверждение),
+  // без handlePaidChat (автовыдача/публикация) и интерактивных флоу. Используется фоновым
+  // наблюдателем статусов сделок, чтобы триггерить этап «Отправка/Подтверждение» при действии
+  // на Playerok напрямую, не вызывая повторную автовыдачу кода.
+  const automessagesOnly =
+    entryPayload?.automessagesOnly === true || sharedPayload?.automessagesOnly === true
 
   const runSupercellFlowIfActive = async (phase) => {
     if (messagesOnly || !chatId || !isSupercellModuleEnabled(currentUserId)) return
@@ -305,6 +343,58 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     }
   }
 
+  const runClodeFlowIfActive = async () => {
+    if (messagesOnly || !chatId) return
+    if (typeof autolistGetClodeFlowMap !== 'function' || typeof processSingleClodeFlow !== 'function') return
+    const tokenHash = token
+    const flowMap = autolistGetClodeFlowMap(tokenHash)
+    const state = flowMap[String(chatId)]
+    if (!(state && state.active)) return
+    const lockKey = beginClodeFlowRun(tokenHash, chatId)
+    if (!lockKey) return
+    const nowTs = Math.floor(Date.now() / 1000)
+    try {
+      await processSingleClodeFlow(chatId, token, userAgent, viewer?.username || null, nowTs)
+    } catch (err) {
+      automationEvents.push(
+        buildAutomessageEvent({
+          logLabel: 'clode-flow',
+          chatId,
+          dealId,
+          result: { sent: false, reason: 'clode_flow_error', error: err?.message || String(err) },
+        })
+      )
+    } finally {
+      finishClodeFlowRun(lockKey)
+    }
+  }
+
+  const runGptFlowIfActive = async () => {
+    if (messagesOnly || !chatId) return
+    if (typeof autolistGetGptFlowMap !== 'function' || typeof processSingleGptFlow !== 'function') return
+    const tokenHash = token
+    const flowMap = autolistGetGptFlowMap(tokenHash)
+    const state = flowMap[String(chatId)]
+    if (!(state && state.active)) return
+    const lockKey = beginGptFlowRun(tokenHash, chatId)
+    if (!lockKey) return
+    const nowTs = Math.floor(Date.now() / 1000)
+    try {
+      await processSingleGptFlow(chatId, token, userAgent, viewer?.username || null, nowTs)
+    } catch (err) {
+      automationEvents.push(
+        buildAutomessageEvent({
+          logLabel: 'gpt-flow',
+          chatId,
+          dealId,
+          result: { sent: false, reason: 'gpt_flow_error', error: err?.message || String(err) },
+        })
+      )
+    } finally {
+      finishGptFlowRun(lockKey)
+    }
+  }
+
   if (effectiveChatId && !messagesOnly) {
     const nowTs = Math.floor(Date.now() / 1000)
     const automessageParams = {
@@ -360,9 +450,9 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
     }
   }
 
-  await runSupercellFlowIfActive('before_paid_chat')
+  if (!automessagesOnly) await runSupercellFlowIfActive('before_paid_chat')
 
-  if (!messagesOnly && effectiveChatId && typeof handlePaidChat === 'function') {
+  if (!automessagesOnly && !messagesOnly && effectiveChatId && typeof handlePaidChat === 'function') {
     try {
       await runApprouteFromDealChat({
         currentUserId,
@@ -396,6 +486,8 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
           autolistClearProcessed,
           autolistGetSupercellFlowMap,
           autolistGetTopupFlowMap,
+          autolistGetClodeFlowMap,
+          autolistGetGptFlowMap,
           extractSupercellEmailFromFields,
           getSupercellGameByCategory,
           pickSupercellCategoryFromItemHints,
@@ -414,9 +506,15 @@ async function processDealChatMessagesEntry({ entryPayload, currentUserId, deps,
   }
 
   // Flow может активироваться внутри handlePaidChat; повторно проверяем в этом же цикле.
-  await runSupercellFlowIfActive('after_paid_chat')
+  if (!automessagesOnly) {
+    await runSupercellFlowIfActive('after_paid_chat')
 
-  await runTopupFlowIfActive()
+    await runTopupFlowIfActive()
+
+    await runClodeFlowIfActive()
+
+    await runGptFlowIfActive()
+  }
 
   return {
     chatId: effectiveChatId ? String(effectiveChatId) : chatId ? String(chatId) : null,

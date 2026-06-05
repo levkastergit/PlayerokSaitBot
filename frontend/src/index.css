@@ -4452,6 +4452,99 @@ body {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
+/* --- Тач-режим: перетаскивание пальцем + тап-размещение (мобильные) --- */
+
+/* «Призрак» плитки, следующий за касанием */
+.lot-settings-auto-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2000;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0.92;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  transform: translate(-9999px, -9999px);
+  transition: none; /* следовать за пальцем без задержки transition плитки */
+  will-change: transform;
+}
+
+body.lot-settings-auto-dragging {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Подсветка «вооружённой» тапом плитки */
+.lot-settings-auto-palette__tile--armed,
+.lot-settings-auto-palette__tile--armed:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Оверлей «Добавить сюда» на совместимом этапе, пока плитка вооружена */
+.lot-settings-auto-stage__drop {
+  position: relative;
+}
+
+.lot-settings-auto-stage__tap-add {
+  position: absolute;
+  inset: 0.4rem;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-elevated));
+  color: var(--accent-strong, var(--accent));
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lot-settings-auto-stage__tap-add:hover {
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-elevated));
+}
+
+/* Плавающая подсказка тап-режима */
+.lot-settings-auto-tap-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  z-index: 2001;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.55rem 0.7rem 0.55rem 1rem;
+  border-radius: 999px;
+  background: var(--text-main);
+  color: var(--bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  font-size: 0.86rem;
+  font-weight: 600;
+  animation: fade-in 0.18s ease;
+}
+
+.lot-settings-auto-tap-hint__text {
+  min-width: 0;
+}
+
+.lot-settings-auto-tap-hint__cancel {
+  flex-shrink: 0;
+  border: none;
+  background: color-mix(in srgb, white 22%, transparent);
+  color: inherit;
+  font: inherit;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
 .lot-settings-auto-placed {
   padding: 0.65rem 0;
 }

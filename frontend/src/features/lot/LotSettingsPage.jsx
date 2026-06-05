@@ -17,6 +17,69 @@ import { TopupApiFlowDiagram } from './TopupApiFlowDiagram'
 
 const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
 
+const SUPERCELL_EMAIL_GAMES = [
+  'brawl stars',
+  'clash royale',
+  'clash of clans',
+  'бравл старс',
+  'бравл старк',
+  'клеш рояль',
+  'клеш оф кланс',
+  'клеш оф кленс',
+]
+
+const SUPERCELL_TITLE_PATTERNS = [
+  /brawl\s*stars|brawlstars|бравл\s*стар/i,
+  /clash\s*royale|clashroyale|клеш\s*роял|клеш\s*рояль/i,
+  /clash\s*of\s*clans|clashofclans|\bcoc\b|клеш\s*оф\s*клан|клеш\s*кланс|клеш\s*кленс/i,
+]
+
+function normalizeSupercellCategoryName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/ё/g, 'е')
+}
+
+function isSuperSellMarketplaceLabel(name) {
+  const n = normalizeSupercellCategoryName(name)
+  if (!n) return false
+  const markers = [
+    'super sell',
+    'supersell',
+    'super-sell',
+    'суперселл',
+    'супер селл',
+    'супер-селл',
+  ]
+  return markers.some((m) => n === m || n.includes(m))
+}
+
+function isSupercellCategoryName(name) {
+  const n = normalizeSupercellCategoryName(name)
+  if (!n) return false
+  if (SUPERCELL_EMAIL_GAMES.includes(n)) return true
+  if (SUPERCELL_EMAIL_GAMES.some((g) => n.includes(g))) return true
+  if (isSuperSellMarketplaceLabel(name)) return true
+  return SUPERCELL_TITLE_PATTERNS.some((re) => re.test(String(name || '')))
+}
+
+function isSupercellLot(lot) {
+  if (!lot || typeof lot !== 'object') return false
+  const candidates = [lot.game, lot.title, lot.tags].filter(Boolean)
+  return candidates.some((value) => isSupercellCategoryName(value))
+}
+
+function isSupercellAutoRequestExplicitlyDisabled(cfg) {
+  return (
+    cfg != null &&
+    typeof cfg === 'object' &&
+    Object.prototype.hasOwnProperty.call(cfg, 'enabled') &&
+    cfg.enabled === false
+  )
+}
+
 const AUTO_MESSAGE_STAGES = [
   { trigger: 'purchase', label: 'Покупка товара' },
   { trigger: 'sent', label: 'Отправка товара' },
@@ -27,6 +90,8 @@ const AUTO_PALETTE_DELIVERY_TILE_IDS = new Set([
   'autodelivery',
   'autodeliveryApi',
   'autotopupApi',
+  'autoclode',
+  'autogpt',
 ])
 
 const AUTO_PALETTE_AUTO_COMPLETE_TILE_ID = 'autoComplete'
@@ -40,6 +105,8 @@ const AUTO_PALETTE_TILES = [
   { id: 'autodelivery', label: 'Автовыдача' },
   { id: 'autodeliveryApi', label: 'API' },
   { id: 'autotopupApi', label: 'Api.Пополнение' },
+  { id: 'autoclode', label: 'Clode' },
+  { id: 'autogpt', label: 'GPT' },
   { id: 'autoComplete', label: 'Автозавершение' },
 ]
 
@@ -52,7 +119,9 @@ function canDropAutoTile(tileId, stageTrigger, ps) {
     tileId === 'autodeliveryApi' ||
     tileId === 'emailValidation' ||
     tileId === 'supercellAutoRequestCode' ||
-    tileId === 'autotopupApi'
+    tileId === 'autotopupApi' ||
+    tileId === 'autoclode' ||
+    tileId === 'autogpt'
   ) {
     return stageTrigger === 'purchase'
   }
@@ -74,7 +143,7 @@ function normalizePurchasePlacementOrder(order) {
       return next
     }
   }
-  for (const anchor of ['a', 'u']) {
+  for (const anchor of ['a', 'u', 'k', 'g']) {
     if (!list.includes(anchor)) continue
     const anchorIdx = withoutC.indexOf(anchor)
     if (anchorIdx >= 0) {
@@ -90,7 +159,9 @@ function canBindAutoCompleteTile(ps) {
   return (
     stageHasAutodeliveryBlock(ps) ||
     purchasePlacementIncludes(ps, 'a') ||
-    purchasePlacementIncludes(ps, 'u')
+    purchasePlacementIncludes(ps, 'u') ||
+    purchasePlacementIncludes(ps, 'k') ||
+    purchasePlacementIncludes(ps, 'g')
   )
 }
 
@@ -168,7 +239,7 @@ function buildPlacementOrder(stage, ps) {
 function mergePlacementOrder(prevOrder, builtOrder) {
   const builtSet = new Set(builtOrder)
   const kept = (prevOrder || []).filter(
-    (k) => builtSet.has(k) || k === 'a' || k === 'e' || k === 's' || k === 'u'
+    (k) => builtSet.has(k) || k === 'a' || k === 'e' || k === 's' || k === 'u' || k === 'k' || k === 'g'
   )
   const keptSet = new Set(kept)
   const added = builtOrder.filter((k) => !keptSet.has(k))
@@ -183,6 +254,8 @@ function placementTileLabel(key) {
   if (key === 'e') return 'Валид.Почта'
   if (key === 's') return 'Автозапрос'
   if (key === 'u') return 'Api.Пополнение'
+  if (key === 'k') return 'Clode'
+  if (key === 'g') return 'GPT'
   if (key.startsWith('i:')) return 'Картинка'
   return 'Текст'
 }
@@ -197,6 +270,8 @@ function placementTileKind(key) {
   if (key === 'e') return 'emailValidation'
   if (key === 's') return 'supercellAutoRequestCode'
   if (key === 'u') return 'autotopupApi'
+  if (key === 'k') return 'autoclode'
+  if (key === 'g') return 'autogpt'
   if (key && key.startsWith('i:')) return 'image'
   return 'text'
 }
@@ -246,6 +321,14 @@ function AutoTileIcon({ kind }) {
     case 'autotopupApi':
       return (
         <svg {...common}><rect x="3.5" y="6.5" width="17" height="11.5" rx="2.5" /><path d="M16 12h2.5M3.5 10h17" /></svg>
+      )
+    case 'autoclode':
+      return (
+        <svg {...common}><path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5-2-5.5L4.5 11 10 9z" /></svg>
+      )
+    case 'autogpt':
+      return (
+        <svg {...common}><circle cx="12" cy="12" r="8" /><path d="M12 8.5v7M8.5 12h7" /></svg>
       )
     case 'text':
     default:
@@ -481,6 +564,20 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [autoDropStage, setAutoDropStage] = useState(null)
   const [placedRowDragOver, setPlacedRowDragOver] = useState(null)
   const autoDropHandledRef = useRef(false)
+  // Тач-режим (мобильные): «вооружённая» тапом плитка и активное тач-перетаскивание.
+  const [armedTile, setArmedTile] = useState(null)
+  const touchDragRef = useRef(null)
+  useEffect(
+    () => () => {
+      const d = touchDragRef.current
+      if (d) {
+        window.removeEventListener('touchmove', d.onMove)
+        window.removeEventListener('touchend', d.onEnd)
+        window.removeEventListener('touchcancel', d.onEnd)
+      }
+    },
+    []
+  )
   // Скрытый режим отладки: включается набором слова «дебаг» на странице.
   const [debugMode, setDebugMode] = useState(false)
   const debugBufferRef = useRef('')
@@ -534,21 +631,17 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           autobump: cleaned.autobump || { enabled: false, schedule: [] },
           autodeliveryApi: cleaned.autodeliveryApi || { enabled: false },
           autotopupApi: cleaned.autotopupApi || { enabled: false },
+          autoclode: cleaned.autoclode || { enabled: false },
+          autogpt: cleaned.autogpt || { enabled: false },
         }
       : { ...cleaned, settingsLabel: '' }
 
     return { groupSettings, itemSettings, trimmedLabel }
   }
 
-  // Проверка почты Supercell ID только для категорий: Brawl Stars, Clash Royale, Clash of Clans
-  const SUPERCELL_EMAIL_GAMES = [
-    'brawl stars', 'clash royale', 'clash of clans',
-    'бравл старс', 'клеш рояль', 'клеш оф кланс',
-  ]
   const DEFAULT_SUPERCELL_CODE_REQUEST_MESSAGE =
     'Запросил код на вашу почту для $game_name, скиньте его пожалуйста сюда в чат, как придет'
-  const lotGameNorm = (lot?.game || '').trim().toLowerCase()
-  const showSupercellEmailValidation = SUPERCELL_EMAIL_GAMES.some((g) => g === lotGameNorm)
+  const showSupercellEmailValidation = isSupercellLot(lot)
 
   const defaultProductSettings = () => ({
     cost: 0,
@@ -593,6 +686,46 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       confirmTemplate: 'Подтвердите: ваш ID/логин — {id}. Всё верно? Напишите «да» или «нет».',
       invalidIdMessage: 'ID/логин не прошёл проверку. Пришлите, пожалуйста, корректный ID/логин ещё раз.',
       successMessage: 'Готово! Пополнение выполнено. Спасибо за покупку.',
+      autoCompleteDeal: false,
+    },
+    autoclode: {
+      enabled: false,
+      tier: 'pro',
+      askIdMessage: 'Напишите, пожалуйста, ваш Claude user ID (UUID) для активации подписки.',
+      confirmTemplate: 'Это ваш id: {id}? Напишите «да» или «нет».',
+      invalidIdMessage:
+        'Не получилось распознать ваш Claude user ID. Пришлите, пожалуйста, корректный UUID ещё раз.',
+      successMessage: 'Готово! Подписка активирована. Спасибо за покупку.',
+      noStockMessage:
+        'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.',
+      failMessage:
+        'Не удалось активировать подписку по этому ID. Проверьте ID и пришлите его ещё раз.',
+      autoCompleteDeal: false,
+    },
+    autogpt: {
+      enabled: false,
+      inputMode: 'link',
+      askLinkMessage:
+        'Пришлите, пожалуйста, ссылку на Google-документ с вашим ChatGPT Access Token (документ должен быть открыт для просмотра «всем, у кого есть ссылка»).',
+      askIdMessage:
+        'Напишите, пожалуйста, ваш ChatGPT ID (app_user_id в формате UUID) для активации подписки.',
+      askAutoMessage:
+        'Для активации пришлите ваш ChatGPT ID (UUID) или ссылку на Google-документ с вашим Access Token (документ открыт для просмотра «всем, у кого есть ссылка»).',
+      invalidLinkMessage:
+        'Не вижу ссылку на Google-документ. Пришлите, пожалуйста, корректную ссылку вида https://docs.google.com/document/...',
+      invalidIdMessage:
+        'Не получилось распознать ваш ChatGPT ID. Пришлите, пожалуйста, корректный app_user_id (UUID) ещё раз.',
+      invalidAutoMessage:
+        'Не распознал ввод. Пришлите, пожалуйста, ваш ChatGPT ID (UUID) или ссылку на Google-документ с токеном.',
+      noAccessMessage:
+        'Нет доступа к документу. Откройте доступ «всем, у кого есть ссылка» (просмотр) — я продолжу активацию автоматически.',
+      tokenNotFoundMessage:
+        'В документе не нашёл Access Token (строку вида eyJ...). Проверьте содержимое и пришлите ссылку ещё раз.',
+      successMessage: 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.',
+      noStockMessage:
+        'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.',
+      failMessage:
+        'Не удалось активировать подписку. Пришлите, пожалуйста, ваши данные ещё раз или подождите — мы повторим.',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -1036,6 +1169,59 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
               ? loaded.autotopupApi.successMessage
               : base.autotopupApi.successMessage,
         },
+        autoclode: (() => {
+          const loadedClode = loaded.autoclode || {}
+          const tier = ['pro', 'max_5x', 'max_20x'].includes(loadedClode.tier)
+            ? loadedClode.tier
+            : 'pro'
+          const pickMsg = (key) =>
+            typeof loadedClode[key] === 'string' ? loadedClode[key] : base.autoclode[key]
+          return {
+            ...base.autoclode,
+            ...loadedClode,
+            enabled: Boolean(loadedClode.enabled),
+            tier,
+            askIdMessage: pickMsg('askIdMessage'),
+            confirmTemplate: pickMsg('confirmTemplate'),
+            invalidIdMessage: pickMsg('invalidIdMessage'),
+            successMessage: pickMsg('successMessage'),
+            noStockMessage: pickMsg('noStockMessage'),
+            failMessage: pickMsg('failMessage'),
+            autoCompleteDeal: Boolean(
+              loadedClode.autoCompleteDeal ||
+                loaded.autodelivery?.autoCompleteDeal
+            ),
+          }
+        })(),
+        autogpt: (() => {
+          const loadedGpt = loaded.autogpt || {}
+          const pickMsg = (key) =>
+            typeof loadedGpt[key] === 'string' ? loadedGpt[key] : base.autogpt[key]
+          const inputMode = ['link', 'id', 'auto'].includes(loadedGpt.inputMode)
+            ? loadedGpt.inputMode
+            : 'link'
+          return {
+            ...base.autogpt,
+            ...loadedGpt,
+            enabled: Boolean(loadedGpt.enabled),
+            inputMode,
+            askLinkMessage: pickMsg('askLinkMessage'),
+            askIdMessage: pickMsg('askIdMessage'),
+            askAutoMessage: pickMsg('askAutoMessage'),
+            invalidLinkMessage: pickMsg('invalidLinkMessage'),
+            invalidIdMessage: pickMsg('invalidIdMessage'),
+            invalidAutoMessage: pickMsg('invalidAutoMessage'),
+            noAccessMessage: pickMsg('noAccessMessage'),
+            tokenNotFoundMessage: pickMsg('tokenNotFoundMessage'),
+            successMessage: pickMsg('successMessage'),
+            noStockMessage: pickMsg('noStockMessage'),
+            failMessage: pickMsg('failMessage'),
+            autoCompleteDeal: Boolean(
+              loadedGpt.autoCompleteDeal ||
+                loaded.autodelivery?.autoCompleteDeal
+            ),
+          }
+        })(),
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
@@ -1095,27 +1281,43 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             purchase.push('e')
           }
           const loadedSupercell = loaded.supercellAutoRequestCode || {}
-          if (
-            Boolean(loadedSupercell.enabled) &&
-            !purchase.includes('s')
-          ) {
+          const supercellAutoRequestExplicitlyOff = isSupercellAutoRequestExplicitlyDisabled(loadedSupercell)
+          const supercellAutoRequestOnByDefault =
+            showSupercellEmailValidation && !supercellAutoRequestExplicitlyOff
+          if (supercellAutoRequestExplicitlyOff) {
+            purchase = purchase.filter((k) => k !== 's')
+          } else if (supercellAutoRequestOnByDefault && !purchase.includes('s')) {
             purchase.push('s')
           }
           const loadedTopup = loaded.autotopupApi || {}
           if (Boolean(loadedTopup.enabled) && !purchase.includes('u')) {
             purchase.push('u')
           }
+          const loadedClode = loaded.autoclode || {}
+          if (Boolean(loadedClode.enabled) && !purchase.includes('k')) {
+            purchase.push('k')
+          }
+          const loadedGpt = loaded.autogpt || {}
+          if (Boolean(loadedGpt.enabled) && !purchase.includes('g')) {
+            purchase.push('g')
+          }
           const loadedAutoComplete = Boolean(
             loaded.autodelivery?.autoCompleteDeal ||
               loaded.autodeliveryApi?.autoCompleteDeal ||
-              loaded.autotopupApi?.autoCompleteDeal
+              loaded.autotopupApi?.autoCompleteDeal ||
+              loaded.autoclode?.autoCompleteDeal ||
+              loaded.autogpt?.autoCompleteDeal
           )
           const canBindComplete =
             Boolean(loaded.autodelivery?.enabled) ||
             purchase.includes('d') ||
             purchase.includes('a') ||
             Boolean(loadedTopup.enabled) ||
-            purchase.includes('u')
+            purchase.includes('u') ||
+            Boolean(loadedClode.enabled) ||
+            purchase.includes('k') ||
+            Boolean(loadedGpt.enabled) ||
+            purchase.includes('g')
           if (loadedAutoComplete && !purchase.includes('c') && canBindComplete) {
             purchase.push('c')
           }
@@ -1142,7 +1344,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             typeof loaded.supercellAutoRequestCode === 'object' &&
             Object.prototype.hasOwnProperty.call(loaded.supercellAutoRequestCode, 'enabled')
               ? Boolean(loaded.supercellAutoRequestCode.enabled)
-              : true,
+              : showSupercellEmailValidation,
           requestCodeMessage:
             typeof loaded.supercellAutoRequestCode?.requestCodeMessage === 'string' &&
             loaded.supercellAutoRequestCode.requestCodeMessage.trim()
@@ -1586,6 +1788,8 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       if (tileId === 'emailValidation' && purchasePlacementIncludes(prev, 'e')) return prev
       if (tileId === 'supercellAutoRequestCode' && purchasePlacementIncludes(prev, 's')) return prev
       if (tileId === 'autotopupApi' && purchasePlacementIncludes(prev, 'u')) return prev
+      if (tileId === 'autoclode' && purchasePlacementIncludes(prev, 'k')) return prev
+      if (tileId === 'autogpt' && purchasePlacementIncludes(prev, 'g')) return prev
       if (tileId === 'autoComplete') {
         if (!canBindAutoCompleteTile(prev) || stageHasAutoCompleteBlock(prev)) return prev
       }
@@ -1697,6 +1901,34 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           },
         }
         next = appendPurchasePlacementKey(next, 'u')
+      } else if (tileId === 'autoclode') {
+        const prevAsk = prev.autoclode?.askIdMessage
+        next = {
+          ...prev,
+          autoclode: {
+            ...(prev.autoclode || {}),
+            enabled: true,
+            askIdMessage:
+              typeof prevAsk === 'string' && prevAsk.trim()
+                ? prevAsk
+                : defaultProductSettings().autoclode.askIdMessage,
+          },
+        }
+        next = appendPurchasePlacementKey(next, 'k')
+      } else if (tileId === 'autogpt') {
+        const prevAsk = prev.autogpt?.askLinkMessage
+        next = {
+          ...prev,
+          autogpt: {
+            ...(prev.autogpt || {}),
+            enabled: true,
+            askLinkMessage:
+              typeof prevAsk === 'string' && prevAsk.trim()
+                ? prevAsk
+                : defaultProductSettings().autogpt.askLinkMessage,
+          },
+        }
+        next = appendPurchasePlacementKey(next, 'g')
       }
       return patchAutoPlacementOrderForStage(next, stageTrigger)
     })
@@ -1712,6 +1944,130 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     beginAutoDropGuard()
     applyAutoTileToStage(tileId, stageTrigger)
     handleAutoPaletteDragEnd()
+  }
+
+  // ----- Тач-режим (мобильные) -----
+  // Нативный HTML5 drag-and-drop почти не работает на тач-экранах, поэтому для
+  // пальца делаем собственный перенос: «призрак» следует за касанием, под пальцем
+  // ищем зону сброса. Запасной вариант — тап по плитке «вооружает» её, затем тап
+  // по кнопке «Добавить сюда» на нужном этапе добавляет её (работает и когда этап
+  // ниже за прокруткой, где обычное перетаскивание неудобно).
+  const TOUCH_DRAG_THRESHOLD_PX = 8
+
+  const applyPlacedRowReorder = (stage, fromPos, toPos) => {
+    if (fromPos === toPos) return
+    beginAutoDropGuard()
+    setProductSettings((prev) => {
+      if (!prev) return prev
+      const order = getStagePlacementOrderFromSettings(stage, prev)
+      const { ps } = reorderPlacementInStage(stage, fromPos, toPos, prev, order)
+      return ps
+    })
+  }
+
+  const beginTileTouchDrag = (e, source, locked) => {
+    if (locked) return
+    if (!e.touches || e.touches.length !== 1) return
+    const sourceEl = e.currentTarget
+    const startTouch = e.touches[0]
+    const startX = startTouch.clientX
+    const startY = startTouch.clientY
+    const rect = sourceEl.getBoundingClientRect()
+    const offsetX = startX - rect.left
+    const offsetY = startY - rect.top
+
+    let ghost = null
+    let dragging = false
+    let target = null // стадия (палитра) или позиция строки (реордер)
+
+    const positionGhost = (x, y) => {
+      if (ghost) ghost.style.transform = `translate(${x - offsetX}px, ${y - offsetY}px)`
+    }
+    const startDragging = () => {
+      dragging = true
+      ghost = sourceEl.cloneNode(true)
+      ghost.classList.add('lot-settings-auto-drag-ghost')
+      ghost.style.width = `${rect.width}px`
+      ghost.style.height = `${rect.height}px`
+      document.body.appendChild(ghost)
+      document.body.classList.add('lot-settings-auto-dragging')
+      setArmedTile(null) // начатое перетаскивание сбрасывает тап-режим
+      if (source.mode === 'palette') setAutoDragTile(source.tileId)
+    }
+
+    const onMove = (ev) => {
+      const t = ev.touches && ev.touches[0]
+      if (!t) return
+      if (!dragging) {
+        if (
+          Math.abs(t.clientX - startX) < TOUCH_DRAG_THRESHOLD_PX &&
+          Math.abs(t.clientY - startY) < TOUCH_DRAG_THRESHOLD_PX
+        )
+          return
+        startDragging()
+      }
+      ev.preventDefault()
+      positionGhost(t.clientX, t.clientY)
+      // Прячем призрак на время хит-теста, иначе elementFromPoint вернёт его.
+      if (ghost) ghost.style.visibility = 'hidden'
+      const under = document.elementFromPoint(t.clientX, t.clientY)
+      if (ghost) ghost.style.visibility = ''
+      if (source.mode === 'palette') {
+        const zone = under && under.closest('[data-auto-stage-drop]')
+        const trig = zone && zone.getAttribute('data-auto-stage-drop')
+        if (trig && canDropAutoTile(source.tileId, trig, productSettings)) {
+          target = trig
+          setAutoDropStage(trig)
+        } else {
+          target = null
+          setAutoDropStage(null)
+        }
+      } else {
+        const rowEl = under && under.closest('[data-auto-row-pos]')
+        if (rowEl && rowEl.getAttribute('data-auto-row-stage') === source.fromStage) {
+          const pos = parseInt(rowEl.getAttribute('data-auto-row-pos'), 10)
+          if (!Number.isNaN(pos)) {
+            target = pos
+            setPlacedRowDragOver({ stage: source.fromStage, pos })
+          }
+        }
+      }
+    }
+
+    const onEnd = () => {
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onEnd)
+      window.removeEventListener('touchcancel', onEnd)
+      touchDragRef.current = null
+      if (ghost) ghost.remove()
+      document.body.classList.remove('lot-settings-auto-dragging')
+      if (dragging) {
+        if (source.mode === 'palette' && target) {
+          applyAutoTileToStage(source.tileId, target)
+        } else if (source.mode === 'row' && target != null) {
+          applyPlacedRowReorder(source.fromStage, source.fromPos, target)
+        }
+      } else if (source.mode === 'palette') {
+        // Это был тап без перетаскивания — «вооружаем»/снимаем плитку: следующий
+        // тап по «Добавить сюда» на нужном этапе разместит её.
+        setArmedTile((cur) => (cur === source.tileId ? null : source.tileId))
+      }
+      setAutoDragTile(null)
+      setAutoDropStage(null)
+      setPlacedRowDragOver(null)
+    }
+
+    touchDragRef.current = { onMove, onEnd }
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onEnd)
+    window.addEventListener('touchcancel', onEnd)
+  }
+
+  const placeArmedTileToStage = (stageTrigger) => {
+    if (!armedTile) return
+    if (!canDropAutoTile(armedTile, stageTrigger, productSettings)) return
+    applyAutoTileToStage(armedTile, stageTrigger)
+    setArmedTile(null)
   }
 
   const removeAutoBlockFromStage = (stageTrigger, tileId) => {
@@ -1808,6 +2164,36 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       }
       if (tileId === 'autotopupApi') {
         let next = removePurchasePlacementKey(prev, 'u')
+        if (!canBindAutoCompleteTile(next) && stageHasAutoCompleteBlock(next)) {
+          next = {
+            ...next,
+            autodelivery: { ...(next.autodelivery || {}), autoCompleteDeal: false },
+          }
+          next = removePurchasePlacementKey(next, 'c')
+        }
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      if (tileId === 'autoclode') {
+        let next = {
+          ...prev,
+          autoclode: { ...(prev.autoclode || {}), enabled: false },
+        }
+        next = removePurchasePlacementKey(next, 'k')
+        if (!canBindAutoCompleteTile(next) && stageHasAutoCompleteBlock(next)) {
+          next = {
+            ...next,
+            autodelivery: { ...(next.autodelivery || {}), autoCompleteDeal: false },
+          }
+          next = removePurchasePlacementKey(next, 'c')
+        }
+        return patchAutoPlacementOrderForStage(next, stageTrigger)
+      }
+      if (tileId === 'autogpt') {
+        let next = {
+          ...prev,
+          autogpt: { ...(prev.autogpt || {}), enabled: false },
+        }
+        next = removePurchasePlacementKey(next, 'g')
         if (!canBindAutoCompleteTile(next) && stageHasAutoCompleteBlock(next)) {
           next = {
             ...next,
@@ -2143,6 +2529,9 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                     (autoDragTile === tile.id
                                       ? ' lot-settings-auto-palette__tile--dragging'
                                       : '') +
+                                    (armedTile === tile.id
+                                      ? ' lot-settings-auto-palette__tile--armed'
+                                      : '') +
                                     (paletteLocked ? ' lot-settings-auto-palette__tile--locked' : '')
                                   }
                                   draggable={!paletteLocked}
@@ -2151,6 +2540,9 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                     handleAutoPaletteDragStart(e, tile.id)
                                   }}
                                   onDragEnd={handleAutoPaletteDragEnd}
+                                  onTouchStart={(e) =>
+                                    beginTileTouchDrag(e, { mode: 'palette', tileId: tile.id }, paletteLocked)
+                                  }
                                 >
                                   <span className="lot-settings-auto-palette__tile-icon">
                                     <AutoTileIcon kind={tile.id} />
@@ -2176,6 +2568,9 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                             stage.trigger,
                             productSettings
                           )
+                          const armedCanDrop = Boolean(
+                            armedTile && canDropAutoTile(armedTile, stage.trigger, productSettings)
+                          )
                           return (
                             <div
                               key={stage.trigger}
@@ -2196,14 +2591,25 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                 className={
                                   'lot-settings-auto-stage__body lot-settings-auto-stage__drop' +
                                   (dropActive ? ' lot-settings-auto-stage__drop--over' : '') +
+                                  (armedCanDrop ? ' lot-settings-auto-stage__drop--armed' : '') +
                                   (stageOrder.length === 0
                                     ? ' lot-settings-auto-stage__drop--empty'
                                     : '')
                                 }
+                                data-auto-stage-drop={stage.trigger}
                                 onDragOver={(e) => handleAutoStageDragOver(e, stage.trigger)}
                                 onDragLeave={(e) => handleAutoStageDragLeave(e, stage.trigger)}
                                 onDrop={(e) => handleAutoStageDrop(e, stage.trigger)}
                               >
+                                {armedCanDrop ? (
+                                  <button
+                                    type="button"
+                                    className="lot-settings-auto-stage__tap-add"
+                                    onClick={() => placeArmedTileToStage(stage.trigger)}
+                                  >
+                                    + Добавить сюда
+                                  </button>
+                                ) : null}
                                 {stageOrder.length === 0 ? (
                                   <div className="lot-settings-auto-stage__placeholder" aria-hidden="true">
                                     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -2241,6 +2647,8 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                         : '')
 
                                     const rowDragHandlers = {
+                                      'data-auto-row-stage': stage.trigger,
+                                      'data-auto-row-pos': pos,
                                       onDragOver: (e) => {
                                         if (e.dataTransfer.types.includes(PLACEMENT_ROW_MIME)) {
                                           handlePlacedRowDragOver(e, stage.trigger, pos)
@@ -2280,6 +2688,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                           handlePlacedRowDragStart(e, stage.trigger, pos)
                                         }
                                         onDragEnd={handlePlacedRowDragEnd}
+                                        onTouchStart={(e) => {
+                                          e.stopPropagation()
+                                          beginTileTouchDrag(
+                                            e,
+                                            { mode: 'row', fromStage: stage.trigger, fromPos: pos },
+                                            false
+                                          )
+                                        }}
                                       >
                                         <span className="lot-settings-auto-palette__tile-icon">
                                           <AutoTileIcon kind={placementTileKind(placeKey)} />
@@ -2569,6 +2985,93 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                                       )
                                     }
 
+                                    if (placeKey === 'k' && stage.trigger === 'purchase') {
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-autoclode`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.autoclode?.askIdMessage ?? ''
+                                            }
+                                            onChange={(e) =>
+                                              setFeature(
+                                                'autoclode',
+                                                'askIdMessage',
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'autoclode'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
+                                    if (placeKey === 'g' && stage.trigger === 'purchase') {
+                                      const gptMode = ['link', 'id', 'auto'].includes(
+                                        productSettings?.autogpt?.inputMode
+                                      )
+                                        ? productSettings.autogpt.inputMode
+                                        : 'link'
+                                      const gptAskField =
+                                        gptMode === 'id'
+                                          ? 'askIdMessage'
+                                          : gptMode === 'auto'
+                                            ? 'askAutoMessage'
+                                            : 'askLinkMessage'
+                                      return (
+                                        <div
+                                          key={`${stage.trigger}-autogpt`}
+                                          className={rowClass}
+                                          {...rowDragHandlers}
+                                        >
+                                          {tileEl}
+                                          <input
+                                            type="text"
+                                            className="lot-settings-input lot-settings-auto-placed__field"
+                                            value={
+                                              productSettings?.autogpt?.[gptAskField] ?? ''
+                                            }
+                                            onChange={(e) =>
+                                              setFeature(
+                                                'autogpt',
+                                                gptAskField,
+                                                e.target.value
+                                              )
+                                            }
+                                          />
+                                          <button
+                                            type="button"
+                                            className="lot-settings-btn lot-settings-btn--secondary lot-settings-auto-placed__delete"
+                                            onClick={() =>
+                                              removeAutoBlockFromStage(
+                                                stage.trigger,
+                                                'autogpt'
+                                              )
+                                            }
+                                          >
+                                            Удалить
+                                          </button>
+                                        </div>
+                                      )
+                                    }
+
                                     if (placeKey === 's' && stage.trigger === 'purchase') {
                                       return (
                                         <div
@@ -2681,6 +3184,22 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                       </div>
                     </div>
                   </div>
+                  {armedTile ? (
+                    <div className="lot-settings-auto-tap-hint" role="status">
+                      <span className="lot-settings-auto-tap-hint__text">
+                        «{(AUTO_PALETTE_TILES.find((t) => t.id === armedTile) || {}).label ||
+                          'Элемент'}
+                        » — нажмите «Добавить сюда» на нужном этапе
+                      </span>
+                      <button
+                        type="button"
+                        className="lot-settings-auto-tap-hint__cancel"
+                        onClick={() => setArmedTile(null)}
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  ) : null}
                   {imageUploadError && (
                     <span className="lot-settings-field__hint">{imageUploadError}</span>
                   )}
@@ -3007,6 +3526,253 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                       />
                     </div>
                   )}
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача Clode</h4>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autoclode?.enabled)}
+                      onChange={(e) => setFeature('autoclode', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу Clode (Claude)</span>
+                  </label>
+                  {Boolean(productSettings?.autoclode?.enabled) && (
+                    <div className="lot-settings-autodelivery-extra">
+                      <p className="lot-settings-field__label">
+                        Коды (CDK) берутся из таблицы, привязанной выше («Привязка к таблице»).
+                      </p>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Тариф Claude</span>
+                        <select
+                          className="lot-settings-input"
+                          value={productSettings?.autoclode?.tier ?? 'pro'}
+                          onChange={(e) => setFeature('autoclode', 'tier', e.target.value)}
+                        >
+                          <option value="pro">Claude Pro (bbc)</option>
+                          <option value="max_5x">Claude Max 5x (bbc5x)</option>
+                          <option value="max_20x">Claude Max 20x (bbc20x)</option>
+                        </select>
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение-запрос ID</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.askIdMessage ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'askIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">
+                          Сообщение-подтверждение (используйте {'{id}'} — подставится ID)
+                        </span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.confirmTemplate ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'confirmTemplate', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при неверном ID</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.invalidIdMessage ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'invalidIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение об успехе</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.successMessage ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'successMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при провале активации</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.failMessage ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'failMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при отсутствии свободных кодов</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoclode?.noStockMessage ?? ''}
+                          onChange={(e) => setFeature('autoclode', 'noStockMessage', e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача GPT</h4>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autogpt?.enabled)}
+                      onChange={(e) => setFeature('autogpt', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу GPT (ChatGPT)</span>
+                  </label>
+                  {Boolean(productSettings?.autogpt?.enabled) && (() => {
+                    const gptMode = ['link', 'id', 'auto'].includes(productSettings?.autogpt?.inputMode)
+                      ? productSettings.autogpt.inputMode
+                      : 'link'
+                    const showDoc = gptMode === 'link' || gptMode === 'auto'
+                    return (
+                    <div className="lot-settings-autodelivery-extra">
+                      <p className="lot-settings-field__label">
+                        Карт-коды (card_key) берутся из таблицы, привязанной выше («Привязка к таблице»).
+                        Покупатель присылает свой ChatGPT ID (UUID) и/или ссылку на Google-документ с Access
+                        Token (бот скачивает документ и достаёт токен). Подтверждения нет.
+                      </p>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Способ ввода от покупателя</span>
+                        <select
+                          className="lot-settings-input"
+                          value={gptMode}
+                          onChange={(e) => setFeature('autogpt', 'inputMode', e.target.value)}
+                        >
+                          <option value="link">Ссылка на Google-документ (токен)</option>
+                          <option value="id">Прямой ID (app_user_id, UUID)</option>
+                          <option value="auto">Авто (ID или ссылка)</option>
+                        </select>
+                      </label>
+                      {gptMode === 'link' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение-запрос ссылки на документ</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.askLinkMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'askLinkMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {gptMode === 'id' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение-запрос ID</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.askIdMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'askIdMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {gptMode === 'auto' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение-запрос (ID или ссылка)</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.askAutoMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'askAutoMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {gptMode === 'link' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение при некорректной ссылке</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.invalidLinkMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'invalidLinkMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {gptMode === 'id' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение при некорректном ID</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.invalidIdMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'invalidIdMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {gptMode === 'auto' && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение при нераспознанном вводе</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.invalidAutoMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'invalidAutoMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {showDoc && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение при отсутствии доступа к документу</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.noAccessMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'noAccessMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {showDoc && (
+                        <label className="lot-settings-field">
+                          <span className="lot-settings-field__label">Сообщение, если токен в документе не найден</span>
+                          <textarea
+                            className="lot-settings-input lot-settings-textarea"
+                            rows={2}
+                            value={productSettings?.autogpt?.tokenNotFoundMessage ?? ''}
+                            onChange={(e) => setFeature('autogpt', 'tokenNotFoundMessage', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение об успехе</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogpt?.successMessage ?? ''}
+                          onChange={(e) => setFeature('autogpt', 'successMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при провале активации</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogpt?.failMessage ?? ''}
+                          onChange={(e) => setFeature('autogpt', 'failMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при отсутствии свободных кодов</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogpt?.noStockMessage ?? ''}
+                          onChange={(e) => setFeature('autogpt', 'noStockMessage', e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    )
+                  })()}
                 </div>
                 </section>
                 </>

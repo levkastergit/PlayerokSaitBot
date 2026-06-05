@@ -74,6 +74,14 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistPruneTopupFlowMap,
     processActiveTopupFlows,
     processSingleTopupFlow,
+    autolistGetClodeFlowMap,
+    autolistPruneClodeFlowMap,
+    processActiveClodeFlows,
+    processSingleClodeFlow,
+    autolistGetGptFlowMap,
+    autolistPruneGptFlowMap,
+    processActiveGptFlows,
+    processSingleGptFlow,
     isSupercellModuleEnabled,
     handleOrderedStageAutomessage,
     handlePostPurchaseAutomessage,
@@ -128,6 +136,8 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistPruneItemStateMap(tokenHash, nowTs)
     autolistPruneSupercellFlowMap(tokenHash, nowTs)
     if (typeof autolistPruneTopupFlowMap === 'function') autolistPruneTopupFlowMap(tokenHash, nowTs)
+    if (typeof autolistPruneClodeFlowMap === 'function') autolistPruneClodeFlowMap(tokenHash, nowTs)
+    if (typeof autolistPruneGptFlowMap === 'function') autolistPruneGptFlowMap(tokenHash, nowTs)
 
     let periodicResult = null
     const lastScanTs = Number(scanMeta?.lastScanTs || 0)
@@ -613,6 +623,30 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetTopupFlowMap,
         processSingleTopupFlow,
+      })
+    }
+
+    if (typeof processActiveClodeFlows === 'function' && typeof processSingleClodeFlow === 'function') {
+      await processActiveClodeFlows({
+        tokenHash,
+        token,
+        userAgent,
+        viewerUsername: viewer?.username || null,
+        nowTs,
+        autolistGetClodeFlowMap,
+        processSingleClodeFlow,
+      })
+    }
+
+    if (typeof processActiveGptFlows === 'function' && typeof processSingleGptFlow === 'function') {
+      await processActiveGptFlows({
+        tokenHash,
+        token,
+        userAgent,
+        viewerUsername: viewer?.username || null,
+        nowTs,
+        autolistGetGptFlowMap,
+        processSingleGptFlow,
       })
     }
 

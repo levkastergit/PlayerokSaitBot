@@ -26,6 +26,8 @@ const { handleGetOutboundIpSettings } = require('../features/playerokOutboundIp/
 const { handleSetOutboundIpSettings } = require('../features/playerokOutboundIp/handleSetOutboundIpSettings')
 const { handleGetApprouteSettings } = require('../features/approute/handleGetApprouteSettings')
 const { handleSetApprouteSettings } = require('../features/approute/handleSetApprouteSettings')
+const { handleGetClodeSettings } = require('../features/clode/handleGetClodeSettings')
+const { handleSetClodeSettings } = require('../features/clode/handleSetClodeSettings')
 const { handleGetApprouteServices } = require('../features/approute/handleGetApprouteServices')
 const { handleGetApprouteServiceVariants } = require('../features/approute/handleGetApprouteServiceVariants')
 const { handleDockerBuildPush, getDockerBuildPushStatus } = require('../features/docker/handleDockerBuildPush')
@@ -273,6 +275,25 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
       return true
     }
     const result = await handleSetApprouteSettings({ payload, currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/clode/settings') {
+    const result = await handleGetClodeSettings({ currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/clode/settings') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handleSetClodeSettings({ payload, currentUserId, deps })
     sendJson(res, result.statusCode, result.data)
     return true
   }
