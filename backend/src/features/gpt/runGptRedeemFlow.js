@@ -3,6 +3,7 @@
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
+const { isDealDeliveredOrFinished } = require('../approute/approuteAutodeliveryGuards')
 
 // ---------------------------------------------------------------------------
 // Чат-флоу «Автовыдача GPT» (активация ChatGPT-подписок через api.987ai.vip).
@@ -101,6 +102,7 @@ function createProcessSingleGptFlow(deps) {
     isGptTokenFaultError,
     isGptStockError,
     claimNextUnusedTableCode,
+    markTableCodeUsed,
     releaseTableCode,
     updateDealStatus,
     toUnixTs = defaultToUnixTs,
@@ -202,6 +204,7 @@ function createProcessSingleGptFlow(deps) {
                 itemId: state.itemId || null,
                 chatId: String(chatId),
                 nowTs,
+                pending: true,
               })
             : null
         const cardKey = claimed?.code ? String(claimed.code).trim() : ''
@@ -231,6 +234,19 @@ function createProcessSingleGptFlow(deps) {
           const result = await redeemGptAndConfirm({ cardKey, accessToken })
 
           if (result.completed) {
+            // Подтверждённый успех: фиксируем card_key как 'used' ('pending' → 'used').
+            if (typeof markTableCodeUsed === 'function' && claimed?.id != null) {
+              try {
+                markTableCodeUsed(state.userId, claimed.id, { nowTs })
+              } catch (e) {
+                logApprouteAutodelivery('gpt: mark code used failed', {
+                  chatId: String(chatId),
+                  dealId,
+                  codeId: claimed.id,
+                  error: e?.message || String(e),
+                })
+              }
+            }
             await sendChat(token, userAgent, chatId, successMessage, 'gpt-success')
 
             let autoCompleteDealDone = false
@@ -342,6 +358,29 @@ function createProcessSingleGptFlow(deps) {
       }
 
       const stage = String(state.stage || 'await_link')
+
+      // Issue #1: если сделка уже завершена/подтверждена/товар отправлен — на
+      // «запрашивающих»/ретрай-стадиях ничего у покупателя не спрашиваем и не
+      // активируем (после резерва кода в 'ordering' код не удерживается между
+      // тиками, поэтому 'pending' здесь не зависнет).
+      if (
+        (stage === 'await_link' || stage === 'await_access' || stage === 'await_stock') &&
+        isDealDeliveredOrFinished(chatData?.dealStatus)
+      ) {
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted' })
+        logApprouteAutodelivery('gpt: skip — deal already delivered/finished', {
+          chatId: String(chatId),
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return {
+          ran: true,
+          action: 'skipped_deal_done',
+          reason: String(chatData?.dealStatus || '').toUpperCase() || 'finished',
+          chatId: String(chatId),
+          dealId,
+        }
+      }
 
       // --- Стадия 1: запрос ввода (ID и/или ссылка на Google-док) -------------
       if (stage === 'await_link') {

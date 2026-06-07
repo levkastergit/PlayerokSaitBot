@@ -189,6 +189,7 @@ function createFetchDealChatMessagesFromPlayerok({
         buyerSupercellEmail: null,
         dealBuyerSupercellEmail: null,
         buyerMessageSupercellEmail: null,
+        dealStatus: null,
         itemTitle: null,
         itemImageUrl: null,
         itemCategory: null,
@@ -300,6 +301,7 @@ function createFetchDealChatMessagesFromPlayerok({
 
     let dealBuyerSupercellEmail = null
     let dealBuyerUsername = null
+    let dealStatus = null
     let itemTitle = hintTitle || null
     let itemImageUrl = hintImage || null
     let itemCategory = hintCategory || null
@@ -327,6 +329,9 @@ function createFetchDealChatMessagesFromPlayerok({
 
         const item = fullDeal && fullDeal.item ? fullDeal.item : null
         if (item && item.id != null) effectiveItemId = String(item.id).trim()
+        if (fullDeal && fullDeal.status != null) {
+          dealStatus = String(fullDeal.status).trim().toUpperCase() || null
+        }
         if (fullDeal?.buyer && typeof fullDeal.buyer === 'object') {
           const bu = fullDeal.buyer.username || fullDeal.buyer.name
           if (bu) dealBuyerUsername = String(bu).trim()
@@ -617,6 +622,7 @@ function createFetchDealChatMessagesFromPlayerok({
       effectiveDealId: effectiveDealId || null,
       effectiveItemId: effectiveItemId || null,
       buyerUsername: dealBuyerUsername || null,
+      dealStatus: dealStatus || null,
       itemTitle,
       itemImageUrl,
       itemCategory,

@@ -380,6 +380,7 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
       id: row.id,
       code: row.code,
       used: Number(row.used || 0) === 1,
+      status: row.status || (Number(row.used || 0) === 1 ? 'used' : 'unused'),
       dealId: row.deal_id || null,
       itemId: row.item_id || null,
       chatId: row.chat_id || null,
@@ -484,20 +485,30 @@ async function dispatchFinance({ req, res, pathname, query, currentUserId, deps 
     }
 
     const id = Number(payload?.id)
-    const used = payload?.used === true ? 1 : 0
     if (!Number.isFinite(id) || id <= 0) {
       sendJson(res, 400, { error: 'id is required' })
       return true
     }
 
+    // Поддерживаем трёхзначный статус ('unused'|'pending'|'used'); для обратной
+    // совместимости падаем обратно на булево `used`. used и status держим согласованными.
+    const allowedStatuses = new Set(['unused', 'pending', 'used'])
+    const rawStatus = String(payload?.status || '').trim().toLowerCase()
+    const status = allowedStatuses.has(rawStatus)
+      ? rawStatus
+      : payload?.used === true
+        ? 'used'
+        : 'unused'
+    const used = status === 'used' ? 1 : 0
+
     const statusChangedAt = Math.floor(Date.now() / 1000)
-    const info = deps.updateCodeUsed.run(used, statusChangedAt, id, currentUserId)
+    const info = deps.updateCodeUsed.run(used, status, statusChangedAt, id, currentUserId)
     if (!info.changes) {
       sendJson(res, 404, { error: 'code not found' })
       return true
     }
 
-    sendJson(res, 200, { ok: true, statusChangedAt })
+    sendJson(res, 200, { ok: true, status, used: used === 1, statusChangedAt })
     return true
   }
 

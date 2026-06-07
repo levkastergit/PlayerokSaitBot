@@ -88,6 +88,36 @@ const TOPUP_DEFAULT_MESSAGES = {
 const SUPERCELL_CODE_DEFAULT_MESSAGE =
   'Запросил код на вашу почту для $game_name, скиньте его пожалуйста сюда в чат, как придет'
 
+// Дефолты сообщений автовыдачи Clode (Claude) — те же, что подставляет бэкенд
+// (runClodeRedeemFlow) при пустых полях. Тариф/код берутся из привязанной таблицы.
+const CLODE_DEFAULT_MESSAGES = {
+  askIdMessage: 'Напишите, пожалуйста, ваш Claude user ID (UUID) для активации.',
+  confirmTemplate: 'это ваш id: {id}, да/нет?',
+  successMessage: 'Готово! Подписка активирована. Спасибо за покупку.',
+}
+const CLODE_TIER_LABELS = {
+  pro: 'Claude Pro (bbc)',
+  max_5x: 'Claude Max 5x (bbc5x)',
+  max_20x: 'Claude Max 20x (bbc20x)',
+}
+
+// Дефолты сообщений автовыдачи GPT (ChatGPT) — те же, что подставляет бэкенд
+// (runGptRedeemFlow). Запрос зависит от inputMode (ссылка/ID/авто).
+const GPT_DEFAULT_MESSAGES = {
+  askLinkMessage:
+    'Пришлите, пожалуйста, ссылку на Google-документ с вашим ChatGPT Access Token (документ должен быть открыт для просмотра «всем, у кого есть ссылка»).',
+  askIdMessage:
+    'Напишите, пожалуйста, ваш ChatGPT ID (app_user_id в формате UUID) для активации подписки.',
+  askAutoMessage:
+    'Для активации пришлите ваш ChatGPT ID (UUID) или ссылку на Google-документ с вашим Access Token (документ открыт для просмотра «всем, у кого есть ссылка»).',
+  successMessage: 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.',
+}
+const GPT_INPUT_MODE_LABELS = {
+  link: 'ссылка на Google-документ',
+  id: 'ChatGPT ID (UUID)',
+  auto: 'ID или ссылка на документ',
+}
+
 // Каноническое имя игры Supercell — как его подставляет бэкенд
 // (getSupercellGameByCategory → gameName). Нужно, чтобы превью «Запрос кода»
 // показывало ровно тот текст, что реально отправит бот, даже если категория
@@ -322,7 +352,11 @@ function buildWorkLogic(s, ctx, imageUrlBuilder) {
   }
 
   const sc = s.supercellAutoRequestCode || {}
-  if (sc.enabled) {
+  // Шаг Supercell показываем только для Supercell-товаров (как в /lot, где блок
+  // доступен лишь для Supercell-категорий). Иначе для не-Supercell товара с
+  // случайно включённым флагом показывался бы лишний шаг «Автозапрос кода
+  // Supercell», а бот его всё равно не запустит (нет Supercell-категории).
+  if (sc.enabled && ctx?.supercellCategoryMatch) {
     const categoryOk = Boolean(ctx?.supercellCategoryMatch)
     const moduleOk = Boolean(ctx?.supercellModuleEnabled)
     const active = categoryOk && moduleOk
@@ -387,6 +421,78 @@ function buildWorkLogic(s, ctx, imageUrlBuilder) {
       waitsForBuyer: true,
       substeps: sub,
       autoComplete: Boolean(tu.autoCompleteDeal || ad.autoCompleteDeal),
+    })
+  }
+
+  // Автовыдача Clode (Claude): бот спрашивает Claude user ID, подтверждает и
+  // активирует подписку CDK-кодом из привязанной таблицы. Бэкенд (runClodeRedeemFlow)
+  // короткозамыкает в no_config без привязки к таблице — повторяем это в активности.
+  const clode = s.autoclode || {}
+  if (clode.enabled) {
+    const hasBinding = Boolean(String(s.tableBinding?.subtabId || '').trim())
+    const subtabName = String(s.tableBinding?.subtabName || s.tableBinding?.subtabId || '').trim()
+    const tierLabel = CLODE_TIER_LABELS[String(clode.tier || 'pro')] || CLODE_TIER_LABELS.pro
+    const sub = [
+      { label: 'Запрос ID', text: String(clode.askIdMessage || '').trim() || CLODE_DEFAULT_MESSAGES.askIdMessage },
+      {
+        label: 'Подтверждение',
+        text: String(clode.confirmTemplate || '').trim() || CLODE_DEFAULT_MESSAGES.confirmTemplate,
+      },
+      {
+        label: 'CDK из таблицы',
+        text: hasBinding
+          ? `Следующий свободный код из «${subtabName}»`
+          : 'нет привязки к таблице — код не будет выдан',
+      },
+      { label: 'Успех', text: String(clode.successMessage || '').trim() || CLODE_DEFAULT_MESSAGES.successMessage },
+    ]
+    purchaseSteps.push({
+      kind: 'clode',
+      label: 'Автовыдача Clode (Claude)',
+      active: hasBinding,
+      inactiveReason: hasBinding ? '' : 'не выбрана таблица с CDK-кодами — выдача не сработает',
+      detail: tierLabel,
+      waitsForBuyer: true,
+      substeps: sub,
+      autoComplete: Boolean(clode.autoCompleteDeal || ad.autoCompleteDeal),
+    })
+  }
+
+  // Автовыдача GPT (ChatGPT): бот просит ChatGPT ID и/или ссылку на Google-док с
+  // Access Token (по inputMode) и активирует карт-кодом (card_key) из привязанной
+  // таблицы. Бэкенд (runGptRedeemFlow) тоже требует привязку к таблице.
+  const gpt = s.autogpt || {}
+  if (gpt.enabled) {
+    const hasBinding = Boolean(String(s.tableBinding?.subtabId || '').trim())
+    const subtabName = String(s.tableBinding?.subtabName || s.tableBinding?.subtabId || '').trim()
+    const mode = ['link', 'id', 'auto'].includes(String(gpt.inputMode || '').toLowerCase())
+      ? String(gpt.inputMode).toLowerCase()
+      : 'link'
+    const askText =
+      mode === 'id'
+        ? String(gpt.askIdMessage || '').trim() || GPT_DEFAULT_MESSAGES.askIdMessage
+        : mode === 'auto'
+          ? String(gpt.askAutoMessage || '').trim() || GPT_DEFAULT_MESSAGES.askAutoMessage
+          : String(gpt.askLinkMessage || '').trim() || GPT_DEFAULT_MESSAGES.askLinkMessage
+    const sub = [
+      { label: 'Запрос данных', text: askText },
+      {
+        label: 'Карт-код из таблицы',
+        text: hasBinding
+          ? `Следующий свободный код из «${subtabName}»`
+          : 'нет привязки к таблице — код не будет выдан',
+      },
+      { label: 'Успех', text: String(gpt.successMessage || '').trim() || GPT_DEFAULT_MESSAGES.successMessage },
+    ]
+    purchaseSteps.push({
+      kind: 'gpt',
+      label: 'Автовыдача GPT (ChatGPT)',
+      active: hasBinding,
+      inactiveReason: hasBinding ? '' : 'не выбрана таблица с карт-кодами — выдача не сработает',
+      detail: GPT_INPUT_MODE_LABELS[mode],
+      waitsForBuyer: true,
+      substeps: sub,
+      autoComplete: Boolean(gpt.autoCompleteDeal || ad.autoCompleteDeal),
     })
   }
 
@@ -585,6 +691,12 @@ export function ChatTab({
   const preloadQueueRef = useRef([])
   const preloadQueueRunningRef = useRef(false)
   const batchLoadInFlightRef = useRef(new Set())
+  // Антизацикливание превью: если бэкенд несколько раз подряд вернул ПУСТО для
+  // чата (мёртвая «пустышка» — превью в строке списка есть, а сообщений нет),
+  // перестаём перезагружать его. Ключ — chatId, значение — { signature, attempts }.
+  // signature = lastMessageId|lastMessageText; при новом сообщении в списке
+  // сигнатура меняется и счётчик сбрасывается, чтобы попробовать снова.
+  const emptyChatLoadTrackerRef = useRef(new Map())
   const chatListScrollAnchorRef = useRef(null)
   const initialLoadDoneRef = useRef(false)
   const visibleChatsRef = useRef([])
@@ -1738,15 +1850,35 @@ export function ChatTab({
   const CHAT_MESSAGES_POLL_MS = 1200
   const PRELOAD_INITIAL_COUNT = 8
   const PRELOAD_VIEWPORT_PRIORITY = 4
+  // Сколько раз подряд терпим ПУСТОЙ ответ превью по одной и той же сигнатуре
+  // строки списка, прежде чем перестать перезагружать «пустышку».
+  const MAX_EMPTY_CHAT_LOAD_ATTEMPTS = 2
+
+  const chatListSignature = (chat) =>
+    `${chat?.lastMessageId != null ? String(chat.lastMessageId) : ''}|${String(chat?.lastMessageText || '').trim()}`
+
+  // Превью этого чата уже вернулось пустым >= лимита раз для текущей сигнатуры —
+  // дальше не дёргаем бэкенд, иначе мёртвая «пустышка» крутит бесконечный реквест.
+  const emptyChatRetriesExhausted = (chat) => {
+    if (!chat?.id) return false
+    const rec = emptyChatLoadTrackerRef.current.get(String(chat.id))
+    return Boolean(
+      rec &&
+        rec.signature === chatListSignature(chat) &&
+        rec.attempts >= MAX_EMPTY_CHAT_LOAD_ATTEMPTS
+    )
+  }
 
   const chatNeedsMessagesLoad = useCallback((chatId) => {
     if (!chatId || isTestChatId(chatId)) return false
     const chatKey = String(chatId)
     if (batchLoadInFlightRef.current.has(chatKey)) return false
+    const chat = chatsRef.current.find((c) => String(c.id) === chatKey)
+    // «Пустышка» (превью есть, сообщений нет) уже исчерпала лимит попыток — стоп.
+    if (chat && emptyChatRetriesExhausted(chat)) return false
     const state = chatStateByIdRef.current[chatId]
     if (state?.loaded && !state?.error) {
       if (!Array.isArray(state.messages) || state.messages.length === 0) {
-        const chat = chatsRef.current.find((c) => String(c.id) === chatKey)
         if (chat?.lastMessageId || String(chat?.lastMessageText || '').trim()) {
           return true
         }
@@ -1837,6 +1969,19 @@ export function ChatTab({
             },
           }))
           continue
+        }
+
+        // Учёт «пустышек»: пустой ответ по той же сигнатуре строки списка копит
+        // счётчик (после лимита перестаём перезагружать), непустой — сбрасывает.
+        const loadedListLen = Array.isArray(result.list) ? result.list.length : 0
+        if (loadedListLen === 0) {
+          const key = String(chatId)
+          const signature = chatListSignature(chat)
+          const prevRec = emptyChatLoadTrackerRef.current.get(key)
+          const attempts = prevRec && prevRec.signature === signature ? prevRec.attempts + 1 : 1
+          emptyChatLoadTrackerRef.current.set(key, { signature, attempts })
+        } else {
+          emptyChatLoadTrackerRef.current.delete(String(chatId))
         }
 
         noteViewerUsername(result.viewerUsername)

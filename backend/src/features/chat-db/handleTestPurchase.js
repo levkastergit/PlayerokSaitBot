@@ -623,7 +623,9 @@ async function stepClode(ctx, buyerText) {
     normalizeClodePlan,
     isClodeValidationError: () => false,
     claimNextUnusedTableCode: () => ({ id: 1, code: 'bbc-TEST' }),
+    markTableCodeUsed: () => true,
     releaseTableCode: () => true,
+    pollClaudeTask: async () => ({ status: 'success' }),
     updateDealStatus: async () => ({}),
     toUnixTs: (v) => Number(v) || 0,
   })
@@ -668,6 +670,7 @@ async function stepGpt(ctx, buyerText) {
     isGptTokenFaultError: () => false,
     isGptStockError: () => false,
     claimNextUnusedTableCode: () => ({ id: 1, code: 'gpt-TEST' }),
+    markTableCodeUsed: () => true,
     releaseTableCode: () => true,
     updateDealStatus: async () => ({}),
     toUnixTs: (v) => Number(v) || 0,

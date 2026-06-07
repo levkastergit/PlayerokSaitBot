@@ -7,7 +7,10 @@ const {
 } = require('../../functions/supercellHelpers')
 const { dealPurchaseUnixTs } = require('../../functions/dealPurchaseUnixTs')
 const { toUnixTs } = require('../../functions/toUnixTs')
-const { shouldSkipApprouteAutodelivery } = require('../approute/approuteAutodeliveryGuards')
+const {
+  shouldSkipApprouteAutodelivery,
+  isDealDeliveredOrFinished,
+} = require('../approute/approuteAutodeliveryGuards')
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { logAutolistTick, warnAutolistTick } = require('../../debug/autolistTickLog')
 const {
@@ -514,9 +517,18 @@ async function handlePaidChat({
     })
   }
 
+  // Issue #1: если сделка уже завершена/подтверждена/товар отправлен — интерактивную
+  // автовыдачу (clode/gpt) НЕ запускаем: бот не должен ничего запрашивать у покупателя.
+  const dealAlreadyDelivered = isDealDeliveredOrFinished(dealStatus || fullDealSnapshot?.status)
+
   // Автовыдача Clode: активируем чат-флоу (бот спросит Claude user ID у покупателя).
   // CDK из таблицы НЕ берём здесь — он claim-ится в момент активации после подтверждения.
-  if (typeof autolistGetClodeFlowMap === 'function' && effectiveSettings?.autoclode?.enabled && lastChat?.id) {
+  if (
+    typeof autolistGetClodeFlowMap === 'function' &&
+    effectiveSettings?.autoclode?.enabled &&
+    lastChat?.id &&
+    !dealAlreadyDelivered
+  ) {
     const clodeMap = autolistGetClodeFlowMap(tokenHash)
     const clodeChatId = String(lastChat.id)
     const prev = clodeMap[clodeChatId] || {}
@@ -556,7 +568,12 @@ async function handlePaidChat({
 
   // Автовыдача GPT: активируем чат-флоу (бот попросит ссылку на Google-док с токеном).
   // card_key из таблицы НЕ берём здесь — он claim-ится в момент активации.
-  if (typeof autolistGetGptFlowMap === 'function' && effectiveSettings?.autogpt?.enabled && lastChat?.id) {
+  if (
+    typeof autolistGetGptFlowMap === 'function' &&
+    effectiveSettings?.autogpt?.enabled &&
+    lastChat?.id &&
+    !dealAlreadyDelivered
+  ) {
     const gptMap = autolistGetGptFlowMap(tokenHash)
     const gptChatId = String(lastChat.id)
     const prev = gptMap[gptChatId] || {}

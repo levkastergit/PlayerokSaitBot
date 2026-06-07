@@ -29,6 +29,14 @@ function parseCodesFromInput(text) {
     .filter(Boolean)
 }
 
+const CODE_STATUS_FILTER_VALUES = new Set(['yes', 'no', 'pending'])
+
+// Трёхзначный статус кода с откатом на старое булево поле used.
+function codeStatusOf(code) {
+  if (code && typeof code.status === 'string' && code.status) return code.status
+  return code && code.used ? 'used' : 'unused'
+}
+
 function getSubtabFilters(filtersBySubtab, subtabId) {
   if (!subtabId) return DEFAULT_TABLE_FILTERS
   const stored = filtersBySubtab[subtabId]
@@ -36,7 +44,7 @@ function getSubtabFilters(filtersBySubtab, subtabId) {
   return {
     dateFrom: typeof stored.dateFrom === 'string' ? stored.dateFrom : '',
     dateTo: typeof stored.dateTo === 'string' ? stored.dateTo : '',
-    used: stored.used === 'yes' || stored.used === 'no' ? stored.used : 'all',
+    used: CODE_STATUS_FILTER_VALUES.has(stored.used) ? stored.used : 'all',
   }
 }
 
@@ -59,8 +67,10 @@ function dateInputToDayEndSec(dateStr) {
 }
 
 function codeMatchesFilters(code, filters) {
-  if (filters.used === 'yes' && !code.used) return false
-  if (filters.used === 'no' && code.used) return false
+  const status = codeStatusOf(code)
+  if (filters.used === 'yes' && status !== 'used') return false
+  if (filters.used === 'pending' && status !== 'pending') return false
+  if (filters.used === 'no' && status !== 'unused') return false
 
   const fromSec = dateInputToDayStartSec(filters.dateFrom)
   const toSec = dateInputToDayEndSec(filters.dateTo)
@@ -265,12 +275,12 @@ export function TableTab() {
     }
   }
 
-  const handleUsedChange = async (codeId, nextUsed) => {
+  const handleUsedChange = async (codeId, nextStatus) => {
     if (!codeId) return
     setUpdatingCodeId(codeId)
     setError('')
     try {
-      const result = await updateTableCodeUsed(codeId, nextUsed)
+      const result = await updateTableCodeUsed(codeId, nextStatus)
       const nextStatusChangedAt =
         result && typeof result.statusChangedAt === 'number'
           ? result.statusChangedAt
@@ -278,7 +288,9 @@ export function TableTab() {
       setCodesBySubtab((prev) => ({
         ...prev,
         [activeSubtabId]: (Array.isArray(prev[activeSubtabId]) ? prev[activeSubtabId] : []).map((item) =>
-          item.id === codeId ? { ...item, used: nextUsed, statusChangedAt: nextStatusChangedAt } : item
+          item.id === codeId
+            ? { ...item, status: nextStatus, used: nextStatus === 'used', statusChangedAt: nextStatusChangedAt }
+            : item
         ),
       }))
     } catch (err) {
@@ -822,7 +834,8 @@ export function TableTab() {
                 onChange={(event) => setActiveSubtabFilter({ used: event.target.value })}
               >
                 <option value="all">Все</option>
-                <option value="yes">Да</option>
+                <option value="yes">Использован</option>
+                <option value="pending">В ожидании</option>
                 <option value="no">Нет</option>
               </select>
             </label>
@@ -930,15 +943,27 @@ export function TableTab() {
                     </button>
                   </td>
                   <td className="table-col-used">
-                    <select
-                      className={'input table-used-select ' + (code.used ? 'table-used-select--yes' : 'table-used-select--no')}
-                      value={code.used ? 'yes' : 'no'}
-                      onChange={(event) => handleUsedChange(code.id, event.target.value === 'yes')}
-                      disabled={updatingCodeId === code.id}
-                    >
-                      <option value="yes">✓ да</option>
-                      <option value="no">✕ нет</option>
-                    </select>
+                    {(() => {
+                      const status = codeStatusOf(code)
+                      const statusClass =
+                        status === 'used'
+                          ? 'table-used-select--yes'
+                          : status === 'pending'
+                            ? 'table-used-select--pending'
+                            : 'table-used-select--no'
+                      return (
+                        <select
+                          className={'input table-used-select ' + statusClass}
+                          value={status === 'used' ? 'used' : status === 'pending' ? 'pending' : 'unused'}
+                          onChange={(event) => handleUsedChange(code.id, event.target.value)}
+                          disabled={updatingCodeId === code.id}
+                        >
+                          <option value="used">✓ использован</option>
+                          <option value="pending">⏳ в ожидании</option>
+                          <option value="unused">✕ нет</option>
+                        </select>
+                      )
+                    })()}
                   </td>
                   <td>{code.dealId || '—'}</td>
                   <td>{code.itemId || '—'}</td>

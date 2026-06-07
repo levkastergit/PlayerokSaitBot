@@ -343,6 +343,7 @@ const {
   deleteCodesByCategory,
   getCodeById,
   claimNextUnusedCode,
+  markCodeUsed,
   releaseCode,
 } = setupTableCodesRepo(db)
 const {
@@ -413,6 +414,7 @@ const { processActiveClodeFlows } = require('./src/features/autolist/processActi
 const { createProcessSingleClodeFlow } = require('./src/features/clode/runClodeRedeemFlow')
 const {
   redeemClaudeAndConfirm,
+  pollClaudeTask,
   isClodeValidationError,
   extractClaudeUserId,
   normalizeClodePlan,
@@ -741,10 +743,12 @@ const processSingleClodeFlow = createProcessSingleClodeFlow({
   createChatMessage,
   loadClodeApiKeyPlain,
   redeemClaudeAndConfirm,
+  pollClaudeTask,
   extractClaudeUserId,
   normalizeClodePlan,
   isClodeValidationError,
   claimNextUnusedTableCode: claimNextUnusedCode,
+  markTableCodeUsed: markCodeUsed,
   releaseTableCode: releaseCode,
   updateDealStatus,
   toUnixTs,
@@ -763,6 +767,7 @@ const processSingleGptFlow = createProcessSingleGptFlow({
   isGptTokenFaultError,
   isGptStockError,
   claimNextUnusedTableCode: claimNextUnusedCode,
+  markTableCodeUsed: markCodeUsed,
   releaseTableCode: releaseCode,
   updateDealStatus,
   toUnixTs,

@@ -3,6 +3,14 @@
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
+const { isDealDeliveredOrFinished } = require('../approute/approuteAutodeliveryGuards')
+
+// После создания задачи активации сервер не всегда успевает отдать терминальный
+// статус в окне опроса redeemClaudeAndConfirm. В этом случае мы НЕ считаем выдачу
+// провалом (подписка могла активироваться) — держим код «в ожидании» и до-опрашиваем
+// задачу на последующих тиках (стадия 'confirming') до success/failed. Лог-предупреждение
+// после этого порога, но опрос продолжается.
+const CLODE_CONFIRM_WARN_SEC = Math.max(60, Number(process.env.CLODE_CONFIRM_WARN_SEC) || 1800)
 
 // ---------------------------------------------------------------------------
 // Чат-флоу «Автовыдача Clode» (активация Claude-кодов через CDK Reseller API).
@@ -94,7 +102,9 @@ function createProcessSingleClodeFlow(deps) {
     normalizeClodePlan,
     isClodeValidationError,
     claimNextUnusedTableCode,
+    markTableCodeUsed,
     releaseTableCode,
+    pollClaudeTask,
     updateDealStatus,
     toUnixTs = defaultToUnixTs,
   } = deps
@@ -108,6 +118,21 @@ function createProcessSingleClodeFlow(deps) {
 
   const done = (flowMap, chatId, state, nowTs, patch = {}) => {
     flowMap[String(chatId)] = { ...state, ...patch, updatedAt: nowTs }
+  }
+
+  // Возврат зарезервированного кода в пул ('unused') при провале активации.
+  const releaseClaimedCode = (userId, codeId, nowTs, chatId, dealId) => {
+    if (typeof releaseTableCode !== 'function' || codeId == null) return
+    try {
+      releaseTableCode(userId, codeId, { nowTs })
+    } catch (e) {
+      logApprouteAutodelivery('clode: release code failed', {
+        chatId: String(chatId),
+        dealId,
+        codeId,
+        error: e?.message || String(e),
+      })
+    }
   }
 
   return async function processSingleClodeFlow(chatId, token, userAgent, viewerUsername, nowTs) {
@@ -159,6 +184,62 @@ function createProcessSingleClodeFlow(deps) {
       const effectiveDealId = resolveEffectiveDealIdForChat({ dealIdFromRequest: dealId, messages }) || dealId
 
       let stage = String(state.stage || 'await_id')
+
+      // Успешная выдача: финализируем код ('used'), идемпотентно шлём сообщение об
+      // успехе (дедуп по тексту, чтобы при ретраях не задвоить), при необходимости
+      // автозавершаем сделку и закрываем флоу. Стадию 'notify_success' проставляем
+      // ДО отправки: если сообщение не уйдёт — повторим на следующем тике, а не будем
+      // активировать повторно. Это гарантирует «Готово! Подписка активирована…».
+      const finishWithSuccess = async () => {
+        done(flowMap, chatId, state, nowTs, { stage: 'notify_success', redeemed: true })
+        const alreadySent = sellerMessageTs(messages, successMessage, viewer, toUnixTs)
+        if (!alreadySent) {
+          await sendChat(token, userAgent, chatId, successMessage, 'clode-success')
+        }
+        let autoCompleteDealDone = false
+        if (cfg.autoCompleteDeal && (effectiveDealId || dealId) && typeof updateDealStatus === 'function') {
+          try {
+            await withRetry(() => updateDealStatus(token, userAgent, effectiveDealId || dealId, 'SENT'), {
+              label: 'updateDealStatus(clode autoComplete)',
+              retries: 2,
+              shouldRetry: isPlayerokRateLimitError,
+            })
+            autoCompleteDealDone = true
+          } catch (err) {
+            logApprouteAutodelivery('clode: auto-complete failed', {
+              chatId: String(chatId),
+              dealId,
+              error: err?.message || String(err),
+            })
+          }
+        }
+        done(flowMap, chatId, state, nowTs, { stage: 'done', active: false, redeemed: true })
+        logApprouteAutodelivery('clode: completed', { chatId: String(chatId), dealId, autoCompleteDealDone })
+        return { ran: true, action: 'redeemed', chatId: String(chatId), dealId, autoCompleteDealDone }
+      }
+
+      // Issue #1: если сделка уже завершена/подтверждена/товар отправлен — НЕ
+      // запрашиваем у покупателя ID и ничего не активируем. Гард только на
+      // «вопросительных» стадиях: после резерва кода (ordering/confirming/notify)
+      // флоу нужно довести до выдачи/возврата, иначе код зависнет в 'pending'.
+      if (
+        (stage === 'await_id' || stage === 'await_confirm') &&
+        isDealDeliveredOrFinished(chatData?.dealStatus)
+      ) {
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted' })
+        logApprouteAutodelivery('clode: skip — deal already delivered/finished', {
+          chatId: String(chatId),
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return {
+          ran: true,
+          action: 'skipped_deal_done',
+          reason: String(chatData?.dealStatus || '').toUpperCase() || 'finished',
+          chatId: String(chatId),
+          dealId,
+        }
+      }
 
       // --- Стадия 1: запрос Claude user ID у покупателя -----------------------
       if (stage === 'await_id') {
@@ -238,6 +319,8 @@ function createProcessSingleClodeFlow(deps) {
         done(flowMap, chatId, state, nowTs, { stage: 'ordering' })
 
         // Берём CDK из привязанной таблицы только сейчас (после подтверждения).
+        // Резервируем его как «в ожидании» (pending) — он станет «использован» лишь
+        // после подтверждённой активации; при провале вернётся в пул ('unused').
         const claimed =
           typeof claimNextUnusedTableCode === 'function'
             ? claimNextUnusedTableCode(state.userId, category, {
@@ -245,6 +328,7 @@ function createProcessSingleClodeFlow(deps) {
                 itemId: state.itemId || null,
                 chatId: String(chatId),
                 nowTs,
+                pending: true,
               })
             : null
         const cdk = claimed?.code ? String(claimed.code).trim() : ''
@@ -254,16 +338,17 @@ function createProcessSingleClodeFlow(deps) {
           logApprouteAutodelivery('clode: no free codes', { chatId: String(chatId), dealId, subtabId })
           return { ran: true, action: 'no_stock', chatId: String(chatId), dealId }
         }
+        const claimedCodeId = claimed?.id != null ? claimed.id : null
 
-        const releaseClaimed = () => {
-          if (typeof releaseTableCode === 'function' && claimed?.id) {
+        const markClaimedUsed = () => {
+          if (typeof markTableCodeUsed === 'function' && claimedCodeId != null) {
             try {
-              releaseTableCode(state.userId, claimed.id, { nowTs })
+              markTableCodeUsed(state.userId, claimedCodeId, { nowTs })
             } catch (e) {
-              logApprouteAutodelivery('clode: release code failed', {
+              logApprouteAutodelivery('clode: mark code used failed', {
                 chatId: String(chatId),
                 dealId,
-                codeId: claimed.id,
+                codeId: claimedCodeId,
                 error: e?.message || String(e),
               })
             }
@@ -283,54 +368,47 @@ function createProcessSingleClodeFlow(deps) {
             }
           }
 
-          if (result.failed || result.inProgress) {
-            // failed: сервер откатил CDK на своей стороне; inProgress: таймаут ожидания.
-            // В обоих случаях возвращаем наш табличный код в пул и просим повторить.
-            releaseClaimed()
+          if (result.completed) {
+            // Подтверждённый успех: фиксируем код 'used' и гарантированно уведомляем.
+            markClaimedUsed()
+            return finishWithSuccess()
+          }
+
+          if (result.failed) {
+            // Сервер откатил CDK на своей стороне — возвращаем наш код в пул и просим повторить.
+            releaseClaimedCode(state.userId, claimedCodeId, nowTs, chatId, dealId)
             await sendChat(token, userAgent, chatId, failMessage, 'clode-redeem-failed')
             done(flowMap, chatId, state, nowTs, { stage: 'await_confirm', confirmMsgTs: nowTs, candidateId: claudeUserId })
-            logApprouteAutodelivery('clode: redeem not completed', {
+            logApprouteAutodelivery('clode: redeem failed', {
               chatId: String(chatId),
               dealId,
-              codeId: claimed.id,
-              inProgress: Boolean(result.inProgress),
+              codeId: claimedCodeId,
               message: result.message || null,
             })
-            return { ran: true, action: result.inProgress ? 'redeem_timeout' : 'redeem_failed', chatId: String(chatId), dealId }
+            return { ran: true, action: 'redeem_failed', chatId: String(chatId), dealId }
           }
 
-          // Успех.
-          await sendChat(token, userAgent, chatId, successMessage, 'clode-success')
-
-          let autoCompleteDealDone = false
-          if (cfg.autoCompleteDeal && (effectiveDealId || dealId) && typeof updateDealStatus === 'function') {
-            try {
-              await withRetry(() => updateDealStatus(token, userAgent, effectiveDealId || dealId, 'SENT'), {
-                label: 'updateDealStatus(clode autoComplete)',
-                retries: 2,
-                shouldRetry: isPlayerokRateLimitError,
-              })
-              autoCompleteDealDone = true
-            } catch (err) {
-              logApprouteAutodelivery('clode: auto-complete failed', {
-                chatId: String(chatId),
-                dealId,
-                error: err?.message || String(err),
-              })
-            }
-          }
-
-          done(flowMap, chatId, state, nowTs, { stage: 'done', active: false, redeemed: true })
-          logApprouteAutodelivery('clode: completed', {
+          // inProgress: задача создана, но терминальный статус не пришёл в окне опроса.
+          // НЕ считаем провалом и НЕ возвращаем код (активация могла пройти) — держим
+          // код «в ожидании» и до-опрашиваем задачу на следующих тиках (стадия confirming).
+          done(flowMap, chatId, state, nowTs, {
+            stage: 'confirming',
+            taskId: result.taskId || '',
+            claimedCodeId,
+            candidateId: claudeUserId,
+            confirmStartedAt: nowTs,
+            confirmWarned: false,
+          })
+          logApprouteAutodelivery('clode: redeem in progress, polling', {
             chatId: String(chatId),
             dealId,
-            codeId: claimed.id,
-            autoCompleteDealDone,
+            codeId: claimedCodeId,
+            taskId: result.taskId || null,
           })
-          return { ran: true, action: 'redeemed', chatId: String(chatId), dealId, autoCompleteDealDone }
+          return { ran: true, action: 'redeem_pending', chatId: String(chatId), dealId }
         } catch (err) {
-          // Сетевой/иной сбой активации — возвращаем код в пул, ждём повторного «да».
-          releaseClaimed()
+          // Синхронный сбой создания задачи — возвращаем код в пул, ждём повторного «да».
+          releaseClaimedCode(state.userId, claimedCodeId, nowTs, chatId, dealId)
           if (isClodeValidationError && isClodeValidationError(err)) {
             await sendChat(token, userAgent, chatId, invalidIdMessage, 'clode-invalid-id')
             done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs, candidateId: '' })
@@ -340,11 +418,93 @@ function createProcessSingleClodeFlow(deps) {
           logApprouteAutodelivery('clode: redeem error', {
             chatId: String(chatId),
             dealId,
-            codeId: claimed.id,
+            codeId: claimedCodeId,
             error: err?.message || String(err),
           })
           return { ran: true, action: 'error', reason: err?.message || String(err), chatId: String(chatId), dealId }
         }
+      }
+
+      // --- Стадия 3: до-опрос задачи активации до терминального статуса --------
+      // Код остаётся «в ожидании» (pending), пока сервер не подтвердит success/failed.
+      if (stage === 'confirming') {
+        const taskId = normText(state.taskId)
+        const claimedCodeId = state.claimedCodeId != null ? state.claimedCodeId : null
+        const claudeUserId = normText(state.candidateId)
+
+        if (!taskId || typeof pollClaudeTask !== 'function') {
+          // Нечего/нечем опрашивать — возвращаемся к ожиданию подтверждения, код держим.
+          done(flowMap, chatId, state, nowTs, { stage: 'await_confirm', confirmMsgTs: nowTs, candidateId: claudeUserId })
+          return { ran: true, action: 'confirm_no_task', chatId: String(chatId), dealId }
+        }
+
+        let poll
+        try {
+          poll = await pollClaudeTask(apiKey, taskId)
+        } catch (err) {
+          // Временная ошибка опроса — повторим на следующем тике, код держим в pending.
+          logApprouteAutodelivery('clode: confirm poll error', {
+            chatId: String(chatId),
+            dealId,
+            taskId,
+            error: err?.message || String(err),
+          })
+          return { ran: true, action: 'confirm_poll_error', reason: err?.message || String(err), chatId: String(chatId), dealId }
+        }
+
+        if (poll.status === 'success') {
+          if (typeof markTableCodeUsed === 'function' && claimedCodeId != null) {
+            try {
+              markTableCodeUsed(state.userId, claimedCodeId, { nowTs })
+            } catch (e) {
+              logApprouteAutodelivery('clode: mark code used failed', {
+                chatId: String(chatId),
+                dealId,
+                codeId: claimedCodeId,
+                error: e?.message || String(e),
+              })
+            }
+          }
+          return finishWithSuccess()
+        }
+
+        if (poll.status === 'failed') {
+          releaseClaimedCode(state.userId, claimedCodeId, nowTs, chatId, dealId)
+          await sendChat(token, userAgent, chatId, failMessage, 'clode-redeem-failed')
+          done(flowMap, chatId, state, nowTs, {
+            stage: 'await_confirm',
+            confirmMsgTs: nowTs,
+            candidateId: claudeUserId,
+            taskId: '',
+            claimedCodeId: null,
+          })
+          logApprouteAutodelivery('clode: redeem failed (confirming)', {
+            chatId: String(chatId),
+            dealId,
+            codeId: claimedCodeId,
+            message: poll.message || null,
+          })
+          return { ran: true, action: 'redeem_failed', chatId: String(chatId), dealId }
+        }
+
+        // Всё ещё pending: код в статусе «в ожидании», продолжаем опрос на тиках.
+        const startedAt = Number(state.confirmStartedAt || nowTs)
+        if (nowTs - startedAt > CLODE_CONFIRM_WARN_SEC && !state.confirmWarned) {
+          logApprouteAutodelivery('clode: redeem still pending (long)', {
+            chatId: String(chatId),
+            dealId,
+            taskId,
+            elapsedSec: nowTs - startedAt,
+          })
+          done(flowMap, chatId, state, nowTs, { confirmWarned: true })
+        }
+        return { ran: true, action: 'confirm_waiting', chatId: String(chatId), dealId }
+      }
+
+      // --- Стадия 4: повторная попытка уведомления об успехе ------------------
+      // Активация уже подтверждена (код 'used'); добиваемся отправки «Готово!».
+      if (stage === 'notify_success') {
+        return finishWithSuccess()
       }
 
       return { ran: true, action: 'skipped', reason: `stage_${stage}`, chatId: String(chatId), dealId }

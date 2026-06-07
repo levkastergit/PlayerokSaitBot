@@ -1546,14 +1546,22 @@ export async function addTableCodes(subtabId, codes) {
   return { list: Array.isArray(data?.list) ? data.list : [] }
 }
 
-export async function updateTableCodeUsed(id, used) {
+// status — один из 'unused' | 'pending' | 'used'. Для обратной совместимости
+// принимаем и булево (true → 'used', false → 'unused') и шлём used вместе со status.
+export async function updateTableCodeUsed(id, status) {
   const codeId = Number(id)
   if (!Number.isFinite(codeId) || codeId <= 0) throw new Error('Некорректный id')
+  const normalized =
+    status === true || status === 'used'
+      ? 'used'
+      : status === 'pending'
+        ? 'pending'
+        : 'unused'
   const response = await trackedFetch(BACKEND_TABLE_CODES_USED_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: codeId, used: Boolean(used) }),
+    body: JSON.stringify({ id: codeId, status: normalized, used: normalized === 'used' }),
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {

@@ -1220,9 +1220,9 @@ body {
 }
 
 .table-used-select {
-  width: 4.6rem;
-  min-width: 4.6rem;
-  max-width: 4.6rem;
+  width: 9.2rem;
+  min-width: 9.2rem;
+  max-width: 9.2rem;
   padding: 0.28rem 0.35rem;
   font-size: 0.82rem;
 }
@@ -1230,6 +1230,11 @@ body {
 .table-used-select--yes {
   color: #16a34a;
   border-color: rgba(22, 163, 74, 0.45);
+}
+
+.table-used-select--pending {
+  color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.45);
 }
 
 .table-used-select--no {
@@ -1240,6 +1245,11 @@ body {
 [data-theme="dark"] .table-used-select--yes {
   color: #4ade80;
   border-color: rgba(74, 222, 128, 0.45);
+}
+
+[data-theme="dark"] .table-used-select--pending {
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.45);
 }
 
 [data-theme="dark"] .table-used-select--no {

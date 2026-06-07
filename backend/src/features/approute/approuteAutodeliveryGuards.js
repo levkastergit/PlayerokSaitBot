@@ -11,6 +11,19 @@ function lastMessageHasDeliveryMarker(text) {
   return DEAL_CONFIRMED_MARKERS.some((marker) => value.includes(marker))
 }
 
+/**
+ * Сделка уже доведена до выдачи: товар отправлен (SENT), сделка подтверждена
+ * (CONFIRMED) или откатана (ROLLED_BACK). В этих состояниях интерактивная
+ * автовыдача (clode/gpt) не должна ничего запрашивать у покупателя.
+ */
+function isDealDeliveredOrFinished(dealStatus) {
+  const status = String(dealStatus || '')
+    .trim()
+    .toUpperCase()
+  if (!status) return false
+  return DEAL_FINISHED_STATUSES.has(status) || DEAL_ITEM_SENT_STATUSES.has(status)
+}
+
 function shouldSkipApprouteAutodelivery({ dealStatus, lastMessageText } = {}) {
   const status = String(dealStatus || '')
     .trim()
@@ -34,4 +47,5 @@ function shouldSkipApprouteAutodelivery({ dealStatus, lastMessageText } = {}) {
 module.exports = {
   shouldSkipApprouteAutodelivery,
   lastMessageHasDeliveryMarker,
+  isDealDeliveredOrFinished,
 }
