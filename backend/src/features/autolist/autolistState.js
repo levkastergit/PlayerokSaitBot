@@ -60,6 +60,24 @@ function autolistMarkAutomessageSent(userId, chatId, dealId, kind, sentAt) {
   } catch (_) {}
 }
 
+// ── Персистентный признак «GPT-сделка уже активирована» ──────────────────────
+// Состояние GPT-флоу (stage:'done') живёт только в in-memory flow-map и теряется при
+// перезапуске сервера и прунинге неактивных флоу. Если сделка ещё в статусе PAID
+// (автозавершение выключено / покупатель не подтвердил), handlePaidChat заново
+// создаёт флоу со стадии await_link, и бот повторно просит ID, а на старое сообщение
+// покупателя шлёт «Не получилось распознать ваш ChatGPT ID…». Поэтому факт успешной
+// активации фиксируем в том же журнале, что и автосообщения — он переживает
+// перезапуск/прунинг. Ключ kind отдельный, чтобы не пересекаться с автосообщениями.
+const GPT_REDEEM_KIND = 'gpt_redeem'
+
+function gptDealWasRedeemed(userId, chatId, dealId) {
+  return autolistWasAutomessageSent(userId, chatId, dealId, GPT_REDEEM_KIND)
+}
+
+function gptMarkDealRedeemed(userId, chatId, dealId, sentAt) {
+  autolistMarkAutomessageSent(userId, chatId, dealId, GPT_REDEEM_KIND, sentAt)
+}
+
 function autolistGetProcessedMap(tokenHash) {
   global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
   const key = String(tokenHash)
@@ -390,6 +408,8 @@ module.exports = {
   setAutolistPersistenceDb,
   autolistWasAutomessageSent,
   autolistMarkAutomessageSent,
+  gptDealWasRedeemed,
+  gptMarkDealRedeemed,
   autolistGetProcessedMap,
   autolistPruneProcessedMap,
   autolistWasProcessed,

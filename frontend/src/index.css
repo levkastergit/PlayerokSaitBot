@@ -3112,6 +3112,37 @@ body {
   border-color: rgba(239, 68, 68, 0.45);
 }
 
+.settings-outbound-ip-badge--rotate {
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+[data-theme='dark'] .settings-outbound-ip-badge--rotate {
+  color: #93c5fd;
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.settings-outbound-ip-rotation-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.25rem 0 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.06);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.settings-outbound-ip-rotation-toggle input {
+  margin-top: 0.2rem;
+  flex: 0 0 auto;
+}
+
 .settings-form {
   margin-top: 0.75rem;
 }
@@ -5152,6 +5183,972 @@ body.lot-settings-auto-dragging {
 .chat-header-row__logic-btn {
   border-color: var(--accent);
   color: var(--accent-strong);
+}
+
+/* ===== Вкладка «Список выполнения» ===== */
+.exec-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.1rem;
+  align-items: start;
+}
+
+.exec-empty {
+  color: var(--text-muted);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.exec-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  overflow: hidden;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.exec-tile--run {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow-soft);
+}
+
+.exec-tile--stopped {
+  opacity: 0.72;
+}
+
+.exec-tile__top {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.exec-tile__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: var(--radius-full);
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.exec-tile--run .exec-tile__dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-soft);
+  animation: exec-pulse 1.4s ease-out infinite;
+}
+
+.exec-tile--idle .exec-tile__dot {
+  background: var(--accent-strong);
+  opacity: 0.55;
+}
+
+@keyframes exec-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 0.5rem rgba(0, 0, 0, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+.exec-tile__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text-main);
+  flex: 1;
+  min-width: 0;
+}
+
+.exec-badge {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  padding: 0.18rem 0.55rem;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.exec-badge--run {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.exec-badge--idle {
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.exec-badge--stopped {
+  background: var(--bg-sidebar);
+  color: var(--color-error);
+  border: 1px solid var(--border-subtle);
+}
+
+.exec-tile__desc {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.exec-tile__bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.exec-tile__bar-track {
+  position: relative;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.exec-tile__bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+  box-shadow: 0 0 0.5rem var(--accent-soft);
+}
+
+/* Непрерывный «бегущий» цикл для быстрых задач (интервал < 1.5 с). */
+.exec-tile__bar-track--loop .exec-tile__bar-fill {
+  width: 36%;
+  animation: exec-loop 0.9s linear infinite;
+}
+
+@keyframes exec-loop {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+/* Пауза: вместо прогресса — статичная диагональная штриховка. */
+.exec-tile__bar-track--paused {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--border-subtle),
+    var(--border-subtle) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+.exec-tile__bar-track--paused .exec-tile__bar-fill {
+  width: 0% !important;
+}
+
+.exec-tile__bar-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.exec-tile__interval {
+  font-weight: 600;
+}
+
+.exec-tile__next {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.exec-tile__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin: 0;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.exec-tile__stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.exec-tile__stats dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.exec-tile__stats dd {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 650;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.exec-tile__stat--err dd {
+  color: var(--color-error);
+}
+
+.exec-tile__err {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--color-error);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Пояснение, почему «выполняется» дольше интервала. */
+.exec-tile__note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+
+/* Кнопка раскрытия деталей. */
+.exec-tile__toggle {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.32rem 0.7rem;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.exec-tile__toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+/* Блок деталей. */
+.exec-details {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.6rem;
+}
+
+.exec-details__cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.9rem;
+}
+
+.exec-details__group {
+  min-width: 0;
+}
+
+.exec-details__heading {
+  margin: 0 0 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.exec-details__heading span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: var(--radius-full);
+  padding: 0.02rem 0.45rem;
+}
+
+.exec-details__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.exec-details__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title chip'
+    'when when';
+  align-items: center;
+  gap: 0.15rem 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.exec-details__title {
+  grid-area: title;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exec-details__sub {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.exec-flow-kind {
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.exec-details__when {
+  grid-area: when;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-height: 0.9rem;
+}
+
+.exec-chip {
+  grid-area: chip;
+  justify-self: end;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 650;
+  padding: 0.14rem 0.5rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+}
+
+.exec-chip--run {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: transparent;
+}
+
+.exec-chip--idle {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+.exec-chip--muted {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.exec-chip--err {
+  background: transparent;
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.exec-chip--ok {
+  background: var(--accent-strong);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* ===== Конвейер подзадач автовыставления внутри развёрнутой плитки ===== */
+.exec-pipe-wrap {
+  margin-bottom: 0.8rem;
+}
+
+/* Заголовок-кнопка сворачиваемого списка подзадач. */
+.exec-pipe-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+  color: var(--text-main);
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.exec-pipe-toggle:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.exec-pipe-toggle__title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.exec-pipe-toggle__count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: var(--radius-full);
+  padding: 0.02rem 0.45rem;
+}
+
+.exec-pipe-toggle__live {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.exec-pipe-toggle__chevron {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* Сам конвейер: вертикальная цепочка пронумерованных шагов. */
+.exec-pipe {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+}
+
+.exec-pipe__node {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  column-gap: 0.6rem;
+}
+
+.exec-pipe__rail {
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Кружок с номером шага. */
+.exec-pipe__num {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+}
+
+/* Соединительная линия до следующего шага. */
+.exec-pipe__line {
+  flex: 1;
+  width: 2px;
+  min-height: 0.7rem;
+  margin: 0.15rem 0;
+  background: var(--border-subtle);
+  border-radius: var(--radius-full);
+}
+
+.exec-pipe__body {
+  grid-column: 2;
+  min-width: 0;
+  padding-bottom: 0.75rem;
+}
+
+.exec-pipe__node:last-child .exec-pipe__body {
+  padding-bottom: 0;
+}
+
+.exec-pipe__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.5rem;
+}
+
+.exec-pipe__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Чип статуса в конвейере живёт во flex-строке, а не в grid-разметке строки. */
+.exec-pipe__head .exec-chip {
+  grid-area: auto;
+  justify-self: auto;
+  flex-shrink: 0;
+}
+
+.exec-pipe__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1rem 0.5rem;
+  margin-top: 0.2rem;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.exec-pipe__count {
+  font-weight: 650;
+  color: var(--text-main);
+}
+
+.exec-pipe__note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Мини-полоса прогресса для активного шага (если поймали проход на лету). */
+.exec-pipe__bar {
+  position: relative;
+  height: 0.35rem;
+  margin-top: 0.4rem;
+  border-radius: var(--radius-full);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.exec-pipe__bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 36%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+  animation: exec-loop 0.9s linear infinite;
+}
+
+/* Пройденный шаг — залит акцентом. */
+.exec-pipe__node--ok .exec-pipe__num {
+  background: var(--accent-strong);
+  border-color: transparent;
+  color: #fff;
+}
+
+.exec-pipe__node--ok .exec-pipe__line {
+  background: var(--accent);
+}
+
+/* Активный шаг — подсветка и пульсация. */
+.exec-pipe__node--run .exec-pipe__num {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  animation: exec-pulse 1.4s ease-out infinite;
+}
+
+.exec-pipe__node--run .exec-pipe__label {
+  color: var(--accent-strong);
+}
+
+/* Ошибочный шаг. */
+.exec-pipe__node--err .exec-pipe__num {
+  background: transparent;
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+/* Пропущенный / без работы — приглушённый. */
+.exec-pipe__node--muted .exec-pipe__num,
+.exec-pipe__node--idle .exec-pipe__num {
+  opacity: 0.7;
+}
+
+.exec-details__empty {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+@media (min-width: 720px) {
+  .exec-details__cols {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .exec-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Внутренние вкладки раздела «Список выполнения». */
+.exec-subtabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-top: 0.6rem;
+  padding: 0.25rem;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+}
+
+.exec-subtab {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 0.35rem 0.95rem;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.exec-subtab:hover {
+  color: var(--text-main);
+}
+
+.exec-subtab--active {
+  background: var(--bg-elevated);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-soft);
+}
+
+/* Пояснение/метрика в деталях задачи. */
+.exec-details__note {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+}
+
+.exec-details__metric {
+  font-size: 0.86rem;
+  color: var(--text-main);
+  margin-bottom: 0.55rem;
+}
+
+.exec-details__metric b {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Вкладка «Наблюдатель сделок» ===== */
+/* Подпись об обрезке снимка (счётчики при этом честные). */
+.dw-cap-note {
+  margin: -0.4rem 0 0.8rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Группы сделок по статусу. */
+.dw-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.6rem;
+}
+
+.dw-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.dw-section__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dw-section__dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: var(--radius-full);
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.dw-section__dot--run {
+  background: var(--accent);
+}
+
+.dw-section__dot--idle {
+  background: var(--accent-strong);
+}
+
+.dw-section__title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  color: var(--text-main);
+}
+
+.dw-section__count {
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: var(--radius-full);
+  padding: 0.05rem 0.5rem;
+}
+
+/* Кнопка перехода в чат сделки. */
+.dw-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dw-chat-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid transparent;
+  font-size: 0.82rem;
+  font-weight: 650;
+  padding: 0.35rem 0.8rem;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.dw-chat-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Пагинатор группы. */
+.dw-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  margin-top: 0.2rem;
+}
+
+.dw-pager__btn {
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+}
+
+.dw-pager__btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.dw-pager__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dw-pager__info {
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  min-width: 3.5rem;
+  text-align: center;
+}
+
+.dw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.1rem;
+  align-items: start;
+}
+
+.dw-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border-left: 3px solid var(--border-subtle);
+}
+
+.dw-card--run {
+  border-left-color: var(--accent);
+}
+
+.dw-card--idle {
+  border-left-color: var(--accent-strong);
+}
+
+.dw-card--flow {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dw-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.dw-card__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text-main);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dw-card__price {
+  flex-shrink: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.dw-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.dw-badge {
+  font-size: 0.74rem;
+  font-weight: 650;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+}
+
+.dw-badge--run {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.dw-badge--idle {
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+.dw-badge--muted {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+.dw-badge--cat {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+.dw-rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dw-rows > div {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.dw-rows dt {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.dw-rows dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dw-rows__delivery dd {
+  font-weight: 600;
+}
+
+.dw-rows__email {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.dw-rows__age {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.dw-rows__ids dd {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .dw-grid {
+    grid-template-columns: 1fr;
+  }
+  .dw-rows > div {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
 }
 
 .chat-header-row__logic-btn:hover:not(:disabled) {

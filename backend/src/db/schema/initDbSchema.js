@@ -20,9 +20,11 @@ const { createTableCodesTable } = require('./createTableCodesTable')
 const { createTableTabsTables } = require('./createTableTabsTables')
 const { createTableColumnsTables } = require('./createTableColumnsTables')
 const { createSentAutomessagesTable } = require('./createSentAutomessagesTable')
+const { createSessionsTable } = require('./createSessionsTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
+  createSessionsTable(db)
   createProductSettingsTable(db)
   createTokensTable(db)
   createBumpHistoryTable(db)

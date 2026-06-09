@@ -4,14 +4,22 @@ const os = require('os')
 const {
   PLAYEROK_OUTBOUND_CHANNELS,
   PLAYEROK_OUTBOUND_DISABLED,
+  PLAYEROK_OUTBOUND_ROTATE,
   isOutboundDisabledBindingValue,
+  isOutboundRotateBindingValue,
 } = require('./playerokOutboundChannels')
 const { getPlayerokRequestUserId } = require('./playerokRequestContext')
+const { pickRotationIp } = require('./playerokOutboundRotation')
 
 let bindingsResolver = null
+let rotationResolver = null
 
 function setOutboundIpBindingsResolver(fn) {
   bindingsResolver = typeof fn === 'function' ? fn : null
+}
+
+function setOutboundRotationResolver(fn) {
+  rotationResolver = typeof fn === 'function' ? fn : null
 }
 
 function loadBindingsForCurrentUser() {
@@ -22,6 +30,17 @@ function loadBindingsForCurrentUser() {
     return bindingsResolver(userId) || {}
   } catch (_) {
     return {}
+  }
+}
+
+function loadRotationForCurrentUser() {
+  if (!rotationResolver) return { enabled: false }
+  const userId = getPlayerokRequestUserId()
+  if (!userId) return { enabled: false }
+  try {
+    return rotationResolver(userId) || { enabled: false }
+  } catch (_) {
+    return { enabled: false }
   }
 }
 
@@ -100,17 +119,51 @@ function resolveConfiguredIpForChannel(channel, bindings) {
   if (isOutboundChannelDisabled(channel, bindings)) return null
   const ch = String(channel || 'default').trim() || 'default'
   const map = bindings && typeof bindings === 'object' ? bindings : {}
+  // __rotate__ — не статический IP: пропускаем как кандидата для статической привязки.
   const candidates = [map[ch], map.default, process.env.PLAYEROK_OUTBOUND_IP]
   for (const raw of candidates) {
     const ip = String(raw || '').trim()
-    if (!ip || isOutboundDisabledBindingValue(ip)) continue
+    if (!ip || isOutboundDisabledBindingValue(ip) || isOutboundRotateBindingValue(ip)) continue
     if (isIpv4BoundLocally(ip)) return ip
   }
   return null
 }
 
+/** Пул IP для ротации = все доступные внешние IPv4 сервера (отсортированы стабильно). */
+function listRotationPool() {
+  return listAvailableOutboundIpv4()
+    .map((a) => a.address)
+    .filter(Boolean)
+}
+
+/** Нужно ли каналу крутить IP по пулу: явный __rotate__ ИЛИ «Автовыбор» при включённом
+ *  глобальном тумблере ротации. Закреплённый конкретный IP и «Выключено» — не крутим. */
+function shouldRotateChannel(channel, bindings, rotation) {
+  const raw = resolveChannelBindingRaw(channel, bindings)
+  if (isOutboundDisabledBindingValue(raw)) return false
+  if (isOutboundRotateBindingValue(raw)) return true
+  const isAuto = raw == null || String(raw).trim() === ''
+  return isAuto && Boolean(rotation && rotation.enabled)
+}
+
 function resolveOutboundLocalAddress(channel) {
-  return resolveConfiguredIpForChannel(channel, loadBindingsForCurrentUser())
+  const bindings = loadBindingsForCurrentUser()
+  if (shouldRotateChannel(channel, bindings, loadRotationForCurrentUser())) {
+    const pool = listRotationPool()
+    if (pool.length > 0) {
+      const picked = pickRotationIp(channel, pool)
+      if (picked.ip) {
+        if (picked.failover) {
+          console.log(
+            `[outbound-ip] 429-повтор: канал «${getOutboundChannelLabel(channel)}» переключён на IP ${picked.ip}`
+          )
+        }
+        return picked.ip
+      }
+    }
+    // Пул пуст (на сервере нет внешних IPv4) — откатываемся к статической привязке/ОС.
+  }
+  return resolveConfiguredIpForChannel(channel, bindings)
 }
 
 function getOutboundChannelsMeta() {
@@ -119,14 +172,19 @@ function getOutboundChannelsMeta() {
 
 module.exports = {
   PLAYEROK_OUTBOUND_DISABLED,
+  PLAYEROK_OUTBOUND_ROTATE,
   setOutboundIpBindingsResolver,
+  setOutboundRotationResolver,
   loadBindingsForCurrentUser,
+  loadRotationForCurrentUser,
   isOutboundChannelDisabled,
   assertPlayerokChannelEnabled,
   PlayerokChannelDisabledError,
   getOutboundChannelLabel,
   isIpv4BoundLocally,
   listAvailableOutboundIpv4,
+  listRotationPool,
+  shouldRotateChannel,
   resolveConfiguredIpForChannel,
   resolveOutboundLocalAddress,
   getOutboundChannelsMeta,

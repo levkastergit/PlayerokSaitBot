@@ -1,4 +1,7 @@
 const { recordChatSyncStepLog } = require('../debug/chatSyncStepLog')
+const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
+
+const JOB_ID = 'chats-sync'
 
 
 
@@ -20,6 +23,13 @@ function setupChatsSyncBackgroundJob({
 
 }) {
 
+  registerJob({
+    id: JOB_ID,
+    label: 'Синхронизация чатов',
+    description: 'Опрашивает новые сообщения и сохраняет их в БД (быстрый цикл)',
+    intervalMs,
+  })
+
   const listInFlightByUser = new Set()
 
   const messagesInFlightByUser = new Set()
@@ -29,6 +39,10 @@ function setupChatsSyncBackgroundJob({
   const viewerUsernameByUser = new Map()
 
   const backoffUntilByUser = new Map()
+
+  // Цикл быстрый (500 мс) и асинхронный: без общего флага два прохода могли бы
+  // наложиться и испортить учёт тиков (totalRuns/lastTickStartAt/inFlight) в реестре.
+  let tickInFlight = false
 
 
 
@@ -60,7 +74,17 @@ function setupChatsSyncBackgroundJob({
 
     if (!Array.isArray(rows) || rows.length === 0) return
 
+    if (tickInFlight) return
+
+    tickInFlight = true
+
     const now = Date.now()
+
+    markTickStart(JOB_ID)
+
+    let tickError = null
+
+    try {
 
 
 
@@ -207,6 +231,18 @@ function setupChatsSyncBackgroundJob({
         messagesInFlightByUser.delete(userId)
 
       }
+
+    }
+
+    } catch (err) {
+
+      tickError = err
+
+    } finally {
+
+      tickInFlight = false
+
+      markTickEnd(JOB_ID, tickError)
 
     }
 

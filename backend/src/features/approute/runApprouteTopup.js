@@ -3,6 +3,7 @@
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
+const { isDealRefunded } = require('./approuteAutodeliveryGuards')
 
 // ---------------------------------------------------------------------------
 // Чат-флоу прямого пополнения (AppRoute DTU).
@@ -160,6 +161,17 @@ function createProcessSingleTopupFlow(deps) {
       if (effectiveDealId && orderInput.dealId == null) {
         orderInput.dealId = effectiveDealId
         orderInput.referenceId = effectiveDealId
+      }
+
+      // Возврат/откат сделки — никакого автопополнения на любой стадии.
+      if (isDealRefunded(chatData?.dealStatus)) {
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted_refund' })
+        logApprouteAutodelivery('topup: skip — deal refunded/rolled back', {
+          chatId: String(chatId),
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return { ran: true, action: 'skipped_refund', reason: 'deal_refunded', chatId: String(chatId), dealId }
       }
 
       let stage = String(state.stage || 'await_id')

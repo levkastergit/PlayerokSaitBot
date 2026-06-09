@@ -33,6 +33,7 @@ const { handleGetApprouteServiceVariants } = require('../features/approute/handl
 const { handleDockerBuildPush, getDockerBuildPushStatus } = require('../features/docker/handleDockerBuildPush')
 const { handleDockerPullDeploy } = require('../features/docker/handleDockerPullDeploy')
 const { isAllActionsStopped, stopAllActions, resumeAllActions } = require('../infra/runtimeControl')
+const { getJobsSnapshot, getJobDetails } = require('../infra/jobsRegistry')
 
 function isLocalHostName(value) {
   const lower = String(value || '').toLowerCase()
@@ -318,6 +319,18 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
   if (req.method === 'POST' && pathname === '/api/runtime/actions/resume') {
     resumeAllActions()
     sendJson(res, 200, { ok: true, stopped: false })
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/runtime/jobs') {
+    sendJson(res, 200, getJobsSnapshot())
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/runtime/jobs/details') {
+    const id = String((query && query.id) || '').trim()
+    const result = getJobDetails(id)
+    sendJson(res, result.ok ? 200 : 404, result)
     return true
   }
 

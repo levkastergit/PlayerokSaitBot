@@ -20,6 +20,12 @@ const {
   CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC,
 } = require('./autolistState')
 
+// Троттлинг повторных сканов автосообщений по стадиям: даже если lastMessage чата
+// не менялся, раз в этот интервал всё же перечитываем чат (страховка от
+// проглоченной ошибки / перезапуска). Верхняя граница осмысленности — окно
+// CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC (2ч).
+const AUTOMSG_RESCAN_FLOOR_SEC = 300
+
 async function handleAutolistTick({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -100,6 +106,41 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
   const nowTs = Math.floor(Date.now() / 1000)
 
+  // ── Инструментирование подзадач для вкладки «Список выполнения» ──────────────
+  // Лёгкий сбор статуса/таймингов по подзадачам одного прохода. Полностью
+  // аддитивно: не меняет управляющий поток, ошибки сбора проглатываются, а
+  // массив steps лишь дополняет тело ответа (агрегируется в job-обёртке).
+  // status: 'run'|'ok'|'idle'|'skip'|'err'. ms — длительность блока, count —
+  // сколько элементов обработано, note — короткая подпись.
+  const steps = []
+  const mkStep = (id, label) => {
+    const s = { id, label, status: 'idle', ms: 0, count: 0, note: null }
+    steps.push(s)
+    return s
+  }
+  const stepChats = mkStep('chats', 'Получение чатов')
+  const stepRelist = mkStep('relist', 'Скан и перевыставление')
+  const stepPaid = mkStep('paid-chats', 'Оплаченные чаты и автовыдача')
+  const stepAuto = mkStep('automessages', 'Автосообщения по стадиям')
+  const stepFlows = mkStep('flows', 'Флоу: Supercell / Topup / Clode / GPT')
+  let stepInFlight = null
+  let stepT0 = 0
+  const stepStart = (s) => {
+    stepInFlight = s
+    stepT0 = Date.now()
+    if (s && s.status === 'idle') s.status = 'run'
+  }
+  const stepEnd = (patch = {}) => {
+    const s = stepInFlight
+    stepInFlight = null
+    if (!s) return
+    s.ms += Math.max(0, Date.now() - stepT0)
+    if (patch.status) s.status = patch.status
+    else if (s.status === 'run') s.status = 'ok'
+    if (typeof patch.count === 'number') s.count = patch.count
+    if (patch.note != null) s.note = patch.note
+  }
+
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
   const userAgent = payload.userAgent
 
@@ -115,6 +156,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
   let dealItemId = null
 
   try {
+    stepStart(stepChats)
     const viewer = await withRetry(() => getViewer(token, userAgent), {
       label: 'getViewer',
       retries: 2,
@@ -130,6 +172,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     const chatNodes = Array.isArray(chatsData?.edges)
       ? chatsData.edges.map((e) => e && e.node).filter(Boolean).slice(0, AUTOLIST_MAX_CHATS_TO_SCAN)
       : []
+    stepEnd({ status: 'ok', count: chatNodes.length })
 
     autolistPruneProcessedMap(tokenHash, nowTs)
     autolistPruneSeenChatsMap(tokenHash, nowTs)
@@ -145,6 +188,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       !lastScanTs || nowTs - lastScanTs >= AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC
 
     if (shouldPeriodicScan) {
+      stepStart(stepRelist)
       periodicResult = await scanCompletedAndRelist({
         trigger: 'periodic',
         scanMeta,
@@ -172,10 +216,23 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         normalizeKeyPart,
         buildProductKey,
       })
+      stepEnd({
+        status: periodicResult?.action === 'relisted' ? 'ok' : 'idle',
+        count: Array.isArray(periodicResult?.relisted) ? periodicResult.relisted.length : 0,
+        note:
+          periodicResult?.action === 'relisted'
+            ? `перевыставлено: ${periodicResult.relisted.length}`
+            : null,
+      })
+    } else {
+      stepRelist.status = 'skip'
+      stepRelist.note = 'не по расписанию'
     }
 
     dealItemId = null
 
+    stepStart(stepPaid)
+    let approuteOnlyDeliveries = 0
     const PAID_CHAT_TOP_N = Math.min(10, AUTOLIST_MAX_CHATS_TO_SCAN)
     const chatsSlice = chatNodes.slice(0, PAID_CHAT_TOP_N)
     if (!lastChatMeta.lastMessageIdByChatId || typeof lastChatMeta.lastMessageIdByChatId !== 'object') {
@@ -427,6 +484,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
       dealItemId = dItemId
       const deliveryOnly = !isFreshPaid && approuteChatPending
+      if (deliveryOnly) approuteOnlyDeliveries++
       await handlePaidChat({
         currentUserId,
         tokenHash,
@@ -486,6 +544,16 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       paidChatHandledChatIds.push(chatId)
     }
 
+    stepEnd({
+      status: paidChatHandledChatIds.length > 0 ? 'ok' : 'idle',
+      count: paidChatHandledChatIds.length,
+      note:
+        paidChatCandidates.length > 0
+          ? `кандидатов: ${paidChatCandidates.length}` +
+            (approuteOnlyDeliveries > 0 ? `, approute-докатка: ${approuteOnlyDeliveries}` : '')
+          : null,
+    })
+
     const currentLastChat = chatNodes.length > 0 ? chatNodes[0] : null
     const currentLastChatId = currentLastChat?.id || null
     const currentLastMessageId = currentLastChat?.lastMessage?.id || null
@@ -524,6 +592,20 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       },
     ]
 
+    // Watermark-карта повторных сканов: ключ `${scan.logLabel}::${chatId}` ->
+    // { msgId, scannedAt }. Лёгкая чистка устаревших записей (старше окна триггера),
+    // чтобы карта не росла бесконечно при ротации чатов.
+    if (!lastChatMeta.automsgScan || typeof lastChatMeta.automsgScan !== 'object') {
+      lastChatMeta.automsgScan = {}
+    }
+    for (const [k, v] of Object.entries(lastChatMeta.automsgScan)) {
+      if (!v || nowTs - Number(v.scannedAt || 0) > CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC) {
+        delete lastChatMeta.automsgScan[k]
+      }
+    }
+
+    stepStart(stepAuto)
+    let automsgHandled = 0
     for (const scan of chatAutomessageScans) {
       if (!scan.handler) continue
       for (const chatNode of chatsSlice) {
@@ -552,6 +634,22 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
           if (!scan.skipProcessedPreCheck && eventKey) {
             autolistMarkProcessed(tokenHash, eventKey, nowTs)
           }
+          continue
+        }
+
+        // Троттлинг: если для этой стадии lastMessage в чате не изменился с прошлого
+        // УСПЕШНОГО скана и не прошёл интервал принудительного перечитывания —
+        // повторный сетевой fetch не делаем (ответ был бы тем же, хендлер всё равно
+        // дедупит по журналу sent_automessages). Watermark пишем только при успехе
+        // (ниже), поэтому брошенная ошибка fetch/handler не блокирует ретрай.
+        const automsgScanKey = `${scan.logLabel}::${chatId}`
+        const prevScan = lastChatMeta.automsgScan[automsgScanKey]
+        if (
+          prevScan &&
+          prevScan.msgId === currMsgId &&
+          Number(prevScan.scannedAt) > 0 &&
+          nowTs - Number(prevScan.scannedAt) < AUTOMSG_RESCAN_FLOOR_SEC
+        ) {
           continue
         }
 
@@ -592,6 +690,11 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
             sendChatImage,
             automessageImagesDir,
           })
+          automsgHandled++
+          // Успешно прочитали и обработали этот lastMessage для данной стадии —
+          // фиксируем watermark, чтобы не перечитывать чат до смены сообщения или
+          // истечения AUTOMSG_RESCAN_FLOOR_SEC.
+          lastChatMeta.automsgScan[automsgScanKey] = { msgId: currMsgId, scannedAt: nowTs }
         } catch (err) {
           warnAutolistTick(`${scan.logLabel} scan failed`, {
             chatId,
@@ -601,7 +704,9 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         }
       }
     }
+    stepEnd({ status: automsgHandled > 0 ? 'ok' : 'idle', count: automsgHandled })
 
+    stepStart(stepFlows)
     if (supercellModuleEnabled) {
       await processActiveSupercellFlows({
         tokenHash,
@@ -650,12 +755,33 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       })
     }
 
+    const countActiveFlows = (getMap) => {
+      if (typeof getMap !== 'function') return 0
+      try {
+        const m = getMap(tokenHash)
+        return Object.values(m || {}).filter((st) => st && st.active).length
+      } catch (_) {
+        return 0
+      }
+    }
+    const fSupercell = supercellModuleEnabled ? countActiveFlows(autolistGetSupercellFlowMap) : 0
+    const fTopup = countActiveFlows(autolistGetTopupFlowMap)
+    const fClode = countActiveFlows(autolistGetClodeFlowMap)
+    const fGpt = countActiveFlows(autolistGetGptFlowMap)
+    const flowsTotal = fSupercell + fTopup + fClode + fGpt
+    stepEnd({
+      status: flowsTotal > 0 ? 'ok' : 'idle',
+      count: flowsTotal,
+      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt}`,
+    })
+
     if (periodicResult && periodicResult.action === 'relisted') {
       return {
         statusCode: 200,
         data: {
           ok: true,
           from: 'periodic',
+          steps,
           ...periodicResult,
         },
       }
@@ -670,12 +796,13 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
           periodic: periodicResult,
           chatIds: paidChatHandledChatIds,
           chatId: paidChatHandledChatIds[0] || null,
+          steps,
         },
       }
     }
 
     if (!currentLastChatId) {
-      return { statusCode: 200, data: { ok: true, skipped: 'no_chats' } }
+      return { statusCode: 200, data: { ok: true, skipped: 'no_chats', steps } }
     }
 
     return {
@@ -685,9 +812,21 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         skipped: 'no_fresh_paid_or_relist',
         periodic: periodicResult,
         chatId: currentLastChatId,
+        steps,
       },
     }
   } catch (err) {
+    // Отметить подзадачу, на которой упал проход, как ошибочную (best-effort).
+    try {
+      if (stepInFlight) {
+        stepInFlight.ms += Math.max(0, Date.now() - stepT0)
+        stepInFlight.status = 'err'
+        stepInFlight.note = err && err.message ? String(err.message).slice(0, 160) : String(err).slice(0, 160)
+      }
+    } catch (_) {
+      // ignore
+    }
+
     try {
       if (dealItemId) {
         autolistSetItemState(tokenHash, dealItemId, {
@@ -702,7 +841,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
     return {
       statusCode: 500,
-      data: { error: err && err.message ? String(err.message) : 'autolist failed' },
+      data: { error: err && err.message ? String(err.message) : 'autolist failed', steps },
     }
   }
 }

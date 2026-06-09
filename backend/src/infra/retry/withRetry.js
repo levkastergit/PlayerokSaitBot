@@ -1,3 +1,5 @@
+const { runWithOutboundAttempt } = require('../playerokOutboundRotation')
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -38,22 +40,26 @@ async function withRetry(fn, opts = {}) {
     label = 'op',
   } = opts
 
-  let lastErr = null
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn()
-    } catch (err) {
-      lastErr = err
-      const retryable = attempt < retries && shouldRetry(err)
-      if (!retryable) break
+  // Все попытки выполняем в одном контексте ротации IP: при 429 повтор берёт
+  // IP, отличный от уже опробованного (см. playerokOutboundRotation).
+  return runWithOutboundAttempt(async () => {
+    let lastErr = null
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fn()
+      } catch (err) {
+        lastErr = err
+        const retryable = attempt < retries && shouldRetry(err)
+        if (!retryable) break
 
-      const exp = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt))
-      const jitter = Math.floor(Math.random() * 250)
-      const delay = exp + jitter
-      await sleep(delay)
+        const exp = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt))
+        const jitter = Math.floor(Math.random() * 250)
+        const delay = exp + jitter
+        await sleep(delay)
+      }
     }
-  }
-  throw lastErr
+    throw lastErr
+  })
 }
 
 module.exports = {

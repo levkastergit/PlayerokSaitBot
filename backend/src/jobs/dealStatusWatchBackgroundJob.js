@@ -15,8 +15,55 @@
 // по маркеру в истории чата) и НЕ вызывает повторную автовыдачу/публикацию.
 // ---------------------------------------------------------------------------
 
+const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
+const {
+  autolistGetSupercellFlowMap,
+  autolistGetTopupFlowMap,
+  autolistGetClodeFlowMap,
+  autolistGetGptFlowMap,
+} = require('../features/autolist/autolistState')
+
+const JOB_ID = 'deal-status-watch'
+
 const ACTIVE_STATUSES = ['PAID', 'SENT']
 const MAX_PAGES = 20
+// Потолок числа сделок/флоу в снимке для интерфейса. Полный счётчик считается
+// отдельно (dealsTotal/dealsByStatus) и остаётся честным даже при обрезке списка.
+const DEAL_DETAILS_CAP = 300
+
+// Активные флоу автовыдачи (по чату) — что именно сейчас «зависло в ожидании»:
+// почта Supercell, ссылка/доступ GPT/Clode, пополнение Approute и т.д.
+function collectActiveFlows(token, nowTsSec) {
+  const sources = [
+    ['supercell', autolistGetSupercellFlowMap],
+    ['topup', autolistGetTopupFlowMap],
+    ['clode', autolistGetClodeFlowMap],
+    ['gpt', autolistGetGptFlowMap],
+  ]
+  const out = []
+  for (const [kind, getter] of sources) {
+    let map = null
+    try {
+      map = getter(token)
+    } catch (_) {
+      map = null
+    }
+    if (!map || typeof map !== 'object') continue
+    for (const [chatId, state] of Object.entries(map)) {
+      if (!state || typeof state !== 'object' || !state.active) continue
+      const updatedAt = Number(state.updatedAt || state.createdAt || 0)
+      out.push({
+        kind,
+        chatId: String(chatId),
+        dealId: state.dealId != null ? String(state.dealId) : null,
+        stage: state.stage != null ? String(state.stage) : null,
+        email: state.email != null ? String(state.email) : (state.latestEmail != null ? String(state.latestEmail) : null),
+        ageSec: updatedAt ? Math.max(0, nowTsSec - updatedAt) : null,
+      })
+    }
+  }
+  return out
+}
 
 function setupDealStatusWatchBackgroundJob({
   getAllStoredTokens,
@@ -25,6 +72,9 @@ function setupDealStatusWatchBackgroundJob({
   getViewer,
   requestDealsPage,
   triggerChatAutomation,
+  // Локальная БД чатов — чтобы достать chat_id по deal_id, когда страница продаж
+  // его не вернула (нужно для кнопки «Перейти в чат» в интерфейсе наблюдателя).
+  chatDbRepo = null,
   isAllActionsStopped = () => false,
   intervalMs = 6000,
 }) {
@@ -37,9 +87,19 @@ function setupDealStatusWatchBackgroundJob({
     return
   }
 
+  registerJob({
+    id: JOB_ID,
+    label: 'Наблюдатель сделок',
+    description: 'Следит за сменой статусов сделок и шлёт автосообщения этапов',
+    intervalMs,
+  })
+
   // userId -> Map(dealId -> { status, chatId, itemId })
   const lastByUser = new Map()
   const inFlightByUser = new Set()
+  // Общий флаг тика: не даём проходам наложиться (тик может длиться дольше 6 с),
+  // иначе портится учёт тиков (totalRuns/lastTickStartAt/inFlight) в реестре.
+  let tickInFlight = false
 
   async function fetchActiveDeals(token, ua) {
     const viewer = await getViewer(token, ua)
@@ -60,7 +120,15 @@ function setupDealStatusWatchBackgroundJob({
     if (isAllActionsStopped()) return
     const rows = typeof getAllStoredTokens?.all === 'function' ? getAllStoredTokens.all() : null
     if (!Array.isArray(rows) || rows.length === 0) return
+    if (tickInFlight) return
 
+    tickInFlight = true
+    markTickStart(JOB_ID)
+    let tickError = null
+    const nowTsSec = Math.floor(Date.now() / 1000)
+    const allDeals = []
+    const allFlows = []
+    try {
     for (const row of rows) {
       const userId = Number(row?.user_id)
       if (!Number.isFinite(userId) || userId <= 0) continue
@@ -72,6 +140,34 @@ function setupDealStatusWatchBackgroundJob({
       try {
         const ua = getUserAgent()
         const deals = await fetchActiveDeals(stored.token, ua)
+
+        for (const d of deals) {
+          const dealId = d?.id != null ? String(d.id).trim() : ''
+          if (!dealId) continue
+          // Страница продаж часто не отдаёт chatId — добираем его из локальной БД
+          // чатов по deal_id, чтобы кнопка «Перейти в чат» работала.
+          let resolvedChatId = d?.chatId != null ? String(d.chatId).trim() : null
+          if (!resolvedChatId && chatDbRepo && typeof chatDbRepo.getDealById?.get === 'function') {
+            try {
+              const row = chatDbRepo.getDealById.get(userId, dealId)
+              if (row && row.chat_id) resolvedChatId = String(row.chat_id).trim() || null
+            } catch (_) {
+              // ignore lookup errors
+            }
+          }
+          allDeals.push({
+            dealId,
+            status: String(d?.status || '').trim().toUpperCase(),
+            chatId: resolvedChatId,
+            itemId: d?.itemId != null ? String(d.itemId).trim() : null,
+            title: d?.productTitle != null ? String(d.productTitle) : null,
+            category: d?.category != null ? String(d.category) : null,
+            price: Number(d?.price) || 0,
+            buyerName: d?.buyerName != null ? String(d.buyerName) : null,
+            soldAt: Number(d?.soldAt) || null,
+          })
+        }
+        allFlows.push(...collectActiveFlows(stored.token, nowTsSec))
 
         const prevMap = lastByUser.get(userId) || null
         const nextMap = new Map()
@@ -129,6 +225,28 @@ function setupDealStatusWatchBackgroundJob({
       } finally {
         inFlightByUser.delete(userId)
       }
+    }
+
+    // Честные счётчики по всем сделкам (не по обрезанному снимку).
+    const dealsByStatus = {}
+    for (const d of allDeals) {
+      const st = d.status || 'OTHER'
+      dealsByStatus[st] = (dealsByStatus[st] || 0) + 1
+    }
+    setJobDetails(JOB_ID, {
+      updatedAt: nowTsSec,
+      deals: allDeals.slice(0, DEAL_DETAILS_CAP),
+      dealsTotal: allDeals.length,
+      dealsByStatus,
+      dealsCapped: allDeals.length > DEAL_DETAILS_CAP,
+      flows: allFlows.slice(0, DEAL_DETAILS_CAP),
+      flowsTotal: allFlows.length,
+    })
+    } catch (err) {
+      tickError = err
+    } finally {
+      tickInFlight = false
+      markTickEnd(JOB_ID, tickError)
     }
   }, intervalMs)
 }

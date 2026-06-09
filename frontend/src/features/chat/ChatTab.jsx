@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { logChatLogging } from '../../debug/chatLoggingLog.js'
 import { logChatMessagesGap } from '../../debug/chatMessagesGapLog.js'
 import { isPlayerokRateLimitMessage, pollDelayAfterErrors } from './chatRequestUtils.js'
@@ -597,6 +598,7 @@ export function ChatTab({
   moduleSupercellEnabled = false,
   isPageActive = true,
 }) {
+  const location = useLocation()
   const summarizeChatForLog = useCallback((chat) => ({
     id: chat?.id ?? null,
     dealId: chat?.dealId ?? null,
@@ -699,6 +701,9 @@ export function ChatTab({
   const emptyChatLoadTrackerRef = useRef(new Map())
   const chatListScrollAnchorRef = useRef(null)
   const initialLoadDoneRef = useRef(false)
+  // Целевой чат диплинка из наблюдателя сделок (/chat/<chatId>): держим его, пока
+  // не найдём в подгруженном списке (при необходимости догружаем страницы).
+  const pendingDeepLinkChatIdRef = useRef(null)
   const visibleChatsRef = useRef([])
   const chatsRef = useRef([])
   // Последний message_id, по которому мы уже отметили чат прочитанным на бэкенде.
@@ -2418,6 +2423,8 @@ export function ChatTab({
   ])
 
   useEffect(() => {
+    // Пока ждём догрузки целевого чата диплинка — не перебиваем выбор дефолтным.
+    if (pendingDeepLinkChatIdRef.current) return
     if (!selectedChatId && visibleChats.length > 0) {
       setSelectedChatId(visibleChats[0].id)
       return
@@ -2426,6 +2433,43 @@ export function ChatTab({
       setSelectedChatId(visibleChats.length > 0 ? visibleChats[0].id : null)
     }
   }, [chatFilter, visibleChats, selectedChatId])
+
+  // Диплинк из наблюдателя сделок: URL /chat/<chatId> открывает конкретный чат.
+  // location.key меняется на каждую навигацию, поэтому повторный клик по той же
+  // сделке тоже сработает.
+  useEffect(() => {
+    const parts = (location.pathname || '').split('/').filter(Boolean)
+    if (parts[0] !== 'chat' || !parts[1]) return
+    let chatId = parts[1]
+    try {
+      chatId = decodeURIComponent(chatId)
+    } catch (_) {
+      // оставляем как есть
+    }
+    if (!chatId) return
+    pendingDeepLinkChatIdRef.current = chatId
+    setChatFilter('all') // чтобы целевой чат не был скрыт фильтром
+    setSelectedChatId(chatId)
+  }, [location.pathname, location.key])
+
+  // Если целевой чат диплинка ещё не в подгруженном списке — догружаем страницы,
+  // пока не найдём (или пока страницы не кончатся).
+  useEffect(() => {
+    const target = pendingDeepLinkChatIdRef.current
+    if (!target) return
+    if (chats.some((c) => String(c.id) === String(target))) {
+      pendingDeepLinkChatIdRef.current = null
+      if (selectedChatIdRef.current !== target) setSelectedChatId(target)
+      return
+    }
+    if (!initialLoadDoneRef.current || loading || loadingMore) return
+    if (pageInfo.hasNextPage) {
+      loadMore()
+    } else {
+      // Чата нет ни на одной странице — снимаем запрос, выбор вернётся к дефолтному.
+      pendingDeepLinkChatIdRef.current = null
+    }
+  }, [chats, pageInfo.hasNextPage, loading, loadingMore, loadMore])
 
   const isListAheadOfLoadedMessages = (chat) => {
     if (!chat?.id) return false

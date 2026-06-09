@@ -1,4 +1,7 @@
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
+
+const JOB_ID = 'autobump'
 
 function setupAutobumpBackgroundJob({
   getStoredToken,
@@ -12,18 +15,32 @@ function setupAutobumpBackgroundJob({
   isAllActionsStopped = () => false,
   intervalMs = 15000,
 }) {
+  registerJob({
+    id: JOB_ID,
+    label: 'Поднятие лотов',
+    description: 'Автоматически поднимает лоты в выдаче по расписанию (МСК)',
+    intervalMs,
+  })
+
   // Автоподнятие: раз в 15 сек проверяем для каждого товара «пора ли поднять» по его расписанию.
   // Отдельный таймер на каждый товар не делаем — один общий цикл проще и надёжнее при перезапуске процесса.
   const autobumpLastAttemptByKey = {}
   let autobumpViewerBackoffUntil = 0
   let autobumpViewerFailStreak = 0
+  // Не допускаем наложения тиков: при медленном upstream (>интервала) setInterval
+  // успел бы запустить второй проход и испортить счётчики реестра задач.
+  let autobumpInFlight = false
 
   setInterval(async () => {
+    if (isAllActionsStopped()) return
+    if (Date.now() < autobumpViewerBackoffUntil) {
+      return
+    }
+    if (autobumpInFlight) return
+    autobumpInFlight = true
+    markTickStart(JOB_ID)
+    let tickError = null
     try {
-      if (isAllActionsStopped()) return
-      if (Date.now() < autobumpViewerBackoffUntil) {
-        return
-      }
       // Пока фоновое автоподнятие работает только для базового пользователя id=1
       const userId = 1
       await runWithPlayerokUser(userId, async () => {
@@ -94,6 +111,9 @@ function setupAutobumpBackgroundJob({
       ) - MSK_OFFSET_MS
       const startOfDayTs = Math.floor(mskStartOfDayUtcMs / 1000)
 
+      // Собираем «живой» снимок очереди поднятий для разворачивающейся плитки.
+      const detailItems = []
+
       for (const [key, s] of Object.entries(settingsByKey)) {
         if (String(key).startsWith('__group__::')) continue
         if (!s?.autobump?.enabled || !Array.isArray(s.autobump.schedule) || s.autobump.schedule.length === 0) {
@@ -122,7 +142,10 @@ function setupAutobumpBackgroundJob({
           (a, b) => (Number(a.win.priority) ?? 1) - (Number(b.win.priority) ?? 1)
         )
         const active = byPriority[0]
-        if (!active) continue
+        if (!active) {
+          detailItems.push({ title: lot.title || 'Товар', status: 'out_of_window', nextBumpTs: null, intervalMin: null })
+          continue
+        }
 
         const { win } = active
         const startMins = active.startMins
@@ -153,12 +176,22 @@ function setupAutobumpBackgroundJob({
         }
 
         const nextBumpTs = baseTs + intervalSec
+        const intervalMin = Math.round(intervalSec / 60)
 
-        if (nextBumpTs > windowEndTs) continue
-        if (nowTs < nextBumpTs) continue
+        if (nextBumpTs > windowEndTs) {
+          detailItems.push({ title: lot.title || 'Товар', status: 'window_done', nextBumpTs: null, intervalMin })
+          continue
+        }
+        if (nowTs < nextBumpTs) {
+          detailItems.push({ title: lot.title || 'Товар', status: 'queued', nextBumpTs, intervalMin })
+          continue
+        }
 
         const lastAttempt = autobumpLastAttemptByKey[key] || 0
-        if (nowTs - lastAttempt < 60) continue
+        if (nowTs - lastAttempt < 60) {
+          detailItems.push({ title: lot.title || 'Товар', status: 'cooldown', nextBumpTs: lastAttempt + 60, intervalMin })
+          continue
+        }
         autobumpLastAttemptByKey[key] = nowTs
 
         // НЕ передаем priorityStatusId из настроек - endpoint /api/playerok/bump всегда получает актуальный список статусов
@@ -175,9 +208,24 @@ function setupAutobumpBackgroundJob({
         if (res.ok && res.bumpedAt) {
           lastBumpByKey[key] = res.bumpedAt
         }
+
+        detailItems.push({
+          title: lot.title || 'Товар',
+          status: res.ok ? 'bumped' : 'error',
+          nextBumpTs: (res.ok && res.bumpedAt ? res.bumpedAt : nowTs) + intervalSec,
+          intervalMin,
+        })
       }
+
+      setJobDetails(JOB_ID, {
+        updatedAt: nowTs,
+        items: detailItems
+          .sort((a, b) => (a.nextBumpTs || Infinity) - (b.nextBumpTs || Infinity))
+          .slice(0, 100),
+      })
       })
     } catch (err) {
+      tickError = err
       // Обработка ошибок Redis OOM и других
       const errMsg = err?.message || String(err || '')
       if (errMsg.includes('OOM') || errMsg.includes('maxmemory')) {
@@ -198,6 +246,9 @@ function setupAutobumpBackgroundJob({
         autobumpViewerBackoffUntil = Date.now() + backoffSec * 1000
         return
       }
+    } finally {
+      autobumpInFlight = false
+      markTickEnd(JOB_ID, tickError)
     }
   }, intervalMs)
 }

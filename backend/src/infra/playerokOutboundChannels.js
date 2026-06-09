@@ -3,6 +3,13 @@
 /** Значение в bindings: категория отключена, запросы к Playerok для неё не выполняются. */
 const PLAYEROK_OUTBOUND_DISABLED = '__disabled__'
 
+/**
+ * Значение в bindings: категория крутит исходящий IP по кругу (round-robin) из пула
+ * доступных IPv4 сервера. Помогает против 429 — соседние запросы уходят с разных IP,
+ * а повтор после 429 берёт другой IP (см. playerokOutboundRotation).
+ */
+const PLAYEROK_OUTBOUND_ROTATE = '__rotate__'
+
 /** Категории исходящих запросов к Playerok — для каждой можно задать свой IPv4. */
 const PLAYEROK_OUTBOUND_CHANNELS = [
   {
@@ -47,6 +54,10 @@ function isOutboundDisabledBindingValue(v) {
   return String(v || '').trim() === PLAYEROK_OUTBOUND_DISABLED
 }
 
+function isOutboundRotateBindingValue(v) {
+  return String(v || '').trim() === PLAYEROK_OUTBOUND_ROTATE
+}
+
 function normalizeOutboundBindings(raw) {
   const out = {}
   if (!raw || typeof raw !== 'object') return out
@@ -62,16 +73,30 @@ function normalizeOutboundBindings(raw) {
       out[ch.id] = PLAYEROK_OUTBOUND_DISABLED
       continue
     }
+    if (isOutboundRotateBindingValue(trimmed)) {
+      out[ch.id] = PLAYEROK_OUTBOUND_ROTATE
+      continue
+    }
     out[ch.id] = trimmed
   }
   return out
 }
 
+/** Конфиг ротации IP (на пользователя): { enabled }. enabled=true → категории на
+ *  «Автовыборе» («») тоже крутят IP по пулу, как при значении __rotate__. */
+function normalizeRotationConfig(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  return { enabled: Boolean(src.enabled) }
+}
+
 module.exports = {
   PLAYEROK_OUTBOUND_DISABLED,
+  PLAYEROK_OUTBOUND_ROTATE,
   PLAYEROK_OUTBOUND_CHANNELS,
   CHANNEL_IDS,
   isValidOutboundChannelId,
   isOutboundDisabledBindingValue,
+  isOutboundRotateBindingValue,
   normalizeOutboundBindings,
+  normalizeRotationConfig,
 }

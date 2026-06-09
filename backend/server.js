@@ -206,6 +206,7 @@ const {
   sleep,
 } = require('./src/infra/retry/withRetry')
 const {
+  initSessions,
   getSessionIdFromRequest,
   isSessionValid,
   getSessionUserId,
@@ -252,6 +253,9 @@ const db = new Database(DB_PATH)
 
 const { initDbSchema } = require('./src/db/schema/initDbSchema')
 initDbSchema(db)
+
+// Сессии в БД (переживают перезапуск контейнера/деплой — не разлогинивает).
+initSessions(db)
 
 // Включаем персистентный дедуп автосообщений (журнал в БД) — чтобы не было дублей
 // после перезапуска/гонок и не терялись отправки.
@@ -308,10 +312,15 @@ const { setupProductSettingsRepo } = require('./src/db/productSettingsRepo')
 const { getSettings, getAllSettings, upsertSettings, deleteSettings } = setupProductSettingsRepo(db)
 
 const { setupPlayerokOutboundIpRepo } = require('./src/db/playerokOutboundIpRepo')
-const { loadBindings: loadOutboundIpBindings, saveBindings: saveOutboundIpBindings } =
-  setupPlayerokOutboundIpRepo(db)
-const { setOutboundIpBindingsResolver } = require('./src/infra/playerokOutboundIp')
+const {
+  loadBindings: loadOutboundIpBindings,
+  loadRotation: loadOutboundIpRotation,
+  saveBindings: saveOutboundIpBindings,
+  saveSettings: saveOutboundIpSettings,
+} = setupPlayerokOutboundIpRepo(db)
+const { setOutboundIpBindingsResolver, setOutboundRotationResolver } = require('./src/infra/playerokOutboundIp')
 setOutboundIpBindingsResolver(loadOutboundIpBindings)
+setOutboundRotationResolver(loadOutboundIpRotation)
 
 const { setupHistoryRepo } = require('./src/db/historyRepo')
 const { setupTableCodesRepo } = require('./src/db/tableCodesRepo')
@@ -519,12 +528,21 @@ const {
   autolistPruneClodeFlowMap,
   autolistGetGptFlowMap,
   autolistPruneGptFlowMap,
+  gptDealWasRedeemed,
+  gptMarkDealRedeemed,
 } = require('./src/features/autolist/autolistState')
 
 const getViewer = createGetViewer({
   VIEWER_QUERY,
   PLAYEROK_USER_AGENT,
 })
+
+// Кэшированный getViewer для частых фоновых опросов (chatsSync 500мс,
+// dealStatusWatch 6с): успешный viewer кэшируется на 60с, ошибки пробрасываются.
+// Интерактивные пути (ddos-check, ручные обновления, dispatch-хендлеры)
+// продолжают использовать «живой» getViewer выше.
+const { createCachedGetViewer } = require('./src/functions/createCachedGetViewer')
+const getViewerCached = createCachedGetViewer({ getViewer, ttlMs: 60000 })
 
 const { createIncreaseItemPriorityStatus } = require('./src/functions/playerokIncreaseItemPriorityStatus')
 
@@ -651,7 +669,7 @@ const fetchDealChatMessagesFromPlayerok = createFetchDealChatMessagesFromPlayero
 const { createChatDbSyncService } = require('./src/features/chat-db/chatDbSyncService')
 const chatDbSyncService = createChatDbSyncService({
   chatDbRepo,
-  getViewer,
+  getViewer: getViewerCached,
   requestUserChatsPage,
   fetchDealChatMessagesFromPlayerok,
   userAgentProvider: () =>
@@ -770,6 +788,8 @@ const processSingleGptFlow = createProcessSingleGptFlow({
   markTableCodeUsed: markCodeUsed,
   releaseTableCode: releaseCode,
   updateDealStatus,
+  gptDealWasRedeemed,
+  gptMarkDealRedeemed,
   toUnixTs,
 })
 
@@ -889,6 +909,8 @@ const server = http.createServer(async (req, res) => {
         getDirectorsForWorker,
         loadOutboundIpBindings,
         saveOutboundIpBindings,
+        loadOutboundIpRotation,
+        saveOutboundIpSettings,
         loadApprouteApiKeyPlain,
         saveApprouteApiKey,
         getApprouteSettingsMeta,
@@ -1281,8 +1303,9 @@ server.listen(PORT, () => {
     getAllStoredTokens,
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
-    getViewer,
+    getViewer: getViewerCached,
     requestDealsPage,
+    chatDbRepo,
     isAllActionsStopped,
     intervalMs: 6000,
     triggerChatAutomation: async ({ userId, token, userAgent, chatId, dealId, dealItemId }) => {

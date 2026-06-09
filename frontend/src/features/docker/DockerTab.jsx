@@ -22,6 +22,8 @@ export function DockerTab() {
   const [error, setError] = useState(null)
   const [output, setOutput] = useState('')
   const pollTimerRef = useRef(null)
+  const deployWatchRef = useRef(null)
+  const deployStateRef = useRef({ sawDown: false, deadline: 0 })
 
   const running = isLocalUi ? buildRunning : deployRunning
 
@@ -74,6 +76,61 @@ export function DockerTab() {
     pollBuildStatus()
   }, [pollBuildStatus, stopBuildPolling])
 
+  const stopDeployWatch = useCallback(() => {
+    if (deployWatchRef.current) {
+      clearTimeout(deployWatchRef.current)
+      deployWatchRef.current = null
+    }
+  }, [])
+
+  // Деплой идёт в отдельном контейнере и пересоздаёт это приложение.
+  // Ловим момент, когда бэкенд упал и снова поднялся (= новый образ запущен),
+  // и перезагружаем страницу на свежую версию.
+  const pollDeployStatus = useCallback(async () => {
+    const state = deployStateRef.current
+    let up = false
+    try {
+      const res = await fetchRuntimeActionsState()
+      up = Boolean(res?.ok)
+    } catch {
+      up = false
+    }
+
+    if (!up && !state.sawDown) {
+      state.sawDown = true
+      setMessage('Перезапуск приложения…')
+      setOutput((prev) => prev + 'Перезапуск приложения…\n')
+    } else if (up && state.sawDown) {
+      stopDeployWatch()
+      setDeployRunning(false)
+      setMessage('Готово: обновление установлено. Перезагрузка страницы…')
+      setOutput((prev) => prev + 'Готово: новое приложение запущено.\n')
+      setTimeout(() => {
+        window.location.reload()
+      }, 1200)
+      return
+    }
+
+    if (Date.now() > state.deadline) {
+      stopDeployWatch()
+      setDeployRunning(false)
+      setMessage('Обновление запущено. Если страница не обновилась — обновите её вручную.')
+      return
+    }
+
+    deployWatchRef.current = setTimeout(() => {
+      pollDeployStatus()
+    }, 1500)
+  }, [stopDeployWatch])
+
+  const startDeployWatch = useCallback(() => {
+    stopDeployWatch()
+    deployStateRef.current = { sawDown: false, deadline: Date.now() + 4 * 60 * 1000 }
+    deployWatchRef.current = setTimeout(() => {
+      pollDeployStatus()
+    }, 1500)
+  }, [pollDeployStatus, stopDeployWatch])
+
   useEffect(() => {
     let cancelled = false
     fetchRuntimeActionsState().then((result) => {
@@ -103,6 +160,8 @@ export function DockerTab() {
     }
   }, [isLocalUi, applyBuildStatus, startBuildPolling, stopBuildPolling])
 
+  useEffect(() => stopDeployWatch, [stopDeployWatch])
+
   const handleBuildPush = async (event) => {
     event.preventDefault()
     setMessage(null)
@@ -129,25 +188,23 @@ export function DockerTab() {
     event.preventDefault()
     setMessage(null)
     setError(null)
-    setOutput('Запуск pull/deploy…\n')
+    setOutput('Запуск обновления…\n')
     setDeployRunning(true)
 
     const result = await dockerPullAndDeploy()
 
-    setDeployRunning(false)
     if (!result.ok) {
-      setError(result.error || 'Не удалось выполнить pull/deploy')
+      setDeployRunning(false)
+      setError(result.error || 'Не удалось запустить обновление')
       setOutput([result.stdout, result.stderr].filter(Boolean).join('\n\n'))
       return
     }
 
-    setMessage('Готово: pull/deploy выполнен')
-    setOutput([
-      '=== DEPLOY STDOUT ===',
-      result.stdout || '',
-      '=== DEPLOY STDERR ===',
-      result.stderr || '',
-    ].join('\n'))
+    // Обновление идёт в отдельном контейнере; приложение сейчас перезапустится.
+    // Ждём, пока бэкенд вернётся, и автоматически перезагружаем страницу.
+    setMessage('Обновление запущено — загружается новый образ и перезапуск приложения…')
+    setOutput((prev) => prev + 'Загрузка нового образа…\n')
+    startDeployWatch()
   }
 
   const handleStopActions = async () => {
@@ -189,7 +246,9 @@ export function DockerTab() {
           <form className="settings-form" onSubmit={isLocalUi ? handleBuildPush : handlePullDeploy}>
             <div className="token-actions">
               <button type="submit" className="btn-primary" disabled={running || changingActionsState}>
-                {running ? (isLocalUi ? 'Сборка и push…' : 'Pull и deploy…') : (isLocalUi ? 'Build и Push' : 'Pull и Deploy')}
+                {running
+                  ? (isLocalUi ? 'Сборка и публикация…' : 'Загрузка обновлений…')
+                  : (isLocalUi ? 'Собрать и опубликовать' : 'Загрузка обновлений')}
               </button>
               <button
                 type="button"
@@ -217,7 +276,7 @@ export function DockerTab() {
             className="input-theme docker-output"
             readOnly
             value={output}
-            placeholder={isLocalUi ? 'Логи docker build/push появятся здесь' : 'Логи pull/deploy появятся здесь'}
+            placeholder={isLocalUi ? 'Логи сборки и публикации появятся здесь' : 'Ход обновления появится здесь'}
           />
         </section>
       </div>

@@ -16,7 +16,54 @@ const DOCKER_PULL_DEPLOY_URL = `${BACKEND_ORIGIN}/api/docker/pull-deploy`
 const RUNTIME_ACTIONS_STATE_URL = `${BACKEND_ORIGIN}/api/runtime/actions-state`
 const STOP_RUNTIME_ACTIONS_URL = `${BACKEND_ORIGIN}/api/runtime/actions/stop`
 const RESUME_RUNTIME_ACTIONS_URL = `${BACKEND_ORIGIN}/api/runtime/actions/resume`
+const RUNTIME_JOBS_URL = `${BACKEND_ORIGIN}/api/runtime/jobs`
 const opts = { credentials: 'include' }
+
+/**
+ * Снимок фоновых задач сервера для вкладки «Список выполнения».
+ * Возвращает реальные данные реестра задач: интервал цикла, момент старта
+ * последнего тика, число запусков/ошибок и т.д.
+ */
+export async function fetchRuntimeJobs() {
+  try {
+    const res = await trackedFetch(RUNTIME_JOBS_URL, opts)
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data?.ok) {
+      return { ok: false, stoppedAll: false, serverNow: Date.now(), jobs: [] }
+    }
+    return {
+      ok: true,
+      stoppedAll: Boolean(data.stoppedAll),
+      serverNow: Number(data.serverNow) || Date.now(),
+      jobs: Array.isArray(data.jobs) ? data.jobs : [],
+    }
+  } catch {
+    return { ok: false, stoppedAll: false, serverNow: Date.now(), jobs: [] }
+  }
+}
+
+/**
+ * Подробные «живые» данные одной задачи (очередь поднятий, сделки/флоу в работе) —
+ * грузим только когда плитка развёрнута.
+ */
+export async function fetchRuntimeJobDetails(id) {
+  try {
+    const res = await trackedFetch(`${RUNTIME_JOBS_URL}/details?id=${encodeURIComponent(id)}`, opts)
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data?.ok) {
+      return { ok: false, id, detailsAt: null, serverNow: Date.now(), details: null }
+    }
+    return {
+      ok: true,
+      id: data.id || id,
+      detailsAt: Number(data.detailsAt) || null,
+      serverNow: Number(data.serverNow) || Date.now(),
+      details: data.details && typeof data.details === 'object' ? data.details : null,
+    }
+  } catch {
+    return { ok: false, id, detailsAt: null, serverNow: Date.now(), details: null }
+  }
+}
 
 export async function fetchDockerBuildPushStatus() {
   try {
@@ -86,10 +133,16 @@ export async function dockerPullAndDeploy() {
       body: JSON.stringify({}),
     })
     const data = await res.json().catch(() => ({}))
+    if (res.status === 409) {
+      return { ok: false, running: true, error: data?.error || 'Обновление уже выполняется' }
+    }
+    if (res.status === 202 || data?.started) {
+      return { ok: true, started: true, message: data?.message || '' }
+    }
     if (!res.ok || !data?.ok) {
       return {
         ok: false,
-        error: data?.error || 'Ошибка pull/deploy',
+        error: data?.error || 'Ошибка обновления',
         stdout: data?.stdout || '',
         stderr: data?.stderr || '',
       }

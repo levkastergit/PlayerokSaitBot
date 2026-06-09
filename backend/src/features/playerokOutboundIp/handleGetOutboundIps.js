@@ -1,7 +1,10 @@
 'use strict'
 
 const { listAvailableOutboundIpv4, getOutboundChannelsMeta } = require('../../infra/playerokOutboundIp')
-const { PLAYEROK_OUTBOUND_DISABLED } = require('../../infra/playerokOutboundChannels')
+const {
+  PLAYEROK_OUTBOUND_DISABLED,
+  PLAYEROK_OUTBOUND_ROTATE,
+} = require('../../infra/playerokOutboundChannels')
 
 async function handleGetOutboundIps() {
   const addresses = listAvailableOutboundIpv4()
@@ -12,6 +15,9 @@ async function handleGetOutboundIps() {
       addresses,
       channels: getOutboundChannelsMeta(),
       disabledValue: PLAYEROK_OUTBOUND_DISABLED,
+      rotateValue: PLAYEROK_OUTBOUND_ROTATE,
+      // Ротация осмысленна только при 2+ доступных IP — фронт может подсказать.
+      rotationPoolSize: addresses.length,
       legacyEnvIp: legacyEnv || null,
     },
   }

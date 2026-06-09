@@ -4,6 +4,7 @@ const {
   logSupercellDebug,
   resolveEffectiveDealIdForChat,
 } = require('./supercellHelpers')
+const { isDealRefunded } = require('../features/approute/approuteAutodeliveryGuards')
 
 function createProcessSingleSupercellFlow({
   autolistGetSupercellFlowMap,
@@ -85,6 +86,17 @@ function createProcessSingleSupercellFlow({
           emailRetryReason = 'email_missing_from_deal_or_messages'
           await sleep(EMAIL_FETCH_DELAY_MS * (emailFetchAttempt + 1))
         }
+      }
+
+      // Возврат/откат сделки — не запрашиваем код у поставщика и ничего не шлём.
+      if (isDealRefunded(chatData?.dealStatus)) {
+        flowMap[String(chatId)] = { ...state, active: false, updatedAt: nowTs }
+        logSupercellDebug('flow:skipRefunded', {
+          chatId,
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return skipResult(chatId, dealId, 'deal_refunded', { category })
       }
 
       const game = getSupercellGameByCategory(category)

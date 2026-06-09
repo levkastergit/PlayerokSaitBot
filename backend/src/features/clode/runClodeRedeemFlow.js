@@ -3,7 +3,7 @@
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
-const { isDealDeliveredOrFinished } = require('../approute/approuteAutodeliveryGuards')
+const { isDealDeliveredOrFinished, isDealRefunded } = require('../approute/approuteAutodeliveryGuards')
 
 // После создания задачи активации сервер не всегда успевает отдать терминальный
 // статус в окне опроса redeemClaudeAndConfirm. В этом случае мы НЕ считаем выдачу
@@ -135,7 +135,7 @@ function createProcessSingleClodeFlow(deps) {
     }
   }
 
-  return async function processSingleClodeFlow(chatId, token, userAgent, viewerUsername, nowTs) {
+  const runFlow = async function processSingleClodeFlowInner(chatId, token, userAgent, viewerUsername, nowTs) {
     const tokenHash = token
     const flowMap = autolistGetClodeFlowMap(tokenHash)
     const state = flowMap[String(chatId)]
@@ -183,6 +183,22 @@ function createProcessSingleClodeFlow(deps) {
       const viewer = viewerUsername || chatData?.viewerUsername || null
       const effectiveDealId = resolveEffectiveDealIdForChat({ dealIdFromRequest: dealId, messages }) || dealId
 
+      // Возврат/откат сделки — НИКАКОЙ автовыдачи на любой стадии. Если код уже был
+      // зарезервирован (стадия 'confirming'/'ordering' держит 'pending'-код в state) —
+      // возвращаем его в пул, чтобы он не завис, и закрываем флоу.
+      if (isDealRefunded(chatData?.dealStatus)) {
+        if (state.claimedCodeId != null) {
+          releaseClaimedCode(state.userId, state.claimedCodeId, nowTs, chatId, dealId)
+        }
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted_refund', claimedCodeId: null })
+        logApprouteAutodelivery('clode: skip — deal refunded/rolled back', {
+          chatId: String(chatId),
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return { ran: true, action: 'skipped_refund', reason: 'deal_refunded', chatId: String(chatId), dealId }
+      }
+
       let stage = String(state.stage || 'await_id')
 
       // Успешная выдача: финализируем код ('used'), идемпотентно шлём сообщение об
@@ -218,19 +234,30 @@ function createProcessSingleClodeFlow(deps) {
         return { ran: true, action: 'redeemed', chatId: String(chatId), dealId, autoCompleteDealDone }
       }
 
-      // Issue #1: если сделка уже завершена/подтверждена/товар отправлен — НЕ
-      // запрашиваем у покупателя ID и ничего не активируем. Гард только на
-      // «вопросительных» стадиях: после резерва кода (ordering/confirming/notify)
-      // флоу нужно довести до выдачи/возврата, иначе код зависнет в 'pending'.
+      // Доп. защита «товар отправлен вручную»: если сделка завершена/подтверждена ИЛИ
+      // продавец сам отметил «товар отправлен» (SENT) — считаем автовыдачу по этой
+      // сделке завершённой и закрываем флоу. Покрывает случай ручной выдачи, пока бот
+      // ждал ID покупателя/подтверждение (await_id/await_confirm) ИЛИ до-опрашивал
+      // активацию (confirming) — например, продавец устал ждать и выдал товар сам.
+      // Если на момент остановки был зарезервирован код (confirming держит pending-код
+      // в state.claimedCodeId) — возвращаем его в пул, чтобы он не завис в 'pending'.
+      // Стадию notify_success НЕ трогаем: код там уже выдан (redeem прошёл успешно),
+      // нужно лишь гарантированно добить сообщение «Готово!».
       if (
-        (stage === 'await_id' || stage === 'await_confirm') &&
+        stage !== 'notify_success' &&
+        stage !== 'done' &&
         isDealDeliveredOrFinished(chatData?.dealStatus)
       ) {
-        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted' })
-        logApprouteAutodelivery('clode: skip — deal already delivered/finished', {
+        if (state.claimedCodeId != null) {
+          releaseClaimedCode(state.userId, state.claimedCodeId, nowTs, chatId, dealId)
+        }
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted', claimedCodeId: null })
+        logApprouteAutodelivery('clode: skip — deal delivered/finished (sent/confirmed)', {
           chatId: String(chatId),
           dealId,
           dealStatus: chatData?.dealStatus || null,
+          stage,
+          releasedCode: state.claimedCodeId != null,
         })
         return {
           ran: true,
@@ -511,6 +538,25 @@ function createProcessSingleClodeFlow(deps) {
     } catch (err) {
       return { ran: true, action: 'error', reason: err?.message || String(err), chatId: String(chatId), dealId }
     }
+  }
+
+  // Глобальный per-(token,chatId) лок поверх runFlow: исключает ПАРАЛЛЕЛЬНЫЙ прогон
+  // одного и того же Clode-флоу из разных путей (autolist-tick — без лока, и
+  // deal-chat-messages — со своим локальным локом, который tick-путь не видит).
+  // Защита от двойной выдачи кода; держится только на время одного прогона и
+  // снимается в finally, поэтому межтиковые стадии (confirming/await_confirm) живут.
+  return function processSingleClodeFlow(chatId, token, userAgent, viewerUsername, nowTs) {
+    const flowLockKey = `${String(token)}::${String(chatId)}`
+    global.__clodeFlowInFlight = global.__clodeFlowInFlight || new Set()
+    if (global.__clodeFlowInFlight.has(flowLockKey)) {
+      return Promise.resolve({ ran: false, action: 'skipped', reason: 'in_flight', chatId: String(chatId) })
+    }
+    global.__clodeFlowInFlight.add(flowLockKey)
+    return Promise.resolve()
+      .then(() => runFlow(chatId, token, userAgent, viewerUsername, nowTs))
+      .finally(() => {
+        global.__clodeFlowInFlight.delete(flowLockKey)
+      })
   }
 }
 

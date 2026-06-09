@@ -3,7 +3,7 @@
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { resolveEffectiveDealIdForChat } = require('../../functions/supercellHelpers')
 const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
-const { isDealDeliveredOrFinished } = require('../approute/approuteAutodeliveryGuards')
+const { isDealDeliveredOrFinished, isDealRefunded } = require('../approute/approuteAutodeliveryGuards')
 
 // ---------------------------------------------------------------------------
 // Чат-флоу «Автовыдача GPT» (активация ChatGPT-подписок через api.987ai.vip).
@@ -105,6 +105,11 @@ function createProcessSingleGptFlow(deps) {
     markTableCodeUsed,
     releaseTableCode,
     updateDealStatus,
+    // Персистентный признак «сделка уже активирована» (журнал в БД). Переживает
+    // перезапуск сервера и прунинг in-memory flow-map, в отличие от stage:'done'.
+    // По умолчанию — no-op (тест-песочница не пишет в БД).
+    gptDealWasRedeemed = () => false,
+    gptMarkDealRedeemed = () => {},
     toUnixTs = defaultToUnixTs,
   } = deps
 
@@ -119,7 +124,7 @@ function createProcessSingleGptFlow(deps) {
     flowMap[String(chatId)] = { ...state, ...patch, updatedAt: nowTs }
   }
 
-  return async function processSingleGptFlow(chatId, token, userAgent, viewerUsername, nowTs) {
+  const runFlow = async function processSingleGptFlowInner(chatId, token, userAgent, viewerUsername, nowTs) {
     const tokenHash = token
     const flowMap = autolistGetGptFlowMap(tokenHash)
     const state = flowMap[String(chatId)]
@@ -191,6 +196,38 @@ function createProcessSingleGptFlow(deps) {
       const messages = Array.isArray(chatData?.messages) ? chatData.messages : []
       const viewer = viewerUsername || chatData?.viewerUsername || null
       const effectiveDealId = resolveEffectiveDealIdForChat({ dealIdFromRequest: dealId, messages }) || dealId
+      // Ключ журнала «уже активировано» — тот же dealId, что использует handlePaidChat
+      // при (ре)активации флоу; effectiveDealId как запасной, если dealId отсутствует.
+      const redeemDealKey = dealId || effectiveDealId || null
+
+      // Возврат/откат сделки — НИКАКОЙ автовыдачи на любой стадии (вкл. ordering/
+      // await_stock). GPT не удерживает зарезервированный код между тиками (он
+      // возвращается в пул при неуспехе внутри runActivation), поэтому здесь просто
+      // закрываем флоу. Проверка раньше всех стадий — чтобы возврат гарантированно
+      // останавливал даже уже начатую активацию.
+      if (isDealRefunded(chatData?.dealStatus)) {
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted_refund' })
+        logApprouteAutodelivery('gpt: skip — deal refunded/rolled back', {
+          chatId: String(chatId),
+          dealId,
+          dealStatus: chatData?.dealStatus || null,
+        })
+        return { ran: true, action: 'skipped_refund', reason: 'deal_refunded', chatId: String(chatId), dealId }
+      }
+
+      // Уже активированная сделка: успех зафиксирован в персистентном журнале
+      // (переживает перезапуск и прунинг flow-map). Если активация по этой сделке
+      // уже прошла — НИЧЕГО повторно не спрашиваем и не активируем. Без этой проверки
+      // при потере in-memory состояния флоу заново создавался со стадии await_link и
+      // слал «Не получилось распознать ваш ChatGPT ID…» на старое сообщение покупателя.
+      if (redeemDealKey && gptDealWasRedeemed(state.userId, chatId, redeemDealKey)) {
+        done(flowMap, chatId, state, nowTs, { active: false, stage: 'done', redeemed: true })
+        logApprouteAutodelivery('gpt: skip — deal already redeemed (journal)', {
+          chatId: String(chatId),
+          dealId: redeemDealKey,
+        })
+        return { ran: true, action: 'skipped_already_redeemed', chatId: String(chatId), dealId: redeemDealKey }
+      }
 
       // --- Активация: берём card_key из таблицы и создаём задачу в API --------
       // notify=false подавляет повторную отправку служебных сообщений при авто-ретраях.
@@ -247,7 +284,12 @@ function createProcessSingleGptFlow(deps) {
                 })
               }
             }
-            await sendChat(token, userAgent, chatId, successMessage, 'gpt-success')
+            // Дедуп сообщения об успехе: не задваиваем «Готово!», если такой текст
+            // продавца уже есть в истории чата (как в clode finishWithSuccess).
+            const successAlreadySent = sellerMessageTs(messages, successMessage, viewer, toUnixTs)
+            if (!successAlreadySent) {
+              await sendChat(token, userAgent, chatId, successMessage, 'gpt-success')
+            }
 
             let autoCompleteDealDone = false
             if (cfg.autoCompleteDeal && (effectiveDealId || dealId) && typeof updateDealStatus === 'function') {
@@ -263,6 +305,20 @@ function createProcessSingleGptFlow(deps) {
                   chatId: String(chatId),
                   dealId,
                   error: err?.message || String(err),
+                })
+              }
+            }
+
+            // Фиксируем факт активации в персистентном журнале — чтобы после
+            // перезапуска/прунинга флоу не запросил данные и не активировал повторно.
+            if (redeemDealKey) {
+              try {
+                gptMarkDealRedeemed(state.userId, chatId, redeemDealKey, nowTs)
+              } catch (e) {
+                logApprouteAutodelivery('gpt: mark deal redeemed failed', {
+                  chatId: String(chatId),
+                  dealId: redeemDealKey,
+                  error: e?.message || String(e),
                 })
               }
             }
@@ -359,19 +415,20 @@ function createProcessSingleGptFlow(deps) {
 
       const stage = String(state.stage || 'await_link')
 
-      // Issue #1: если сделка уже завершена/подтверждена/товар отправлен — на
-      // «запрашивающих»/ретрай-стадиях ничего у покупателя не спрашиваем и не
-      // активируем (после резерва кода в 'ordering' код не удерживается между
-      // тиками, поэтому 'pending' здесь не зависнет).
-      if (
-        (stage === 'await_link' || stage === 'await_access' || stage === 'await_stock') &&
-        isDealDeliveredOrFinished(chatData?.dealStatus)
-      ) {
+      // Доп. защита «товар отправлен вручную»: если сделка завершена/подтверждена ИЛИ
+      // продавец сам отметил «товар отправлен» (SENT) — считаем автовыдачу по этой
+      // сделке завершённой и закрываем флоу на ЛЮБОЙ активной стадии. Покрывает случай
+      // ручной выдачи, пока бот ждал данные покупателя (await_link/await_access) или
+      // ретраил активацию (await_stock). GPT не удерживает зарезервированный код между
+      // тиками (он берётся и используется/возвращается внутри одного runActivation),
+      // поэтому возвращать в пул нечего — просто закрываем флоу.
+      if (isDealDeliveredOrFinished(chatData?.dealStatus)) {
         done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted' })
-        logApprouteAutodelivery('gpt: skip — deal already delivered/finished', {
+        logApprouteAutodelivery('gpt: skip — deal delivered/finished (sent/confirmed)', {
           chatId: String(chatId),
           dealId,
           dealStatus: chatData?.dealStatus || null,
+          stage,
         })
         return {
           ran: true,
@@ -466,6 +523,28 @@ function createProcessSingleGptFlow(deps) {
     } catch (err) {
       return { ran: true, action: 'error', reason: err?.message || String(err), chatId: String(chatId), dealId }
     }
+  }
+
+  // Глобальный per-(token,chatId) лок поверх runFlow: исключает ПАРАЛЛЕЛЬНЫЙ прогон
+  // одного и того же GPT-флоу из разных путей. autolist-tick (processActiveGptFlows)
+  // идёт БЕЗ лока, а deal-chat-messages — со своим локальным локом, который tick-путь
+  // не видит; обе точки мутируют общий flow-map. Без этого лока две гонки успевали
+  // выдать 2 РАЗНЫХ кода и 2 сообщения «Готово!» на одну сделку (stage:'ordering'
+  // ставится уже после await и читается из устаревшего снапшота state).
+  // Лок держится только на время одного прогона и снимается в finally — межтиковые
+  // ретрай-стадии (await_stock/await_access) не ломаются.
+  return function processSingleGptFlow(chatId, token, userAgent, viewerUsername, nowTs) {
+    const flowLockKey = `${String(token)}::${String(chatId)}`
+    global.__gptFlowInFlight = global.__gptFlowInFlight || new Set()
+    if (global.__gptFlowInFlight.has(flowLockKey)) {
+      return Promise.resolve({ ran: false, action: 'skipped', reason: 'in_flight', chatId: String(chatId) })
+    }
+    global.__gptFlowInFlight.add(flowLockKey)
+    return Promise.resolve()
+      .then(() => runFlow(chatId, token, userAgent, viewerUsername, nowTs))
+      .finally(() => {
+        global.__gptFlowInFlight.delete(flowLockKey)
+      })
   }
 }
 

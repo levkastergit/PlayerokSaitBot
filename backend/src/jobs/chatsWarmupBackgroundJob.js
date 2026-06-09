@@ -1,3 +1,7 @@
+const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
+
+const JOB_ID = 'chats-warmup'
+
 function setupChatsWarmupBackgroundJob({
   postLocal,
   getAllStoredTokens,
@@ -9,16 +13,27 @@ function setupChatsWarmupBackgroundJob({
   maxPagesPerUser = 6,
   pageDelayMs = 0,
 }) {
+  registerJob({
+    id: JOB_ID,
+    label: 'Прогрев чатов',
+    description: 'Фоновая загрузка списка чатов в кэш для быстрых ответов',
+    intervalMs,
+  })
+
   let inFlight = false
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
     if (inFlight) return
+    let tickError = null
+    let tickStarted = false
     try {
       inFlight = true
       const rows = getAllStoredTokens.all()
       if (!Array.isArray(rows) || rows.length === 0) return
 
+      markTickStart(JOB_ID)
+      tickStarted = true
       for (const row of rows) {
         const userId = Number(row?.user_id)
         if (!Number.isFinite(userId) || userId <= 0) continue
@@ -51,10 +66,12 @@ function setupChatsWarmupBackgroundJob({
           }
         }
       }
-    } catch (_) {
+    } catch (err) {
+      tickError = err
       // ignore errors in warmup cycle
     } finally {
       inFlight = false
+      if (tickStarted) markTickEnd(JOB_ID, tickError)
     }
   }, intervalMs)
 }

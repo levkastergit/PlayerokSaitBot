@@ -5,6 +5,7 @@ import { TestTab } from '../test/TestTab.jsx'
 import { changeAccountPassword, fetchAuthMe } from '../../services/authApi'
 import {
   OUTBOUND_IP_DISABLED,
+  OUTBOUND_IP_ROTATE,
   fetchOutboundIpSettings,
   fetchOutboundIps,
   saveOutboundIpSettings,
@@ -50,6 +51,8 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   const [ipBindings, setIpBindings] = useState({})
   const [ipLegacyEnv, setIpLegacyEnv] = useState(null)
   const [ipDisabledValue, setIpDisabledValue] = useState(OUTBOUND_IP_DISABLED)
+  const [ipRotateValue, setIpRotateValue] = useState(OUTBOUND_IP_ROTATE)
+  const [ipRotationEnabled, setIpRotationEnabled] = useState(false)
   const [ipSaving, setIpSaving] = useState(false)
   const [ipMessage, setIpMessage] = useState(null)
   const [ipError, setIpError] = useState(null)
@@ -103,10 +106,12 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
       setIpAddresses(ips.addresses)
       setIpLegacyEnv(ips.legacyEnvIp)
       setIpDisabledValue(ips.disabledValue || OUTBOUND_IP_DISABLED)
+      setIpRotateValue(ips.rotateValue || OUTBOUND_IP_ROTATE)
       const channels =
         (settings.ok && settings.channels?.length ? settings.channels : ips.channels) || []
       setIpChannels(channels)
       setIpBindings(settings.ok ? settings.bindings : {})
+      setIpRotationEnabled(Boolean(settings.ok && settings.rotation && settings.rotation.enabled))
       if (!settings.ok) {
         setIpError(settings.error || null)
       }
@@ -151,15 +156,29 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
     const opts = [
       { value: ipDisabledValue, label: 'Выключено' },
       { value: '', label: 'Автовыбор (без привязки)' },
+      { value: ipRotateValue, label: 'Чередование (ротация)' },
     ]
     for (const row of ipAddresses) {
       if (row?.address) opts.push({ value: row.address, label: row.address })
     }
     return opts
-  }, [ipAddresses, ipDisabledValue])
+  }, [ipAddresses, ipDisabledValue, ipRotateValue])
+
+  // Сколько IP реально участвует в ротации (нужно ≥2, иначе крутить нечего).
+  const ipPoolSize = ipAddresses.length
+  // Какие категории фактически крутят IP: явное «Чередование» или «Автовыбор» при
+  // включённом глобальном тумблере. Для подсказок/бейджей.
+  const ipChannelRotates = (binding) =>
+    binding === ipRotateValue || ((binding == null || binding === '') && ipRotationEnabled)
 
   const handleIpBindingChange = (channelId, value) => {
     setIpBindings((prev) => ({ ...prev, [channelId]: value }))
+    setIpMessage(null)
+    setIpError(null)
+  }
+
+  const handleIpRotationToggle = (checked) => {
+    setIpRotationEnabled(checked)
     setIpMessage(null)
     setIpError(null)
   }
@@ -169,10 +188,11 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
     setIpSaving(true)
     setIpMessage(null)
     setIpError(null)
-    const r = await saveOutboundIpSettings(ipBindings)
+    const r = await saveOutboundIpSettings(ipBindings, { enabled: ipRotationEnabled })
     setIpSaving(false)
     if (r.ok) {
       setIpBindings(r.bindings || ipBindings)
+      if (r.rotation) setIpRotationEnabled(Boolean(r.rotation.enabled))
       setIpMessage('Настройки IP сохранены')
     } else {
       setIpError(r.error || 'Ошибка сохранения')
@@ -479,8 +499,9 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
         <section className="card settings-card settings-card--outbound-ip">
           <h2 className="card-title">Исходящие IP для Playerok</h2>
           <p className="card-text settings-hint">
-            Для каждой категории: IP с сервера, автовыбор или «Выключено» — тогда связанные запросы к
-            Playerok не выполняются, пока категорию снова не включите.
+            Для каждой категории: IP с сервера, автовыбор, «Чередование» (ротация по кругу) или
+            «Выключено» — тогда связанные запросы к Playerok не выполняются, пока категорию снова не
+            включите.
           </p>
           {ipLoading ? (
             <p className="card-text">Загрузка адресов…</p>
@@ -504,10 +525,29 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                 </p>
               )}
               <form className="settings-form settings-outbound-ip-form" onSubmit={handleSaveIpBindings}>
+                <label className="settings-outbound-ip-rotation-toggle">
+                  <input
+                    type="checkbox"
+                    checked={ipRotationEnabled}
+                    onChange={(e) => handleIpRotationToggle(e.target.checked)}
+                  />
+                  <span>
+                    <strong>Ротация IP</strong> — категории на «Автовыборе» по очереди меняют исходящий
+                    IP из пула сервера, а повтор после ошибки 429 уходит уже с другого IP. Категории,
+                    закреплённые за конкретным IP, не затрагиваются.
+                  </span>
+                </label>
+                {ipRotationEnabled && ipPoolSize < 2 ? (
+                  <p className="settings-hint settings-outbound-ip-hint">
+                    ⚠ Для ротации нужно минимум 2 IP на сервере (сейчас {ipPoolSize}). С одним адресом
+                    чередовать нечего — запросы пойдут с него же.
+                  </p>
+                ) : null}
                 <div className="settings-outbound-ip-grid">
                   {ipChannels.map((ch) => {
                     const binding = ipBindings[ch.id] ?? ''
                     const isOff = binding === ipDisabledValue
+                    const rotates = !isOff && ipChannelRotates(binding)
                     return (
                       <div key={ch.id} className="settings-outbound-ip-row">
                         <label
@@ -518,6 +558,11 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                           {isOff ? (
                             <span className="settings-outbound-ip-badge settings-outbound-ip-badge--off">
                               отключено
+                            </span>
+                          ) : null}
+                          {rotates ? (
+                            <span className="settings-outbound-ip-badge settings-outbound-ip-badge--rotate">
+                              ротация
                             </span>
                           ) : null}
                         </label>

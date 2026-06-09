@@ -10,6 +10,7 @@ const { toUnixTs } = require('../../functions/toUnixTs')
 const {
   shouldSkipApprouteAutodelivery,
   isDealDeliveredOrFinished,
+  isDealRefunded,
 } = require('../approute/approuteAutodeliveryGuards')
 const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog')
 const { logAutolistTick, warnAutolistTick } = require('../../debug/autolistTickLog')
@@ -23,6 +24,7 @@ const {
   finishApprouteChatSend,
   autolistWasAutomessageSent: autolistWasAutomessageSentDefault,
   autolistMarkAutomessageSent: autolistMarkAutomessageSentDefault,
+  gptDealWasRedeemed,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
 const { handleOrderedStageAutomessage } = require('./handleChatAutomessage')
@@ -343,17 +345,26 @@ async function handlePaidChat({
           ? item.rawPrice
           : 0
 
-    let buyerName = null
     let fullDealForSale = null
-    try {
-      fullDealForSale = await withRetry(
-        () => requestDealById(token, userAgent, dealId),
-        { label: 'dealById(buyerName)', retries: 2, shouldRetry: isPlayerokRateLimitError }
-      )
+    // Имя покупателя берём из уже загруженного снимка сделки (fullDealSnapshot —
+    // получен в handleAutolistTick тем же requestDealById с той же persisted-query,
+    // т.е. та же проекция полей). Сетевой запрос делаем ТОЛЬКО если в снимке нет
+    // user.username (или снимок null — например при сбое его загрузки/в тест-харнессе),
+    // что убирает дублирующий dealById на горячем пути автовыдачи и сохраняет прежний
+    // результат как фолбэк.
+    let buyerName =
+      (fullDealSnapshot && fullDealSnapshot.user && fullDealSnapshot.user.username) || null
+    if (!buyerName) {
+      try {
+        fullDealForSale = await withRetry(
+          () => requestDealById(token, userAgent, dealId),
+          { label: 'dealById(buyerName)', retries: 2, shouldRetry: isPlayerokRateLimitError }
+        )
 
-      buyerName = (fullDealForSale && fullDealForSale.user && fullDealForSale.user.username) || null
-    } catch (_) {
-      buyerName = null
+        buyerName = (fullDealForSale && fullDealForSale.user && fullDealForSale.user.username) || null
+      } catch (_) {
+        buyerName = null
+      }
     }
 
     const soldAtTs =
@@ -411,10 +422,16 @@ async function handlePaidChat({
     ''
   const supercellGame = getSupercellGameByCategory(effectiveCategory)
 
+  // Возврат сделки (статус «Возврат» / ROLLED_BACK): полностью выключаем любую
+  // автовыдачу — коды из таблицы, clode/gpt/supercell/topup и AppRoute API. Ничего
+  // не запрашиваем у покупателя и не активируем.
+  const dealRefunded = isDealRefunded(dealStatus || fullDealSnapshot?.status)
+
   if (
     supercellModuleEnabled &&
     supercellGame &&
     lastChat?.id &&
+    !dealRefunded &&
     isSupercellAutoRequestCodeEnabled(effectiveSettings)
   ) {
     const flowMap = autolistGetSupercellFlowMap(tokenHash)
@@ -481,7 +498,7 @@ async function handlePaidChat({
   }
 
   // Автопополнение по API (DTU): активируем чат-флоу (бот спросит ID/логин у покупателя).
-  if (typeof autolistGetTopupFlowMap === 'function' && effectiveSettings?.autotopupApi?.enabled && lastChat?.id) {
+  if (typeof autolistGetTopupFlowMap === 'function' && effectiveSettings?.autotopupApi?.enabled && lastChat?.id && !dealRefunded) {
     const topupMap = autolistGetTopupFlowMap(tokenHash)
     const topupChatId = String(lastChat.id)
     const prev = topupMap[topupChatId] || {}
@@ -527,7 +544,8 @@ async function handlePaidChat({
     typeof autolistGetClodeFlowMap === 'function' &&
     effectiveSettings?.autoclode?.enabled &&
     lastChat?.id &&
-    !dealAlreadyDelivered
+    !dealAlreadyDelivered &&
+    !dealRefunded
   ) {
     const clodeMap = autolistGetClodeFlowMap(tokenHash)
     const clodeChatId = String(lastChat.id)
@@ -568,11 +586,19 @@ async function handlePaidChat({
 
   // Автовыдача GPT: активируем чат-флоу (бот попросит ссылку на Google-док с токеном).
   // card_key из таблицы НЕ берём здесь — он claim-ится в момент активации.
+  // Уже активированную сделку (персистентный журнал) повторно НЕ активируем: иначе
+  // после перезапуска/прунинга бот заново просил бы данные и слал «не распознал ID».
+  const gptDealAlreadyRedeemed =
+    typeof gptDealWasRedeemed === 'function' && lastChat?.id && dealId
+      ? gptDealWasRedeemed(currentUserId, lastChat.id, dealId)
+      : false
   if (
     typeof autolistGetGptFlowMap === 'function' &&
     effectiveSettings?.autogpt?.enabled &&
     lastChat?.id &&
-    !dealAlreadyDelivered
+    !dealAlreadyDelivered &&
+    !dealRefunded &&
+    !gptDealAlreadyRedeemed
   ) {
     const gptMap = autolistGetGptFlowMap(tokenHash)
     const gptChatId = String(lastChat.id)
@@ -615,7 +641,9 @@ async function handlePaidChat({
 
   const s = effectiveSettings
 
-  const runApprouteBlock = typeof runApprouteAutodelivery === 'function' && Boolean(s?.autodeliveryApi?.enabled)
+  // Возврат сделки — AppRoute-автодоставку (заказ/доставку в чат) не выполняем.
+  const runApprouteBlock =
+    typeof runApprouteAutodelivery === 'function' && Boolean(s?.autodeliveryApi?.enabled) && !dealRefunded
 
   if (!s) {
     warnAutolistTick('paid_chat: нет настроек для товара', {
@@ -691,9 +719,10 @@ async function handlePaidChat({
     }
   }
 
-  // Автовыдача: код из привязанной таблицы; автозавершение — только если код ушёл в чат
+  // Автовыдача: код из привязанной таблицы; автозавершение — только если код ушёл в чат.
+  // При возврате сделки автовыдачу полностью пропускаем.
   let autodeliveryCodeSent = false
-  if (s.autodelivery?.enabled && lastChat?.id) {
+  if (s.autodelivery?.enabled && lastChat?.id && !dealRefunded) {
     const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
 
     if (messageOnPurchase) {

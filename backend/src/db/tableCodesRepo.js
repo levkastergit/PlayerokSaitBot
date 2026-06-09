@@ -67,7 +67,29 @@ function setupTableCodesRepo(db) {
     WHERE id = ? AND user_id = ?
   `)
 
+  // Идемпотентность по сделке: если под эту сделку (в этой категории) уже выдан или
+  // зарезервирован код — возвращаем тот же код, а не берём новый. Это гарантия
+  // «1 сделка = максимум 1 код» даже при гонке двух параллельных выдач (autolist-tick
+  // и deal-chat-messages идут разными, несинхронизированными путями) и при перезапуске
+  // сервера. Освобождённый код обнуляет deal_id (releaseCodeStmt), поэтому легитимный
+  // ретрай с НОВЫМ кодом (например, пустой склад GPT) не ломается — для сделки уже
+  // нет pending/used строки.
+  const selectClaimedCodeForDeal = db.prepare(`
+    SELECT id, code
+    FROM table_codes
+    WHERE user_id = ? AND category = ? AND deal_id = ? AND status IN ('pending', 'used')
+    ORDER BY status_changed_at DESC, id DESC
+    LIMIT 1
+  `)
+
   const claimNextUnusedCodeTx = db.transaction((userId, category, meta) => {
+    const dealIdKey = meta?.dealId != null ? String(meta.dealId).trim() : ''
+    if (dealIdKey) {
+      const existing = selectClaimedCodeForDeal.get(userId, category, dealIdKey)
+      if (existing) {
+        return { id: existing.id, code: String(existing.code || '').trim(), reused: true }
+      }
+    }
     const row = selectOldestUnusedCode.get(userId, category)
     if (!row) return null
     const nowTs =
