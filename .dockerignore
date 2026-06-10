@@ -19,6 +19,7 @@ frontend/.env.*
 # Python caches
 **/__pycache__/
 
-# Local backups
-backend/data/_git_untracked_backup/
+# Runtime data (SQLite DB with tokens/chats, uploaded images). Provided in prod via
+# the ./backend/data bind mount — must NOT be baked into the public Docker Hub image.
+backend/data/
 
