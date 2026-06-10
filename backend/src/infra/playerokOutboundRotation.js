@@ -100,6 +100,18 @@ function reportOutboundResult(ok) {
   else reportIpRateLimited(ip)
 }
 
+/**
+ * Записать исход конкретного HTTP-ответа на использованный IP — для прямого вызова
+ * из функций запроса (покрывает и пути БЕЗ withRetry: chatsSync, dealStatusWatch,
+ * проба). 429 → эскалация блока, 200 → снятие. Идемпотентно (двойной отчёт с
+ * withRetry безопасен: эскалация внутри активного окна не повторяется).
+ */
+function reportIpResult(ip, statusCode) {
+  if (!ip) return
+  if (statusCode === 429) reportIpRateLimited(ip)
+  else if (statusCode === 200) reportIpSuccess(ip)
+}
+
 /** IP сейчас в активном блоке (until ещё не наступил)? */
 function isIpOnCooldown(ip) {
   const st = ipState.get(ip)
@@ -175,6 +187,7 @@ module.exports = {
   runWithOutboundAttempt,
   pickRotationIp,
   reportOutboundResult,
+  reportIpResult,
   reportIpRateLimited,
   reportIpSuccess,
   isIpOnCooldown,

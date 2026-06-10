@@ -4,6 +4,7 @@ const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 const { normalizeKeyPart, buildProductKey } = require('./keyUtils')
 const { dealPurchaseUnixTs } = require('./dealPurchaseUnixTs')
 
@@ -61,13 +62,16 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('deals')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          // Отчёт ротации: 429 на этом IP → эскалация блока, 200 → снятие.
+          reportIpResult(extra.localAddress, resp.statusCode)
           if (resp.statusCode !== 200) {
             let errMsg = `Playerok deals: status ${resp.statusCode}`
             try {

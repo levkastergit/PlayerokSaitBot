@@ -4,6 +4,7 @@ const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PERSISTED_HASH }) {
   if (!AUTOLIST_MAX_CHATS_TO_SCAN) throw new Error('AUTOLIST_MAX_CHATS_TO_SCAN is required')
@@ -55,13 +56,16 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('chats')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          // Отчёт ротации: 429 на этом IP → эскалация блока, 200 → снятие.
+          reportIpResult(extra.localAddress, resp.statusCode)
           if (resp.statusCode !== 200) {
             const preview = String(data || '').slice(0, 500)
             return reject(
