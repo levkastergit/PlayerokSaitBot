@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
+const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
 const {
   autolistGetSupercellFlowMap,
   autolistGetTopupFlowMap,
@@ -137,6 +138,10 @@ function setupDealStatusWatchBackgroundJob({
       if (!stored || !stored.token) continue
 
       inFlightByUser.add(userId)
+      // Все исходящие запросы Playerok этого пользователя — в его контексте,
+      // иначе resolveOutboundLocalAddress не увидит userId и привязки/ротация IP
+      // не применятся (запросы уйдут с env-фолбэка PLAYEROK_OUTBOUND_IP).
+      await runWithPlayerokUser(userId, async () => {
       try {
         const ua = getUserAgent()
         const deals = await fetchActiveDeals(stored.token, ua)
@@ -225,6 +230,7 @@ function setupDealStatusWatchBackgroundJob({
       } finally {
         inFlightByUser.delete(userId)
       }
+      })
     }
 
     // Честные счётчики по всем сделкам (не по обрезанному снимку).
