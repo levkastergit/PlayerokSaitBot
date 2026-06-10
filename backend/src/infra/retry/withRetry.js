@@ -1,4 +1,4 @@
-const { runWithOutboundAttempt } = require('../playerokOutboundRotation')
+const { runWithOutboundAttempt, reportOutboundResult } = require('../playerokOutboundRotation')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -46,9 +46,14 @@ async function withRetry(fn, opts = {}) {
     let lastErr = null
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn()
+        const result = await fn()
+        // Успех на использованном исходящем IP — снимаем с него штраф ротации.
+        reportOutboundResult(true)
+        return result
       } catch (err) {
         lastErr = err
+        // 429 на использованном IP — эскалируем его блок в ротации (по лестнице).
+        if (isPlayerokRateLimitError(err)) reportOutboundResult(false)
         const retryable = attempt < retries && shouldRetry(err)
         if (!retryable) break
 

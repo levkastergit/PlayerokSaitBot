@@ -120,6 +120,25 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
     return () => { cancelled = true }
   }, [])
 
+  // Периодически обновляем список IP (вместе со статусом блокировки 429), чтобы
+  // заблокированные адреса подсвечивались красным в реальном времени. Обновляем
+  // только ipAddresses — выбор пользователя (ipBindings) не трогаем.
+  useEffect(() => {
+    if (activeSub !== '') return undefined
+    let cancelled = false
+    const id = setInterval(() => {
+      fetchOutboundIps().then((ips) => {
+        if (cancelled || !ips.ok) return
+        setIpAddresses(ips.addresses)
+        setIpLegacyEnv(ips.legacyEnvIp)
+      })
+    }, 8000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [activeSub])
+
   useEffect(() => {
     let cancelled = false
     setApprouteLoading(true)
@@ -159,7 +178,12 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
       { value: ipRotateValue, label: 'Чередование (ротация)' },
     ]
     for (const row of ipAddresses) {
-      if (row?.address) opts.push({ value: row.address, label: row.address })
+      if (row?.address)
+        opts.push({
+          value: row.address,
+          label: row.blocked ? `${row.address} — заблокирован (${row.blockLabel})` : row.address,
+          blocked: Boolean(row.blocked),
+        })
     }
     return opts
   }, [ipAddresses, ipDisabledValue, ipRotateValue])
@@ -513,7 +537,22 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                 <p className="card-text settings-outbound-ip-list">
                   <span className="settings-meta-key">Доступные на сервере: </span>
                   <strong className="settings-meta-value">
-                    {ipAddresses.map((a) => a.address).join(', ')}
+                    {ipAddresses.map((a, i) => (
+                      <React.Fragment key={a.address}>
+                        {i > 0 ? ', ' : ''}
+                        <span
+                          style={a.blocked ? { color: '#ff5555', fontWeight: 700 } : undefined}
+                          title={
+                            a.blocked
+                              ? `Заблокирован Playerok (429). Разблокировка примерно через ${a.blockLabel}`
+                              : undefined
+                          }
+                        >
+                          {a.address}
+                          {a.blocked ? ` (заблокирован · ${a.blockLabel})` : ''}
+                        </span>
+                      </React.Fragment>
+                    ))}
                   </strong>
                 </p>
               ) : (
@@ -583,6 +622,7 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                             <option
                               key={`${ch.id}-${opt.value === ipDisabledValue ? 'off' : opt.value || 'auto'}`}
                               value={opt.value}
+                              style={opt.blocked ? { color: '#ff5555' } : undefined}
                             >
                               {opt.label}
                             </option>

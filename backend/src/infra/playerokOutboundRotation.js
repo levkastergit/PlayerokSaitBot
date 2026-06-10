@@ -3,51 +3,53 @@
 // ---------------------------------------------------------------------------
 // Ротация исходящего IP для запросов к Playerok — защита от 429.
 //
-// Идея: если соседние запросы уходят с РАЗНЫХ исходящих IP, то на каждый
-// отдельный IP приходится меньше запросов в секунду, и лимит 429 срабатывает
-// реже. А если запрос всё-таки получил 429 и повторяется (withRetry), повтор
-// берёт ДРУГОЙ IP из пула, а не тот же самый.
+// Идея: соседние запросы уходят с РАЗНЫХ исходящих IP → на каждый IP приходится
+// меньше запросов в секунду, и лимит 429 срабатывает реже. А если запрос всё-таки
+// получил 429 и повторяется (withRetry), повтор берёт ДРУГОЙ IP из пула.
 //
-// Здесь только «механика выбора»: глобальный round-robin счётчик + контекст
-// одной логической операции (попытки withRetry), в котором копятся уже
-// опробованные IP по каналам — чтобы повтор после 429 их исключил.
-// Сам пул IP и решение «крутить или нет» — в playerokOutboundIp.js.
+// Лимит 429 у Playerok — ПО IP (проверено эмпирически: когда один IP залочен,
+// остальные тем же токеном отдают 200). Поэтому ведём по каждому IP «штраф»:
+//   - на 429 IP уходит в блок по лестнице эскалации (если он не уже в блоке):
+//       1 мин → 10 мин → 30 мин → 1 час → 3 часа → 24 часа (максимум).
+//     Каждый следующий 429 ПОСЛЕ истечения блока повышает ступень.
+//   - на успешный ответ (200) штраф снимается полностью (IP «выздоровел»).
+// Заблокированный IP пропускается в ротации для всех каналов; деградация мягкая
+// (если все IP в блоке/опробованы — всё равно вернём IP, не зациклимся).
 //
-// Cooldown: лимит 429 у Playerok — ПО IP (проверено эмпирически), а не по токену.
-// Поэтому когда какой-то IP получает 429 (виден как failover-повтор), он временно
-// «остывает» — pickRotationIp пропускает его для ВСЕХ каналов/запросов на
-// COOLDOWN_MS. Так заблокированный/перегруженный IP не тратит ~1/N запросов
-// впустую и не роняет инструменты вроде вкладки «Тест».
+// Сигналы успех/429 даёт withRetry через reportOutboundResult() — он знает исход
+// попытки, а выбранный IP лежит в attemptStore (контекст одной операции withRetry,
+// свой у каждого параллельного запроса — без гонок).
 // ---------------------------------------------------------------------------
 
 const { AsyncLocalStorage } = require('async_hooks')
 
 // Один глобальный курсор на все каналы: исходящий гейт сериализует запросы,
-// поэтому соседние вызовы получают подряд idx, idx+1, … → «1 запрос — 1 IP,
-// 2 запрос — 2 IP» независимо от категории.
+// поэтому соседние вызовы получают подряд idx, idx+1, … независимо от категории.
 let rrCursor = 0
 
-// Сколько держать IP вне ротации после полученного 429.
-const COOLDOWN_MS = 60000
-// ip -> timestamp (ms), до которого IP пропускается в ротации.
-const cooldownUntil = new Map()
+// Лестница эскалации блокировки IP (мс). Ступень N (1..6) → LADDER_MS[N-1].
+const LADDER_MS = [
+  60 * 1000, // 1 мин
+  10 * 60 * 1000, // 10 мин
+  30 * 60 * 1000, // 30 мин
+  60 * 60 * 1000, // 1 час
+  3 * 60 * 60 * 1000, // 3 часа
+  24 * 60 * 60 * 1000, // 24 часа (максимум)
+]
+
+// ip -> { level: 1..6, until: ts(ms) }. level сохраняется и после истечения until
+// (чтобы следующий 429 эскалировал дальше), очищается только успехом.
+const ipState = new Map()
 
 // Контекст одной логической операции (между всеми попытками одного withRetry):
-// { triedByChannel: Map<channel, Set<ip>>, lastIpByChannel: Map<channel, ip> }.
-// Живёт через await/then благодаря AsyncLocalStorage — тот же механизм, что и у
-// playerokRequestContext.
+// { triedByChannel: Map<channel, Set<ip>>, lastIp: string }. Живёт через await/then
+// благодаря AsyncLocalStorage. Свой у каждого параллельного withRetry → без гонок.
 const attemptStore = new AsyncLocalStorage()
 
-/**
- * Выполнить операцию (обычно — весь цикл повторов withRetry) в общем контексте
- * попыток, чтобы повтор после 429 знал, какие IP уже были опробованы, и взял
- * другой. Вложенные вызовы переиспользуют уже существующий контекст (не сбрасываем
- * накопленные triedByChannel — иначе внешний повтор потерял бы историю).
- */
 function runWithOutboundAttempt(fn) {
   const existing = attemptStore.getStore()
   if (existing) return fn()
-  return attemptStore.run({ triedByChannel: new Map(), lastIpByChannel: new Map() }, fn)
+  return attemptStore.run({ triedByChannel: new Map(), lastIp: null }, fn)
 }
 
 function getTriedSet(channel) {
@@ -62,51 +64,67 @@ function getTriedSet(channel) {
   return set
 }
 
-/** Пометить IP «остывающим» на COOLDOWN_MS — пропускать его в ротации. */
-function markIpCooldown(ip) {
-  if (ip) cooldownUntil.set(ip, Date.now() + COOLDOWN_MS)
+function minutesLabel(ms) {
+  const m = Math.round(ms / 60000)
+  return m >= 60 ? `${Math.round(m / 60)} ч` : `${m} мин`
 }
 
-/** На cooldown ли IP сейчас (с авто-очисткой просроченных записей). */
-function isIpOnCooldown(ip) {
-  const until = cooldownUntil.get(ip)
-  if (!until) return false
-  if (until <= Date.now()) {
-    cooldownUntil.delete(ip)
-    return false
+/** 429 по IP: эскалируем блок на следующую ступень (если IP сейчас не в блоке). */
+function reportIpRateLimited(ip) {
+  if (!ip) return
+  const now = Date.now()
+  const prev = ipState.get(ip)
+  // Уже в активном блоке — этот 429 лишь подтверждает, ступень не повышаем.
+  if (prev && prev.until > now) return
+  const level = Math.min((prev ? prev.level : 0) + 1, LADDER_MS.length)
+  const dur = LADDER_MS[level - 1]
+  ipState.set(ip, { level, until: now + dur })
+  console.log(`[outbound-ip] IP ${ip} получил 429 → блок #${level} на ${minutesLabel(dur)}`)
+}
+
+/** 200 по IP: снимаем штраф полностью. */
+function reportIpSuccess(ip) {
+  if (!ip) return
+  if (ipState.has(ip)) {
+    ipState.delete(ip)
+    console.log(`[outbound-ip] IP ${ip} снова отвечает (200) → блок снят`)
   }
-  return true
+}
+
+/** Записать исход последней попытки withRetry на использованный в ней IP. */
+function reportOutboundResult(ok) {
+  const store = attemptStore.getStore()
+  const ip = store && store.lastIp ? store.lastIp : null
+  if (!ip) return
+  if (ok) reportIpSuccess(ip)
+  else reportIpRateLimited(ip)
+}
+
+/** IP сейчас в активном блоке (until ещё не наступил)? */
+function isIpOnCooldown(ip) {
+  const st = ipState.get(ip)
+  return Boolean(st && st.until > Date.now())
 }
 
 /**
- * Выбрать следующий IP из пула по кругу, исключая уже опробованные в этой
- * операции (для данного канала) и временно «остывающие» после 429. Если
- * подходящих нет — деградируем мягко: сначала игнорируем cooldown, затем берём
- * по обычному кругу, не зацикливаясь.
+ * Выбрать следующий IP из пула по кругу, исключая уже опробованные в этой операции
+ * (для данного канала) и заблокированные (cooldown). Деградация мягкая: если живых
+ * нет — игнорируем блок; если все опробованы — берём по кругу.
  *
- * @param {string} channel    категория запроса (для учёта опробованных IP)
- * @param {string[]} pool     список IPv4 (непустой, уже отфильтрованный)
- * @returns {{ ip: string, failover: boolean }} ip и флаг «это повтор с другим IP»
+ * @returns {{ ip: string, failover: boolean }}
  */
 function pickRotationIp(channel, pool) {
   if (!Array.isArray(pool) || pool.length === 0) return { ip: null, failover: false }
 
   const store = attemptStore.getStore()
   const tried = getTriedSet(channel)
-  const chKey = String(channel || 'default')
   const wasTriedBefore = tried ? tried.size > 0 : false
-
-  // Повтор после ошибки (failover): предыдущий выбранный для канала IP только что
-  // вернул 429 — отправляем его на cooldown для всех последующих запросов.
-  if (wasTriedBefore && store && store.lastIpByChannel) {
-    markIpCooldown(store.lastIpByChannel.get(chKey))
-  }
 
   const start = rrCursor % pool.length
   let chosen = null
   let chosenIdx = -1
 
-  // Проход 1: первый не опробованный в этой операции и не на cooldown.
+  // Проход 1: первый не опробованный и не заблокированный.
   for (let i = 0; i < pool.length; i += 1) {
     const cand = pool[(start + i) % pool.length]
     if ((!tried || !tried.has(cand)) && !isIpOnCooldown(cand)) {
@@ -115,8 +133,7 @@ function pickRotationIp(channel, pool) {
       break
     }
   }
-  // Проход 2: первый не опробованный (cooldown игнорируем — лучше попробовать
-  // остывающий IP, чем встать; например когда все живые уже опробованы).
+  // Проход 2: первый не опробованный (блок игнорируем — лучше попробовать, чем встать).
   if (chosen == null) {
     for (let i = 0; i < pool.length; i += 1) {
       const cand = pool[(start + i) % pool.length]
@@ -127,7 +144,7 @@ function pickRotationIp(channel, pool) {
       }
     }
   }
-  // Проход 3: все IP пула уже опробованы — берём текущий по кругу.
+  // Проход 3: все опробованы — берём текущий по кругу.
   if (chosen == null) {
     chosen = pool[start]
     chosenIdx = start
@@ -135,25 +152,21 @@ function pickRotationIp(channel, pool) {
 
   rrCursor = chosenIdx + 1
   if (tried) tried.add(chosen)
-  if (store) {
-    if (!store.lastIpByChannel) store.lastIpByChannel = new Map()
-    store.lastIpByChannel.set(chKey, chosen)
-  }
-  // failover = это уже не первый IP в рамках данной операции (был 429 → повтор).
+  if (store) store.lastIp = chosen
   return { ip: chosen, failover: wasTriedBefore }
 }
 
-// Для тестов/диагностики: текущее положение курсора.
+// Для тестов/диагностики.
 function getRotationCursor() {
   return rrCursor
 }
 
-// Для тестов/диагностики: снимок активных cooldown.
+/** Снимок активных блокировок для UI: { ip: { level, secondsLeft } }. */
 function getCooldownSnapshot() {
   const now = Date.now()
   const out = {}
-  for (const [ip, until] of cooldownUntil) {
-    if (until > now) out[ip] = Math.round((until - now) / 1000)
+  for (const [ip, st] of ipState) {
+    if (st.until > now) out[ip] = { level: st.level, secondsLeft: Math.round((st.until - now) / 1000) }
   }
   return out
 }
@@ -161,8 +174,11 @@ function getCooldownSnapshot() {
 module.exports = {
   runWithOutboundAttempt,
   pickRotationIp,
-  getRotationCursor,
-  markIpCooldown,
+  reportOutboundResult,
+  reportIpRateLimited,
+  reportIpSuccess,
   isIpOnCooldown,
+  getRotationCursor,
   getCooldownSnapshot,
+  LADDER_MS,
 }
