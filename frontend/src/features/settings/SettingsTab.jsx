@@ -193,7 +193,7 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   // Какие категории фактически крутят IP: явное «Чередование» или «Автовыбор» при
   // включённом глобальном тумблере. Для подсказок/бейджей.
   const ipChannelRotates = (binding) =>
-    binding === ipRotateValue || ((binding == null || binding === '') && ipRotationEnabled)
+    binding !== ipDisabledValue && (binding === ipRotateValue || ipRotationEnabled)
 
   const handleIpBindingChange = (channelId, value) => {
     setIpBindings((prev) => ({ ...prev, [channelId]: value }))
@@ -571,9 +571,12 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                     onChange={(e) => handleIpRotationToggle(e.target.checked)}
                   />
                   <span>
-                    <strong>Ротация IP</strong> — категории на «Автовыборе» по очереди меняют исходящий
-                    IP из пула сервера, а повтор после ошибки 429 уходит уже с другого IP. Категории,
-                    закреплённые за конкретным IP, не затрагиваются.
+                    <strong>Ротация IP</strong> — при включении ВСЕ категории (кроме «Выключено») по
+                    очереди меняют исходящий IP из пула сервера, а повтор после ошибки 429 уходит уже с
+                    другого IP. Выбранный для категории конкретный IP при этом игнорируется (он
+                    действует только при выключенной ротации). IP, поймавший 429, временно выпадает из
+                    ротации (подсвечен красным) — чем дольше он отвечает 429, тем дольше блок: 1 мин →
+                    10 мин → 30 мин → 1 ч → 3 ч → 24 ч.
                   </span>
                 </label>
                 {ipRotationEnabled && ipPoolSize < 2 ? (

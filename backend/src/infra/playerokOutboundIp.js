@@ -142,8 +142,12 @@ function shouldRotateChannel(channel, bindings, rotation) {
   const raw = resolveChannelBindingRaw(channel, bindings)
   if (isOutboundDisabledBindingValue(raw)) return false
   if (isOutboundRotateBindingValue(raw)) return true
-  const isAuto = raw == null || String(raw).trim() === ''
-  return isAuto && Boolean(rotation && rotation.enabled)
+  // Глобальный тумблер «Ротация IP» — мастер-переключатель: при включённом тумблере
+  // крутим IP по пулу для ВСЕХ каналов, кроме явно отключённых, — даже если для канала
+  // выбран конкретный IP. Так случайно закреплённый в UI адрес не отменяет ротацию.
+  // Конкретный IP (пин) действует только при ВЫКЛЮЧЕННОМ тумблере.
+  if (rotation && rotation.enabled) return true
+  return false
 }
 
 function resolveOutboundLocalAddress(channel) {
