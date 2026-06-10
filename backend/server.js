@@ -1294,7 +1294,9 @@ server.listen(PORT, () => {
     chatDbSyncService,
     chatDbRepo,
     isAllActionsStopped,
-    intervalMs: 500,
+    // Интервал быстрого цикла синхронизации чатов. Тюнится без пересборки образа через
+    // env CHATS_SYNC_INTERVAL_MS; внутри джоба зажимается в [250, 5000] мс.
+    intervalMs: Number(process.env.CHATS_SYNC_INTERVAL_MS) || 500,
   })
 
   // Наблюдатель статусов сделок: триггерит автосообщения этапов «Отправка/Подтверждение

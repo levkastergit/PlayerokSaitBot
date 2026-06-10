@@ -136,15 +136,34 @@ function listRotationPool() {
     .filter(Boolean)
 }
 
+/** Явная привязка канала «Чаты» к КОНКРЕТНОМУ IP (не пусто/__rotate__/__disabled__).
+ *  Возвращает этот IP-строкой или null. Берём ИМЕННО bindings.chats (не фолбэк на
+ *  default), чтобы «выделенный IP для чатов» был осознанным выбором пользователя. */
+function getDedicatedChatsIp(bindings) {
+  const own = bindings && typeof bindings === 'object' ? bindings.chats : undefined
+  const pinned = String(own || '').trim()
+  if (!pinned) return null
+  if (isOutboundDisabledBindingValue(pinned) || isOutboundRotateBindingValue(pinned)) return null
+  return pinned
+}
+
 /** Нужно ли каналу крутить IP по пулу: явный __rotate__ ИЛИ «Автовыбор» при включённом
  *  глобальном тумблере ротации. Закреплённый конкретный IP и «Выключено» — не крутим. */
 function shouldRotateChannel(channel, bindings, rotation) {
   const raw = resolveChannelBindingRaw(channel, bindings)
   if (isOutboundDisabledBindingValue(raw)) return false
   if (isOutboundRotateBindingValue(raw)) return true
+  // Канал «Чаты» — особый: его выбор в настройках АВТОРИТЕТЕН и не зависит от глобального
+  // тумблера. Закреплённый конкретный IP здесь = ВЫДЕЛЕННЫЙ IP под чаты (не крутим, чтобы
+  // у синхронизации чатов был изолированный лимит 429, пока остальные категории крутятся).
+  // «Автовыбор» (пусто) у чатов — как обычно: крутим, если включён глобальный тумблер.
+  if (String(channel) === 'chats') {
+    if (getDedicatedChatsIp(bindings)) return false
+    return Boolean(rotation && rotation.enabled)
+  }
   // Глобальный тумблер «Ротация IP» — мастер-переключатель: при включённом тумблере
-  // крутим IP по пулу для ВСЕХ каналов, кроме явно отключённых, — даже если для канала
-  // выбран конкретный IP. Так случайно закреплённый в UI адрес не отменяет ротацию.
+  // крутим IP по пулу для ВСЕХ остальных каналов, кроме явно отключённых, — даже если для
+  // канала выбран конкретный IP. Так случайно закреплённый в UI адрес не отменяет ротацию.
   // Конкретный IP (пин) действует только при ВЫКЛЮЧЕННОМ тумблере.
   if (rotation && rotation.enabled) return true
   return false
@@ -153,7 +172,17 @@ function shouldRotateChannel(channel, bindings, rotation) {
 function resolveOutboundLocalAddress(channel) {
   const bindings = loadBindingsForCurrentUser()
   if (shouldRotateChannel(channel, bindings, loadRotationForCurrentUser())) {
-    const pool = listRotationPool()
+    let pool = listRotationPool()
+    // Выделенный под чаты IP исключаем из ротации ОСТАЛЬНЫХ каналов — тогда у чатов
+    // действительно отдельный IP и его лимит 429 не «съедают» лоты/сделки/финансы.
+    // Если после исключения крутить нечего (остался 0 IP) — не исключаем (мягкая деградация).
+    if (String(channel) !== 'chats') {
+      const dedicatedChatsIp = getDedicatedChatsIp(bindings)
+      if (dedicatedChatsIp) {
+        const filtered = pool.filter((ip) => ip !== dedicatedChatsIp)
+        if (filtered.length > 0) pool = filtered
+      }
+    }
     if (pool.length > 0) {
       const picked = pickRotationIp(channel, pool)
       if (picked.ip) {

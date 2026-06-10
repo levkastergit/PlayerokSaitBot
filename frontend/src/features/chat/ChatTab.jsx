@@ -1851,8 +1851,11 @@ export function ChatTab({
   }, [mergeChatEntry])
 
   const CHAT_MESSAGES_BATCH_SIZE = 6
-  const CHAT_LIST_POLL_MS = 1200
-  const CHAT_MESSAGES_POLL_MS = 1200
+  // Опрос локальной БД (не Playerok!) — читается за <5мс, поэтому опрашиваем чаще ради
+  // «моментальности». Список опрашиваем чаще messages: именно он замечает новое сообщение
+  // в открытом чате и сразу шорткатит догрузку (selectedHasNewListMessage → pullMessagesForChat).
+  const CHAT_LIST_POLL_MS = 700
+  const CHAT_MESSAGES_POLL_MS = 900
   const PRELOAD_INITIAL_COUNT = 8
   const PRELOAD_VIEWPORT_PRIORITY = 4
   // Сколько раз подряд терпим ПУСТОЙ ответ превью по одной и той же сигнатуре

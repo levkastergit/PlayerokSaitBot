@@ -4,6 +4,16 @@ const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
 
 const JOB_ID = 'chats-sync'
 
+// Длительность бэкофа после ошибки (мс) с джиттером, чтобы повторы нескольких
+// пользователей/вкладок не били Playerok синхронно сразу после снятия блока.
+function backoffMs(message) {
+  const isRateLimited =
+    /\b429\b/.test(message) || /too many/i.test(message) || /rate limit/i.test(message)
+  return isRateLimited
+    ? 4000 + Math.floor(Math.random() * 1500)
+    : 1500 + Math.floor(Math.random() * 1000)
+}
+
 function setupChatsSyncBackgroundJob({
   getAllStoredTokens,
   loadStoredTokenPlain,
@@ -13,18 +23,30 @@ function setupChatsSyncBackgroundJob({
   isAllActionsStopped = () => false,
   intervalMs = 500,
 }) {
+  // Интервал тика конфигурируется через CHATS_SYNC_INTERVAL_MS (см. server.js), но
+  // жёстко ограничен [250, 5000] мс: 0 заспамил бы Playerok, слишком большое — чаты «залипнут».
+  const tickMs = Math.min(5000, Math.max(250, Number(intervalMs) || 500))
+
   registerJob({
     id: JOB_ID,
     label: 'Синхронизация чатов',
     description: 'Опрашивает новые сообщения и сохраняет их в БД (быстрый цикл)',
-    intervalMs,
+    intervalMs: tickMs,
   })
+
+  // Сколько изменившихся чатов догружаем за один тик: бурст «прилетело сразу несколько»
+  // больше не растягивается по одному чату на тик. Реальные HTTP всё равно разносит гейт 280мс.
+  const DRAIN_PER_TICK = 2
 
   const listInFlightByUser = new Set()
   const messagesInFlightByUser = new Set()
   const messageQueueByUser = new Map()
   const viewerUsernameByUser = new Map()
-  const backoffUntilByUser = new Map()
+  // РАЗДЕЛЬНЫЙ бэкофф: 429 на дешёвом опросе списка и 429 на тяжёлой догрузке сообщений
+  // больше НЕ блокируют друг друга. Детект новых сообщений продолжает работать, даже
+  // если догрузка одного чата словила 429 — и наоборот.
+  const listBackoffUntilByUser = new Map()
+  const msgBackoffUntilByUser = new Map()
 
   // Цикл быстрый (500 мс) и асинхронный: без общего флага два прохода могли бы
   // наложиться и испортить учёт тиков (totalRuns/lastTickStartAt/inFlight) в реестре.
@@ -60,15 +82,14 @@ function setupChatsSyncBackgroundJob({
         // без чередования IP). Внутри continue заменён на return — он завершает обработку
         // текущего пользователя, цикл продолжается со следующим (тело await-ится).
         await runWithPlayerokUser(userId, async () => {
-          const blockedUntil = Number(backoffUntilByUser.get(userId) || 0)
-          if (blockedUntil > now) return
-
           const stored = loadStoredTokenPlain(userId)
           if (!stored || !stored.token) return
 
           const ua = getUserAgent()
 
-          if (!listInFlightByUser.has(userId)) {
+          // --- Опрос списка чатов (дешёвый, детект новых сообщений) ---
+          const listBlockedUntil = Number(listBackoffUntilByUser.get(userId) || 0)
+          if (listBlockedUntil <= now && !listInFlightByUser.has(userId)) {
             listInFlightByUser.add(userId)
             try {
               const listResult = await chatDbSyncService.syncUserChatsListPoll({
@@ -80,7 +101,7 @@ function setupChatsSyncBackgroundJob({
                 viewerUsernameByUser.set(userId, listResult.viewerUsername)
               }
               enqueueChanged(userId, listResult.changedChats)
-              backoffUntilByUser.delete(userId)
+              listBackoffUntilByUser.delete(userId)
             } catch (err) {
               const message = err && err.message ? String(err.message) : String(err)
               recordChatSyncStepLog({
@@ -90,42 +111,42 @@ function setupChatsSyncBackgroundJob({
                 source: 'userChats',
                 error: message,
               })
-              const isRateLimited =
-                /\b429\b/.test(message) ||
-                /too many/i.test(message) ||
-                /rate limit/i.test(message)
-              backoffUntilByUser.set(userId, Date.now() + (isRateLimited ? 4000 : 1500))
+              listBackoffUntilByUser.set(userId, Date.now() + backoffMs(message))
             } finally {
               listInFlightByUser.delete(userId)
             }
           }
 
+          // --- Догрузка изменившихся чатов (тяжёлая, до DRAIN_PER_TICK за тик) ---
+          const msgBlockedUntil = Number(msgBackoffUntilByUser.get(userId) || 0)
+          if (msgBlockedUntil > now) return
           if (messagesInFlightByUser.has(userId)) return
-          const queue = messageQueueByUser.get(userId) || []
-          if (queue.length === 0) return
+          if (((messageQueueByUser.get(userId) || []).length) === 0) return
 
-          const item = queue.shift()
-          messageQueueByUser.set(userId, queue)
           messagesInFlightByUser.add(userId)
-
           try {
-            await chatDbSyncService.syncOneChangedChat({
-              userId,
-              token: stored.token,
-              userAgent: ua,
-              item,
-              viewerUsername: viewerUsernameByUser.get(userId) || null,
-              runAutomation: true,
-              queueLeft: queue.length,
-            })
-            backoffUntilByUser.delete(userId)
+            let drained = 0
+            while (drained < DRAIN_PER_TICK) {
+              // Очередь перечитываем каждую итерацию: enqueueChanged мог заменить массив.
+              const queue = messageQueueByUser.get(userId) || []
+              if (queue.length === 0) break
+              const item = queue.shift()
+              messageQueueByUser.set(userId, queue)
+              drained += 1
+              await chatDbSyncService.syncOneChangedChat({
+                userId,
+                token: stored.token,
+                userAgent: ua,
+                item,
+                viewerUsername: viewerUsernameByUser.get(userId) || null,
+                runAutomation: true,
+                queueLeft: queue.length,
+              })
+            }
+            msgBackoffUntilByUser.delete(userId)
           } catch (err) {
             const message = err && err.message ? String(err.message) : String(err)
-            const isRateLimited =
-              /\b429\b/.test(message) ||
-              /too many/i.test(message) ||
-              /rate limit/i.test(message)
-            backoffUntilByUser.set(userId, Date.now() + (isRateLimited ? 4000 : 1500))
+            msgBackoffUntilByUser.set(userId, Date.now() + backoffMs(message))
           } finally {
             messagesInFlightByUser.delete(userId)
           }
@@ -137,7 +158,7 @@ function setupChatsSyncBackgroundJob({
       tickInFlight = false
       markTickEnd(JOB_ID, tickError)
     }
-  }, intervalMs)
+  }, tickMs)
 }
 
 module.exports = { setupChatsSyncBackgroundJob }

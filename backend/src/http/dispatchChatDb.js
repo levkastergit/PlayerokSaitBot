@@ -18,6 +18,34 @@ const SMART_EMAIL_NEGATIVE_TTL_MS = 30 * 1000
 const smartEmailCache = new Map()
 const blockingMessagesSyncByChat = new Map()
 
+// Мягкий таймаут: ответ /messages не должен висеть из-за медленного/зависшего запроса
+// к Playerok (почта/отзыв/финансы/догрузка истории). По истечении ms отдаём fallback,
+// а реальный промис не отменяем — он спокойно дозавершится и наполнит кеш к след. опросу.
+function withSoftTimeout(promise, ms, fallback) {
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve(fallback)
+    }, ms)
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(fallback)
+      }
+    )
+  })
+}
+
 function buildSmartEmailCacheKey({ userId, chatId, dealId }) {
   return `${Number(userId)}::${String(chatId || '')}::${String(dealId || '')}`
 }
@@ -525,7 +553,9 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
                   }
                 })
               }
-              await syncPromise
+              // Не висим на догрузке истории дольше 6с: к этому времени отдаём, что есть в БД;
+              // незавершённый sync догрузит остальное, и следующий опрос (через ~0.7с) покажет.
+              await withSoftTimeout(syncPromise, 6000, undefined)
               rows = chatDbRepo.listMessages.all(currentUserId, effectiveChatId)
               thread = chatDbRepo.getThreadByChatId.get(currentUserId, effectiveChatId)
               deals = chatDbRepo.listDealsByChatId.all(currentUserId, effectiveChatId)
@@ -587,13 +617,18 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         } else {
           const { token } = getTokenFromBodyOrStored(currentUserId, payload)
           if (token && dealIdForEmail) {
-            buyerSupercellEmail = await resolveBuyerSupercellEmailFromDeal({
-              requestDealById,
-              token,
-              userAgent: payload?.userAgent,
-              dealId: dealIdForEmail,
-              categoryHint,
-            })
+            // Один запрос deal, но с потолком 2с — чтобы медленный Playerok не держал ответ чата.
+            buyerSupercellEmail = await withSoftTimeout(
+              resolveBuyerSupercellEmailFromDeal({
+                requestDealById,
+                token,
+                userAgent: payload?.userAgent,
+                dealId: dealIdForEmail,
+                categoryHint,
+              }),
+              2000,
+              null
+            )
             setCachedSmartEmail(cacheKey, buyerSupercellEmail || null)
           }
         }
@@ -618,17 +653,24 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
               if (!viewerUsername) {
                 viewerUsername = await resolveViewerUsername(getViewer, token, payload?.userAgent)
               }
-              const smart = await fetchDealChatMessagesFromPlayerok(
-                token,
-                payload?.userAgent,
-                dealIdForSmartResolve,
-                effectiveChatId,
-                {
-                  viewerUsername: viewerUsername || null,
-                  buyerUsername: resolvedBuyerName || undefined,
-                  categoryHint: primaryDeal?.category || thread?.category || undefined,
-                  maxPages: 40,
-                }
+              // Тяжёлый путь (до 40 страниц истории ради почты) — с потолком 4с, чтобы
+              // первое открытие чата не зависало. Не нашли за 4с → отдаём null, кешируем,
+              // фоновый sync всё равно дольёт историю.
+              const smart = await withSoftTimeout(
+                fetchDealChatMessagesFromPlayerok(
+                  token,
+                  payload?.userAgent,
+                  dealIdForSmartResolve,
+                  effectiveChatId,
+                  {
+                    viewerUsername: viewerUsername || null,
+                    buyerUsername: resolvedBuyerName || undefined,
+                    categoryHint: primaryDeal?.category || thread?.category || undefined,
+                    maxPages: 40,
+                  }
+                ),
+                4000,
+                null
               )
               const smartEmail =
                 smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : ''
@@ -648,19 +690,30 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
           requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
         if (dealIdForReview) {
           const { token } = getTokenFromBodyOrStored(currentUserId, payload)
-          review = await resolveDealReview({
-            chatDbRepo,
-            requestDealById,
-            token,
-            userAgent: payload?.userAgent,
-            userId: currentUserId,
-            dealId: dealIdForReview,
-          })
+          review = await withSoftTimeout(
+            resolveDealReview({
+              chatDbRepo,
+              requestDealById,
+              token,
+              userAgent: payload?.userAgent,
+              userId: currentUserId,
+              dealId: dealIdForReview,
+            }),
+            2500,
+            null
+          )
         }
       }
 
       // Финансы по сделкам (цена/себестоимость/расходы на поднятия) — по dealId.
-      const dealFinancialsMap = await getDealFinancialsMap(currentUserId, deps)
+      // Курсы USD могут тянуться по сети — потолок 2.5с и глушим ошибку, чтобы сбой
+      // курса/сети не ронял загрузку сообщений (вернём null-финансы, дополнятся позже).
+      let dealFinancialsMap = null
+      try {
+        dealFinancialsMap = await withSoftTimeout(getDealFinancialsMap(currentUserId, deps), 2500, null)
+      } catch (_) {
+        dealFinancialsMap = null
+      }
 
       return sendJson(res, 200, {
         ok: true,

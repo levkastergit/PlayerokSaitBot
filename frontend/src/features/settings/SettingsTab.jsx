@@ -190,10 +190,23 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
 
   // Сколько IP реально участвует в ротации (нужно ≥2, иначе крутить нечего).
   const ipPoolSize = ipAddresses.length
+  // Закреплён ли у «Чатов» конкретный (выделенный) IP — не пусто/ротация/выключено.
+  // Такой IP действует даже при включённой общей ротации (см. shouldRotateChannel на бэке).
+  const isDedicatedChatsBinding = (channelId, binding) =>
+    channelId === 'chats' &&
+    binding !== '' &&
+    binding !== ipDisabledValue &&
+    binding !== ipRotateValue
+
   // Какие категории фактически крутят IP: явное «Чередование» или «Автовыбор» при
-  // включённом глобальном тумблере. Для подсказок/бейджей.
-  const ipChannelRotates = (binding) =>
-    binding !== ipDisabledValue && (binding === ipRotateValue || ipRotationEnabled)
+  // включённом глобальном тумблере. Для «Чатов» закреплённый IP — ВЫДЕЛЕННЫЙ (не ротация),
+  // поэтому крутятся только при «Чередовании»/«Автовыборе». Для подсказок/бейджей.
+  const ipChannelRotates = (binding, channelId) => {
+    if (binding === ipDisabledValue) return false
+    if (binding === ipRotateValue) return true
+    if (isDedicatedChatsBinding(channelId, binding)) return false
+    return ipRotationEnabled
+  }
 
   const handleIpBindingChange = (channelId, value) => {
     setIpBindings((prev) => ({ ...prev, [channelId]: value }))
@@ -574,9 +587,11 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                     <strong>Ротация IP</strong> — при включении ВСЕ категории (кроме «Выключено») по
                     очереди меняют исходящий IP из пула сервера, а повтор после ошибки 429 уходит уже с
                     другого IP. Выбранный для категории конкретный IP при этом игнорируется (он
-                    действует только при выключенной ротации). IP, поймавший 429, временно выпадает из
-                    ротации (подсвечен красным) — чем дольше он отвечает 429, тем дольше блок: 1 мин →
-                    10 мин → 30 мин → 1 ч → 3 ч → 24 ч.
+                    действует только при выключенной ротации). <strong>Исключение — «Чаты»:</strong> если
+                    для чатов выбран конкретный IP, он остаётся ВЫДЕЛЕННЫМ под чаты даже при включённой
+                    ротации (и исключается из ротации остальных категорий), чтобы у чатов был свой лимит
+                    429. IP, поймавший 429, временно выпадает из ротации (подсвечен красным) — чем дольше
+                    он отвечает 429, тем дольше блок: 1 мин → 10 мин → 30 мин → 1 ч → 3 ч → 24 ч.
                   </span>
                 </label>
                 {ipRotationEnabled && ipPoolSize < 2 ? (
@@ -589,7 +604,8 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                   {ipChannels.map((ch) => {
                     const binding = ipBindings[ch.id] ?? ''
                     const isOff = binding === ipDisabledValue
-                    const rotates = !isOff && ipChannelRotates(binding)
+                    const rotates = !isOff && ipChannelRotates(binding, ch.id)
+                    const isDedicatedChats = !isOff && isDedicatedChatsBinding(ch.id, binding)
                     return (
                       <div key={ch.id} className="settings-outbound-ip-row">
                         <label
@@ -605,6 +621,11 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                           {rotates ? (
                             <span className="settings-outbound-ip-badge settings-outbound-ip-badge--rotate">
                               ротация
+                            </span>
+                          ) : null}
+                          {isDedicatedChats ? (
+                            <span className="settings-outbound-ip-badge settings-outbound-ip-badge--rotate">
+                              выделенный IP
                             </span>
                           ) : null}
                         </label>
