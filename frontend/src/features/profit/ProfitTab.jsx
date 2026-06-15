@@ -34,6 +34,31 @@ function formatPrice(v) {
   return `${Number(v).toLocaleString('ru-RU')} ₽`
 }
 
+/** Цена без копеек, округлённая — для KPI-карточек. */
+function formatPriceRound(v) {
+  if (v == null || (typeof v === 'number' && isNaN(v))) return '—'
+  return `${Math.round(Number(v)).toLocaleString('ru-RU')} ₽`
+}
+
+function formatPercent(v) {
+  if (v == null || (typeof v === 'number' && isNaN(v))) return '—'
+  return `${Number(v).toFixed(1)}%`
+}
+
+function formatCount(v) {
+  return Number(v || 0).toLocaleString('ru-RU')
+}
+
+/** YYYY-MM-DD → «5 июн» для подписи столбца графика. */
+function formatChartDay(ymd) {
+  if (!ymd) return ''
+  const parts = String(ymd).split('-')
+  if (parts.length !== 3) return ymd
+  const monthsShort = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+  const m = monthsShort[Number(parts[1]) - 1] || ''
+  return `${Number(parts[2])} ${m}`
+}
+
 const MONTHS_RU = [
   'Январь',
   'Февраль',
@@ -259,6 +284,15 @@ export function ProfitTab({ token }) {
     return WEEKDAYS_RU[wd] || String(wd)
   }, [stats])
 
+  // Данные для графика динамики прибыли по дням. Берём последние 30 дней с продажами,
+  // масштабируем по максимальному |прибыль| — отдельная шкала вверх (прибыль) и вниз (убыток).
+  const chartDaily = useMemo(() => {
+    const daily = Array.isArray(stats?.daily) ? stats.daily : []
+    const tail = daily.slice(-30)
+    const maxAbs = tail.reduce((m, d) => Math.max(m, Math.abs(Number(d.profit) || 0)), 0) || 1
+    return { items: tail, maxAbs }
+  }, [stats])
+
   return (
     <div className="tab-page">
       <div className="tab-page-header">
@@ -406,6 +440,7 @@ export function ProfitTab({ token }) {
                   <thead>
                     <tr>
                       <th>Название товара</th>
+                      <th>Покупатель</th>
                       <th>Дата продажи</th>
                       <th>Продажа</th>
                       <th>Возврат</th>
@@ -418,10 +453,19 @@ export function ProfitTab({ token }) {
                     {list.map((item, index) => (
                       <tr key={`${item.productKey}-${item.soldAt}-${index}`}>
                         <td className="history-table__title">{item.productTitle}</td>
+                        <td>{item.buyerName || '—'}</td>
                         <td className="history-table__time">{formatDate(item.soldAt)}</td>
                         <td className="history-table__price">{formatPrice(item.salePrice)}</td>
                         <td>{item.isRefund ? 'Да' : '—'}</td>
-                        <td>{formatPrice(item.cost)}</td>
+                        <td
+                          title={
+                            item.costUsd != null && item.usdRate
+                              ? `$${Number(item.costUsd).toFixed(2)} × ${Number(item.usdRate).toFixed(2)} ₽/$`
+                              : undefined
+                          }
+                        >
+                          {formatPrice(item.cost)}
+                        </td>
                         <td>{formatPrice((item.listingCost || 0) + (item.bumpCost || 0))}</td>
                         <td className={`profit-table__profit ${Number(item.profit) >= 0 ? 'profit-table__profit--positive' : 'profit-table__profit--negative'}`}>
                           {formatPrice(item.profit)}
@@ -489,29 +533,106 @@ export function ProfitTab({ token }) {
           )}
 
           {hasToken && view === 'stats' && !statsLoading && !statsError && stats && (
-            <div className="tab-grid" style={{ marginTop: '0.75rem' }}>
-              <section className="card" style={{ gridColumn: 'span 1' }}>
-                <h3 className="card-title">Итоги</h3>
-                <p className="card-text">Итоговая прибыль: <strong>{formatPrice(stats?.totals?.profit)}</strong></p>
-                <p className="card-text">Выручка (без возвратов): <strong>{formatPrice(stats?.totals?.revenue)}</strong></p>
-                <p className="card-text">Себестоимость: <strong>{formatPrice(stats?.totals?.cost)}</strong></p>
+            <div className="profit-stats">
+              {/* KPI-карточки: главные цифры за выбранный период */}
+              <div className="profit-kpi-row">
+                <div className={'profit-kpi' + (Number(stats?.totals?.profit) >= 0 ? ' profit-kpi--good' : ' profit-kpi--bad')}>
+                  <span className="profit-kpi__label">Прибыль</span>
+                  <span className="profit-kpi__value">{formatPriceRound(stats?.totals?.profit)}</span>
+                  <span className="profit-kpi__sub">маржа {formatPercent(stats?.averages?.margin)}</span>
+                </div>
+                <div className="profit-kpi">
+                  <span className="profit-kpi__label">Выручка</span>
+                  <span className="profit-kpi__value">{formatPriceRound(stats?.totals?.revenue)}</span>
+                  <span className="profit-kpi__sub">средний чек {formatPriceRound(stats?.averages?.salePrice)}</span>
+                </div>
+                <div className="profit-kpi">
+                  <span className="profit-kpi__label">Расходы</span>
+                  <span className="profit-kpi__value">{formatPriceRound(stats?.totals?.expenses)}</span>
+                  <span className="profit-kpi__sub">себест. + выставл. + поднятия</span>
+                </div>
+                <div className="profit-kpi">
+                  <span className="profit-kpi__label">Продаж</span>
+                  <span className="profit-kpi__value">{formatCount(stats?.counts?.paid ?? stats?.counts?.sales)}</span>
+                  <span className="profit-kpi__sub">{formatCount(stats?.counts?.refunds)} возвратов</span>
+                </div>
+              </div>
+
+              {/* График динамики прибыли по дням */}
+              <section className="card profit-chart-card">
+                <h3 className="card-title">Прибыль по дням{chartDaily.items.length ? ` (${chartDaily.items.length})` : ''}</h3>
+                {chartDaily.items.length === 0 ? (
+                  <p className="card-text">Нет продаж за выбранный период.</p>
+                ) : (
+                  <div className="profit-chart" role="img" aria-label="График прибыли по дням">
+                    {chartDaily.items.map((d) => {
+                      const p = Number(d.profit) || 0
+                      const heightPct = Math.max(2, Math.round((Math.abs(p) / chartDaily.maxAbs) * 100))
+                      return (
+                        <div
+                          key={d.date}
+                          className="profit-chart__col"
+                          title={`${formatChartDay(d.date)}: ${formatPrice(p)} · ${formatCount(d.sales)} прод.`}
+                        >
+                          <div className="profit-chart__bar-wrap">
+                            <span
+                              className={'profit-chart__bar' + (p >= 0 ? ' profit-chart__bar--pos' : ' profit-chart__bar--neg')}
+                              style={{ height: `${heightPct}%` }}
+                            />
+                          </div>
+                          <span className="profit-chart__label">{formatChartDay(d.date)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </section>
-              <section className="card" style={{ gridColumn: 'span 1' }}>
-                <h3 className="card-title">Расходы</h3>
-                <p className="card-text">Траты на выставление: <strong>{formatPrice(stats?.totals?.listingCost)}</strong></p>
-                <p className="card-text">Траты на поднятия: <strong>{formatPrice(stats?.totals?.bumpCost)}</strong></p>
-                <p className="card-text">Средняя прибыль на продажу: <strong>{formatPrice(stats?.averages?.profitPerSale)}</strong></p>
-              </section>
-              <section className="card" style={{ gridColumn: 'span 1' }}>
-                <h3 className="card-title">Лучшее время</h3>
-                <p className="card-text">Самый прибыльный час: <strong>{bestHourLabel}</strong> ({formatPrice(stats?.best?.hour?.profit)})</p>
-                <p className="card-text">Самый прибыльный день недели: <strong>{bestWeekdayLabel}</strong> ({formatPrice(stats?.best?.weekday?.profit)})</p>
-              </section>
-              <section className="card" style={{ gridColumn: 'span 1' }}>
-                <h3 className="card-title">Счётчики</h3>
-                <p className="card-text">Продаж: <strong>{Number(stats?.counts?.sales || 0).toLocaleString('ru-RU')}</strong></p>
-                <p className="card-text">Возвратов: <strong>{Number(stats?.counts?.refunds || 0).toLocaleString('ru-RU')}</strong></p>
-              </section>
+
+              {/* Разбивка расходов + лучшее время */}
+              <div className="profit-stats-grid">
+                <section className="card">
+                  <h3 className="card-title">Разбивка расходов</h3>
+                  <div className="profit-breakdown">
+                    <div className="profit-breakdown__row">
+                      <span>Себестоимость</span>
+                      <strong>{formatPrice(stats?.totals?.cost)}</strong>
+                    </div>
+                    <div className="profit-breakdown__row">
+                      <span>Выставление</span>
+                      <strong>{formatPrice(stats?.totals?.listingCost)}</strong>
+                    </div>
+                    <div className="profit-breakdown__row">
+                      <span>Поднятия</span>
+                      <strong>{formatPrice(stats?.totals?.bumpCost)}</strong>
+                    </div>
+                    <div className="profit-breakdown__row profit-breakdown__row--total">
+                      <span>Средняя прибыль с продажи</span>
+                      <strong>{formatPrice(stats?.averages?.profitPerSale)}</strong>
+                    </div>
+                  </div>
+                </section>
+                <section className="card">
+                  <h3 className="card-title">Лучшее время</h3>
+                  <div className="profit-breakdown">
+                    <div className="profit-breakdown__row">
+                      <span>Самый прибыльный час</span>
+                      <strong>{bestHourLabel}</strong>
+                    </div>
+                    <div className="profit-breakdown__row">
+                      <span></span>
+                      <span className="card-text" style={{ margin: 0 }}>{formatPrice(stats?.best?.hour?.profit)}</span>
+                    </div>
+                    <div className="profit-breakdown__row">
+                      <span>Самый прибыльный день</span>
+                      <strong>{bestWeekdayLabel}</strong>
+                    </div>
+                    <div className="profit-breakdown__row">
+                      <span></span>
+                      <span className="card-text" style={{ margin: 0 }}>{formatPrice(stats?.best?.weekday?.profit)}</span>
+                    </div>
+                  </div>
+                </section>
+              </div>
             </div>
           )}
         </section>

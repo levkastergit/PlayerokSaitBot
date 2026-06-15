@@ -74,6 +74,8 @@ async function handleProfitStats({ query, currentUserId, deps }) {
 
     const profitByHour = Array.from({ length: 24 }, () => 0)
     const profitByWeekday = Array.from({ length: 7 }, () => 0) // 0=Sun..6=Sat
+    // Динамика по дням (для графика): дата YYYY-MM-DD → { profit, revenue, sales }.
+    const dailyMap = new Map()
 
     for (const it of list) {
       const p = Number(it.profit) || 0
@@ -91,8 +93,16 @@ async function handleProfitStats({ query, currentUserId, deps }) {
         const wd = d.getDay()
         if (hour >= 0 && hour < 24) profitByHour[hour] += p
         if (wd >= 0 && wd < 7) profitByWeekday[wd] += p
+        const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        const bucket = dailyMap.get(ymd) || { date: ymd, profit: 0, revenue: 0, sales: 0 }
+        bucket.profit += p
+        if (!it.isRefund) bucket.revenue += Number(it.salePrice) || 0
+        bucket.sales += 1
+        dailyMap.set(ymd, bucket)
       }
     }
+
+    const daily = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date))
 
     const bestHour = profitByHour.reduce(
       (acc, val, idx) => (val > acc.profit ? { hour: idx, profit: val } : acc),
@@ -104,7 +114,11 @@ async function handleProfitStats({ query, currentUserId, deps }) {
       { weekday: 0, profit: profitByWeekday[0] || 0 }
     )
 
+    const paidSales = salesCount - refundCount
     const avgProfit = salesCount ? totalProfit / salesCount : 0
+    const avgSale = paidSales ? totalRevenue / paidSales : 0
+    // Маржа = прибыль / выручка (доля прибыли в выручке), в процентах.
+    const margin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0
 
     return {
       statusCode: 200,
@@ -116,13 +130,15 @@ async function handleProfitStats({ query, currentUserId, deps }) {
           cost: totalCost,
           listingCost: totalListingCost,
           bumpCost: totalBumpCost,
+          expenses: totalCost + totalListingCost + totalBumpCost,
         },
-        counts: { sales: salesCount, refunds: refundCount },
-        averages: { profitPerSale: avgProfit },
+        counts: { sales: salesCount, refunds: refundCount, paid: paidSales },
+        averages: { profitPerSale: avgProfit, salePrice: avgSale, margin },
         best: {
           hour: bestHour,
           weekday: bestWeekday,
         },
+        daily,
       },
     }
   } catch (err) {

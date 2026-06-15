@@ -12,6 +12,7 @@ async function handlePartnersGetWorkerList({ deps, currentUserId }) {
     data: {
       list: rows.map((r) => ({
         directorId: Number(r.director_user_id),
+        login: r.director_login != null ? String(r.director_login) : null,
         connectStatus: Number(r.connect_status),
         createdAt: r.created_at != null ? Number(r.created_at) : null,
       })),

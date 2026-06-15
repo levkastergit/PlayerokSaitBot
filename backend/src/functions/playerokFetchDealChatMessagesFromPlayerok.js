@@ -2,6 +2,7 @@
 
 const {
   pickSupercellCategoryFromDeal,
+  pickSupercellCategoryFromItemHints,
   getSupercellGameByCategory,
   pickBuyerEmailFromFieldsForSupercellDeal,
   pickBuyerEmailFromDeepGraphqlScan,
@@ -305,13 +306,27 @@ function createFetchDealChatMessagesFromPlayerok({
     let itemTitle = hintTitle || null
     let itemImageUrl = hintImage || null
     let itemCategory = hintCategory || null
+    // Определяем игру не только по категории, но и по названию лота/категории из
+    // списка чатов и сообщений: если сделку не удалось загрузить (429 / нет dealId),
+    // это единственный сигнал, по которому потом разрешим фолбэк почты из сообщений.
+    const earlyHintCategory = pickSupercellCategoryFromItemHints({
+      gameName: null,
+      categoryName: itemCategory || hintCategory || categoryFromChatList,
+      productKeyGamePart: null,
+      itemTitle: itemTitle || hintTitle,
+    })
     let supercellGameForEmail =
-      getSupercellGameByCategory(itemCategory) || getSupercellGameByCategory(hintCategory)
+      getSupercellGameByCategory(itemCategory) ||
+      getSupercellGameByCategory(hintCategory) ||
+      getSupercellGameByCategory(categoryFromChatList) ||
+      getSupercellGameByCategory(earlyHintCategory)
 
     logDealEmailDebug('supercellGame:initial', {
       supercellGameForEmail: Boolean(supercellGameForEmail),
       itemCategory,
       hintCategory,
+      categoryFromChatList,
+      earlyHintCategory: earlyHintCategory || null,
     })
 
     if (effectiveDealId) {
@@ -498,6 +513,28 @@ function createFetchDealChatMessagesFromPlayerok({
       )
       logDealEmailDebug('step:getLatestPlausibleEmailFromNonViewerMessages', {
         result: buyerMessageSupercellEmail,
+      })
+    }
+
+    // Фолбэк: если по сообщениям конкретной сделки почту не нашли, а сообщения были
+    // сужены до сделки (scopeMessagesToDeal мог отрезать письмо, если dealId
+    // определился неточно или сделка не загрузилась из-за 429) — ищем по всем
+    // сообщениям чата. Так почта не теряется в чатах с несколькими сделками.
+    if (
+      !buyerMessageSupercellEmail &&
+      supercellGameForEmail &&
+      messagesForDeal.length < allMessages.length
+    ) {
+      buyerMessageSupercellEmail =
+        getLatestBuyerEmailFromMessages(
+          allMessages,
+          opts.viewerUsername || null,
+          buyerUsernameForMsgs
+        ) || getLatestPlausibleEmailFromNonViewerMessages(allMessages, opts.viewerUsername || null)
+      logDealEmailDebug('step:emailFromAllMessagesFallback', {
+        result: buyerMessageSupercellEmail,
+        allMessageCount: allMessages.length,
+        scopedMessageCount: messagesForDeal.length,
       })
     }
 

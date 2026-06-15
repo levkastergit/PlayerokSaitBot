@@ -54,8 +54,13 @@ export async function fetchOutboundIpSettings() {
       bindings: data.bindings && typeof data.bindings === 'object' ? data.bindings : {},
       rotation:
         data.rotation && typeof data.rotation === 'object'
-          ? { enabled: Boolean(data.rotation.enabled) }
-          : { enabled: false },
+          ? {
+              enabled: Boolean(data.rotation.enabled),
+              excludedIps: Array.isArray(data.rotation.excludedIps)
+                ? data.rotation.excludedIps.map((ip) => String(ip || '').trim()).filter(Boolean)
+                : [],
+            }
+          : { enabled: false, excludedIps: [] },
       channels: Array.isArray(data.channels) ? data.channels : [],
     }
   } catch (err) {
@@ -66,7 +71,15 @@ export async function fetchOutboundIpSettings() {
 export async function saveOutboundIpSettings(bindings, rotation) {
   try {
     const body = { bindings }
-    if (rotation !== undefined) body.rotation = { enabled: Boolean(rotation && rotation.enabled) }
+    if (rotation !== undefined) {
+      body.rotation = {
+        enabled: Boolean(rotation && rotation.enabled),
+        excludedIps:
+          rotation && Array.isArray(rotation.excludedIps)
+            ? rotation.excludedIps.map((ip) => String(ip || '').trim()).filter(Boolean)
+            : [],
+      }
+    }
     const res = await trackedFetch(OUTBOUND_IP_SETTINGS_URL, {
       ...opts,
       method: 'POST',
@@ -80,7 +93,7 @@ export async function saveOutboundIpSettings(bindings, rotation) {
     return {
       ok: true,
       bindings: data.bindings || bindings,
-      rotation: data.rotation || rotation || { enabled: false },
+      rotation: data.rotation || rotation || { enabled: false, excludedIps: [] },
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Ошибка сети' }

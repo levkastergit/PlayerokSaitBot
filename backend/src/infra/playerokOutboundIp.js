@@ -129,11 +129,16 @@ function resolveConfiguredIpForChannel(channel, bindings) {
   return null
 }
 
-/** Пул IP для ротации = все доступные внешние IPv4 сервера (отсортированы стабильно). */
-function listRotationPool() {
+/** Пул IP для ротации = все доступные внешние IPv4 сервера (отсортированы стабильно),
+ *  за вычетом вручную исключённых пользователем адресов (excludedIps). */
+function listRotationPool(excludedIps) {
+  const excluded =
+    excludedIps instanceof Set
+      ? excludedIps
+      : new Set(Array.isArray(excludedIps) ? excludedIps.map((ip) => String(ip || '').trim()) : [])
   return listAvailableOutboundIpv4()
     .map((a) => a.address)
-    .filter(Boolean)
+    .filter((ip) => ip && !excluded.has(ip))
 }
 
 /** Нужно ли каналу крутить IP по пулу: явный __rotate__ ИЛИ «Автовыбор» при включённом
@@ -152,8 +157,9 @@ function shouldRotateChannel(channel, bindings, rotation) {
 
 function resolveOutboundLocalAddress(channel) {
   const bindings = loadBindingsForCurrentUser()
-  if (shouldRotateChannel(channel, bindings, loadRotationForCurrentUser())) {
-    const pool = listRotationPool()
+  const rotation = loadRotationForCurrentUser()
+  if (shouldRotateChannel(channel, bindings, rotation)) {
+    const pool = listRotationPool(rotation && rotation.excludedIps)
     if (pool.length > 0) {
       const picked = pickRotationIp(channel, pool)
       if (picked.ip) {

@@ -86,7 +86,7 @@ function reviewFromDealRow(dealRow) {
 }
 
 // Возвращает {left, rating} для сделки. Берёт из БД, иначе тянет deal с Playerok и сохраняет.
-async function resolveDealReview({ chatDbRepo, requestDealById, token, userAgent, userId, dealId }) {
+async function resolveDealReview({ chatDbRepo, requestDealById, token, userAgent, userId, dealId, cachedOnly = false }) {
   const id = dealId != null ? String(dealId).trim() : ''
   if (!id) return null
   const row = chatDbRepo.getDealById.get(userId, id)
@@ -97,6 +97,8 @@ async function resolveDealReview({ chatDbRepo, requestDealById, token, userAgent
   // Отзыв оставлен, но дата отсутствует (запись из БД до миграции) — разово дотягиваем createdAt.
   // Недавно проверяли «нет отзыва» — отдаём кеш из БД.
   if (!stored?.left && stored && Date.now() - checkedAt < REVIEW_RECHECK_MS) return stored
+  // Быстрый путь открытия чата — сеть за отзывом не дёргаем, отдаём, что есть в БД.
+  if (cachedOnly) return stored
   if (typeof requestDealById !== 'function' || !token) return stored
   try {
     const deal = await requestDealById(token, userAgent, id)
@@ -269,8 +271,9 @@ function pickLatestBuyerSupercellEmail(rows, buyerName) {
 // Финансы по сделке (цена/себестоимость/расходы на поднятия) считаем тем же
 // алгоритмом, что и аналитика прибыли, и индексируем по dealId. Эндпоинт сообщений
 // опрашивается часто (раз ~1.2с), поэтому держим короткий кеш на пользователя.
-const DEAL_FINANCIALS_TTL_MS = 4000
+const DEAL_FINANCIALS_TTL_MS = 30000
 const dealFinancialsCache = new Map() // userId -> { at, byDeal: Map }
+const dealFinancialsInflight = new Map() // userId -> Promise<Map> (дедуп параллельных пересчётов)
 
 async function getDealFinancialsMap(userId, deps) {
   const { getSalesHistoryAll, getBumpHistory, getAllSettings, getListingFees, computeProfitAnalyticsList, usdRateService } = deps
@@ -286,37 +289,53 @@ async function getDealFinancialsMap(userId, deps) {
   const cached = dealFinancialsCache.get(userId)
   if (cached && Date.now() - cached.at < DEAL_FINANCIALS_TTL_MS) return cached.byDeal
 
-  const salesRows = getSalesHistoryAll.all(userId)
-  const bumpsRows = getBumpHistory.all(userId)
-  const settingsRows = getAllSettings.all(userId)
-  const listingFeesRows = getListingFees.all(userId)
+  // Дедупликация «стада»: эндпоинт сообщений опрашивается часто и пачками (преза­грузка
+  // нескольких чатов разом). Раньше каждый параллельный промах кэша запускал отдельный
+  // тяжёлый синхронный пересчёт по ВСЕЙ истории продаж и блокировал event loop. Теперь
+  // параллельные вызовы ждут один общий пересчёт. Результат идентичен прежнему.
+  const inflight = dealFinancialsInflight.get(userId)
+  if (inflight) return inflight
 
-  // Курсы USD→RUB на даты продаж (себестоимость в USD → рубли по дате сделки).
-  let usdRateByDate = null
-  let fallbackRate = 0
-  if (usdRateService && typeof usdRateService.ensureRatesForDates === 'function') {
-    const dates = [
-      ...new Set(salesRows.map((r) => usdRateService.ymdFromUnix(r.sold_at)).filter(Boolean)),
-    ]
-    usdRateByDate = await usdRateService.ensureRatesForDates(dates)
-    fallbackRate = usdRateService.getLatestCachedRate() || 0
+  const computePromise = (async () => {
+    const salesRows = getSalesHistoryAll.all(userId)
+    const bumpsRows = getBumpHistory.all(userId)
+    const settingsRows = getAllSettings.all(userId)
+    const listingFeesRows = getListingFees.all(userId)
+
+    // Курсы USD→RUB на даты продаж (себестоимость в USD → рубли по дате сделки).
+    let usdRateByDate = null
+    let fallbackRate = 0
+    if (usdRateService && typeof usdRateService.ensureRatesForDates === 'function') {
+      const dates = [
+        ...new Set(salesRows.map((r) => usdRateService.ymdFromUnix(r.sold_at)).filter(Boolean)),
+      ]
+      usdRateByDate = await usdRateService.ensureRatesForDates(dates)
+      fallbackRate = usdRateService.getLatestCachedRate() || 0
+    }
+
+    const computed = computeProfitAnalyticsList({
+      salesRows,
+      bumpsRows,
+      settingsRows,
+      listingFeesRows,
+      usdRateByDate,
+      fallbackRate,
+    })
+
+    const byDeal = new Map()
+    for (const row of computed || []) {
+      if (row?.dealId) byDeal.set(String(row.dealId), row)
+    }
+    dealFinancialsCache.set(userId, { at: Date.now(), byDeal })
+    return byDeal
+  })()
+
+  dealFinancialsInflight.set(userId, computePromise)
+  try {
+    return await computePromise
+  } finally {
+    dealFinancialsInflight.delete(userId)
   }
-
-  const computed = computeProfitAnalyticsList({
-    salesRows,
-    bumpsRows,
-    settingsRows,
-    listingFeesRows,
-    usdRateByDate,
-    fallbackRate,
-  })
-
-  const byDeal = new Map()
-  for (const row of computed || []) {
-    if (row?.dealId) byDeal.set(String(row.dealId), row)
-  }
-  dealFinancialsCache.set(userId, { at: Date.now(), byDeal })
-  return byDeal
 }
 
 function financialsForDeal(byDeal, dealId) {
@@ -469,6 +488,16 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         !thread?.last_item_id ||
         !thread?.category
 
+      // messagesOnly / skipSmartEmail — быстрый путь открытия чата: отдаём кэш мгновенно,
+      // тяжёлую дозагрузку (почта Supercell из сделки, отзыв) не делаем, а синк новых
+      // сообщений из Playerok запускаем в фоне, если в кэше уже что-то есть. Полная
+      // дозагрузка приходит вторым, фоновым запросом с фронта (без skipSmartEmail).
+      const messagesOnly =
+        payload?.messagesOnly === true || payload?.skipSmartEmail === true
+      // Блокирующе синхронизируем только когда показать совсем нечего (нет кэша сообщений).
+      // Иначе — отдаём кэш сразу, а отставание подтянется фоном.
+      const blockingSyncAllowed = !messagesOnly || !hasLocalMessages
+
       // Сообщения из БД отдаём сразу; если thread опережает messages — синхронизируем блокирующе.
       if ((needsMessagesSync || needsMetaSync) && chatDbSyncService?.syncOneChangedChat) {
         const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -512,7 +541,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
               localRows: rows.length,
             })
           }
-          if (needsMessagesSync) {
+          if (needsMessagesSync && blockingSyncAllowed) {
             try {
               const syncKey = buildBlockingSyncKey(currentUserId, effectiveChatId)
               let syncPromise = blockingMessagesSyncByChat.get(syncKey)
@@ -584,7 +613,9 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         const cached = getCachedSmartEmail(cacheKey)
         if (cached) {
           buyerSupercellEmail = cached.email || null
-        } else {
+        } else if (!messagesOnly) {
+          // На быстром пути (messagesOnly) сетевой запрос сделки за почтой не делаем —
+          // почта подтянется вторым, фоновым запросом фронта. Кэш читаем всегда.
           const { token } = getTokenFromBodyOrStored(currentUserId, payload)
           if (token && dealIdForEmail) {
             buyerSupercellEmail = await resolveBuyerSupercellEmailFromDeal({
@@ -655,6 +686,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             userAgent: payload?.userAgent,
             userId: currentUserId,
             dealId: dealIdForReview,
+            cachedOnly: messagesOnly,
           })
         }
       }

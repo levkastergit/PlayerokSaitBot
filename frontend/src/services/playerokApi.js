@@ -446,6 +446,8 @@ export async function fetchChatDbList(token, opts = {}) {
 
 /** Сообщения чата из локальной БД. */
 export async function fetchChatDbMessages(token, { chatId, dealId, skipSmartEmail = true } = {}) {
+  // skipSmartEmail=true → быстрый путь: бэкенд отдаёт кэш мгновенно, не дёргая сеть за
+  // почтой/отзывом. skipSmartEmail=false → полная дозагрузка (второй фоновый запрос).
   const response = await trackedFetch(BACKEND_CHAT_DB_MESSAGES_URL, {
     ...FETCH_CREDENTIALS,
     method: 'POST',

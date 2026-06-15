@@ -53,6 +53,7 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   const [ipDisabledValue, setIpDisabledValue] = useState(OUTBOUND_IP_DISABLED)
   const [ipRotateValue, setIpRotateValue] = useState(OUTBOUND_IP_ROTATE)
   const [ipRotationEnabled, setIpRotationEnabled] = useState(false)
+  const [ipExcludedIps, setIpExcludedIps] = useState([])
   const [ipSaving, setIpSaving] = useState(false)
   const [ipMessage, setIpMessage] = useState(null)
   const [ipError, setIpError] = useState(null)
@@ -112,6 +113,11 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
       setIpChannels(channels)
       setIpBindings(settings.ok ? settings.bindings : {})
       setIpRotationEnabled(Boolean(settings.ok && settings.rotation && settings.rotation.enabled))
+      setIpExcludedIps(
+        settings.ok && settings.rotation && Array.isArray(settings.rotation.excludedIps)
+          ? settings.rotation.excludedIps
+          : []
+      )
       if (!settings.ok) {
         setIpError(settings.error || null)
       }
@@ -189,7 +195,9 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   }, [ipAddresses, ipDisabledValue, ipRotateValue])
 
   // Сколько IP реально участвует в ротации (нужно ≥2, иначе крутить нечего).
-  const ipPoolSize = ipAddresses.length
+  // Вручную исключённые из ротации адреса (excludedIps) не считаем.
+  const ipExcludedSet = useMemo(() => new Set(ipExcludedIps), [ipExcludedIps])
+  const ipPoolSize = ipAddresses.filter((a) => a.address && !ipExcludedSet.has(a.address)).length
   // Какие категории фактически крутят IP: явное «Чередование» или «Автовыбор» при
   // включённом глобальном тумблере. Для подсказок/бейджей.
   const ipChannelRotates = (binding) =>
@@ -207,16 +215,36 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
     setIpError(null)
   }
 
+  // Ручное исключение IP из ротации: переключаем адрес в списке excludedIps.
+  const handleIpExcludedToggle = (address, excluded) => {
+    const addr = String(address || '').trim()
+    if (!addr) return
+    setIpExcludedIps((prev) => {
+      const set = new Set(prev)
+      if (excluded) set.add(addr)
+      else set.delete(addr)
+      return Array.from(set)
+    })
+    setIpMessage(null)
+    setIpError(null)
+  }
+
   const handleSaveIpBindings = async (event) => {
     event.preventDefault()
     setIpSaving(true)
     setIpMessage(null)
     setIpError(null)
-    const r = await saveOutboundIpSettings(ipBindings, { enabled: ipRotationEnabled })
+    const r = await saveOutboundIpSettings(ipBindings, {
+      enabled: ipRotationEnabled,
+      excludedIps: ipExcludedIps,
+    })
     setIpSaving(false)
     if (r.ok) {
       setIpBindings(r.bindings || ipBindings)
-      if (r.rotation) setIpRotationEnabled(Boolean(r.rotation.enabled))
+      if (r.rotation) {
+        setIpRotationEnabled(Boolean(r.rotation.enabled))
+        if (Array.isArray(r.rotation.excludedIps)) setIpExcludedIps(r.rotation.excludedIps)
+      }
       setIpMessage('Настройки IP сохранены')
     } else {
       setIpError(r.error || 'Ошибка сохранения')
@@ -584,6 +612,53 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                     ⚠ Для ротации нужно минимум 2 IP на сервере (сейчас {ipPoolSize}). С одним адресом
                     чередовать нечего — запросы пойдут с него же.
                   </p>
+                ) : null}
+                {ipAddresses.length > 0 ? (
+                  <div className="settings-outbound-ip-pool">
+                    <p className="settings-label settings-outbound-ip-label">
+                      Пул ротации
+                      <span className="settings-outbound-ip-badge settings-outbound-ip-badge--rotate">
+                        {ipPoolSize} из {ipAddresses.length}
+                      </span>
+                    </p>
+                    <p className="settings-hint settings-outbound-ip-hint">
+                      Снимите галочку, чтобы вручную убрать IP из чередования — он перестанет
+                      использоваться в ротации, пока вы не вернёте его обратно.
+                    </p>
+                    <div className="settings-outbound-ip-pool-list">
+                      {ipAddresses.map((a) => {
+                        const excluded = ipExcludedSet.has(a.address)
+                        return (
+                          <label
+                            key={`pool-${a.address}`}
+                            className={
+                              excluded
+                                ? 'settings-outbound-ip-pool-item settings-outbound-ip-pool-item--excluded'
+                                : 'settings-outbound-ip-pool-item'
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!excluded}
+                              onChange={(e) => handleIpExcludedToggle(a.address, !e.target.checked)}
+                            />
+                            <span
+                              style={a.blocked ? { color: '#ff5555', fontWeight: 700 } : undefined}
+                              title={
+                                a.blocked
+                                  ? `Заблокирован Playerok (429). Разблокировка примерно через ${a.blockLabel}`
+                                  : undefined
+                              }
+                            >
+                              {a.address}
+                              {a.blocked ? ` · 429 (${a.blockLabel})` : ''}
+                              {excluded ? ' · вне ротации' : ''}
+                            </span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
                 ) : null}
                 <div className="settings-outbound-ip-grid">
                   {ipChannels.map((ch) => {

@@ -12,6 +12,7 @@ async function handlePartnersGetOwnerList({ deps, currentUserId }) {
     data: {
       list: rows.map((r) => ({
         partnerId: Number(r.partner_user_id),
+        login: r.partner_login != null ? String(r.partner_login) : null,
         connectStatus: Number(r.connect_status),
         createdAt: r.created_at != null ? Number(r.created_at) : null,
       })),

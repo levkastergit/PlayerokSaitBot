@@ -82,11 +82,25 @@ function normalizeOutboundBindings(raw) {
   return out
 }
 
-/** Конфиг ротации IP (на пользователя): { enabled }. enabled=true → категории на
- *  «Автовыборе» («») тоже крутят IP по пулу, как при значении __rotate__. */
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/
+
+/** Конфиг ротации IP (на пользователя): { enabled, excludedIps }.
+ *  enabled=true → категории на «Автовыборе» («») тоже крутят IP по пулу, как при
+ *  значении __rotate__. excludedIps — IP, вручную исключённые из пула ротации
+ *  пользователем (не участвуют в чередовании, пока их не вернут обратно). */
 function normalizeRotationConfig(raw) {
   const src = raw && typeof raw === 'object' ? raw : {}
-  return { enabled: Boolean(src.enabled) }
+  const seen = new Set()
+  const excludedIps = []
+  if (Array.isArray(src.excludedIps)) {
+    for (const v of src.excludedIps) {
+      const ip = String(v || '').trim()
+      if (!ip || seen.has(ip) || !IPV4_RE.test(ip)) continue
+      seen.add(ip)
+      excludedIps.push(ip)
+    }
+  }
+  return { enabled: Boolean(src.enabled), excludedIps }
 }
 
 module.exports = {

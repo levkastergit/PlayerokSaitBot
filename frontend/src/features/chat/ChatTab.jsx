@@ -1701,6 +1701,34 @@ export function ChatTab({
           deals,
           review || null
         )
+        // Вторая, фоновая фаза: если почта Supercell ещё не определена, дотягиваем её
+        // (и свежий отзыв) полным запросом без skipSmartEmail. Не блокирует показ истории
+        // и идёт только для открытого чата.
+        if (isSelected && !buyerSupercellEmail) {
+          void fetchChatDbMessages(token, {
+            dealId: chat.dealId || null,
+            chatId,
+            skipSmartEmail: false,
+          })
+            .then((enriched) => {
+              if (selectedChatIdRef.current !== chatId) return
+              if (!enriched) return
+              const hasExtra =
+                enriched.buyerSupercellEmail || enriched.review != null
+              if (!hasExtra) return
+              applyLoadedChatData(
+                chat,
+                Array.isArray(enriched.list) && enriched.list.length ? enriched.list : list,
+                enriched.itemTitle || itemTitle,
+                enriched.itemImageUrl || itemImageUrl,
+                enriched.buyerSupercellEmail || null,
+                enriched.itemCategory || itemCategory,
+                Array.isArray(enriched.deals) && enriched.deals.length ? enriched.deals : deals,
+                enriched.review != null ? enriched.review : review || null
+              )
+            })
+            .catch(() => {})
+        }
       } catch (_err) {
         if (isSelected && !silent && !hasCachedMessages) {
           const errMsg = _err instanceof Error ? _err.message : 'Ошибка загрузки чата'
@@ -1851,8 +1879,12 @@ export function ChatTab({
   }, [mergeChatEntry])
 
   const CHAT_MESSAGES_BATCH_SIZE = 6
-  const CHAT_LIST_POLL_MS = 1200
-  const CHAT_MESSAGES_POLL_MS = 1200
+  // Опрос реже: на слабом 1-CPU бэкенде частый опрос (1.2с) забивал event loop и
+  // тормозил доставку кодов/автосообщений. 2.5–3с практически незаметны в UI, но
+  // заметно снижают нагрузку. Конечная скорость обновления при этом выше — сервер
+  // успевает отвечать.
+  const CHAT_LIST_POLL_MS = 3000
+  const CHAT_MESSAGES_POLL_MS = 2500
   const PRELOAD_INITIAL_COUNT = 8
   const PRELOAD_VIEWPORT_PRIORITY = 4
   // Сколько раз подряд терпим ПУСТОЙ ответ превью по одной и той же сигнатуре
@@ -2063,6 +2095,11 @@ export function ChatTab({
         const pending = batch.filter((chat) => chat?.id && chatNeedsMessagesLoad(chat.id))
         if (pending.length === 0) continue
         await loadChatsMessagesBatch(pending, { messagesOnly: true })
+        // Небольшая пауза между батчами, чтобы преза­грузка не выдавала бэкенду
+        // сплошной залп самых дорогих запросов и не вытесняла фоновую доставку.
+        if (preloadQueueRef.current.length > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        }
       }
     } finally {
       preloadQueueRunningRef.current = false

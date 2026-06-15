@@ -51,7 +51,7 @@ async function handleSetOutboundIpSettings({ payload, currentUserId, deps }) {
     data: {
       ok: true,
       bindings: saved.bindings,
-      rotation: saved.rotation || { enabled: false },
+      rotation: saved.rotation || { enabled: false, excludedIps: [] },
       updatedAt: saved.updatedAt,
     },
   }

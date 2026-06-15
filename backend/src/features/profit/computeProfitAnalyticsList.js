@@ -127,6 +127,7 @@ function computeProfitAnalyticsList({
       productKey,
       dealId: row.deal_id != null ? String(row.deal_id) : null,
       itemId: row.item_id != null ? String(row.item_id) : null,
+      buyerName: row.buyer_name != null ? String(row.buyer_name) : null,
       soldAt,
       salePrice,
       isRefund,

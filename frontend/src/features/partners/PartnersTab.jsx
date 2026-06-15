@@ -8,11 +8,19 @@ import {
   invitePartner,
 } from '../../services/partnersApi'
 
-function connectStatusToText(connectStatus) {
+/** Статус подключения напарника: текст + класс для цветного бейджа. */
+function connectStatusBadge(connectStatus) {
   const s = Number(connectStatus)
-  if (s === 1) return '1 (ожидает)'
-  if (s === 2) return '2 (подключен)'
-  return `${s || '—'}`
+  if (s === 2) return { text: 'Подключён', cls: 'partner-status--ok' }
+  if (s === 1) return { text: 'Ожидает', cls: 'partner-status--pending' }
+  return { text: '—', cls: '' }
+}
+
+function formatJoinedDate(ts) {
+  if (!ts) return '—'
+  const d = new Date(Number(ts) * 1000)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 export function PartnersTab() {
@@ -248,24 +256,23 @@ export function PartnersTab() {
 
               <div style={{ marginTop: '1rem' }}>
                 <p className="card-text" style={{ marginBottom: '0.6rem' }}>
-                  <strong>Коннект</strong>: 1 — приглашение не подтверждено, 2 — подтверждено.
+                  Напарники, которым вы выдали доступ к своему аккаунту.
                 </p>
 
                 <div className="history-table-wrap">
                   <table className="history-table">
                     <thead>
                       <tr>
-                        <th>ID напарника</th>
-                        <th>Роль</th>
-                        <th>Коннект</th>
-                        <th>Пароль</th>
+                        <th>Напарник</th>
+                        <th>Статус</th>
+                        <th>Добавлен</th>
                         <th>Действия</th>
                       </tr>
                     </thead>
                     <tbody>
                       {ownerPartnersLoading && (
                         <tr>
-                          <td colSpan={5}>
+                          <td colSpan={4}>
                             <span className="card-text" style={{ display: 'inline-block' }}>Загрузка…</span>
                           </td>
                         </tr>
@@ -273,7 +280,7 @@ export function PartnersTab() {
 
                       {!ownerPartnersLoading && ownerPartnersError && (
                         <tr>
-                          <td colSpan={5}>
+                          <td colSpan={4}>
                             <span className="card-text card-text--error" style={{ display: 'inline-block' }}>{ownerPartnersError}</span>
                           </td>
                         </tr>
@@ -281,7 +288,7 @@ export function PartnersTab() {
 
                       {!ownerPartnersLoading && !ownerPartnersError && ownerPartners.length === 0 && (
                         <tr>
-                          <td colSpan={5}>
+                          <td colSpan={4}>
                             <span className="card-text" style={{ display: 'inline-block' }}>
                               Пока список напарников пуст.
                             </span>
@@ -289,23 +296,30 @@ export function PartnersTab() {
                         </tr>
                       )}
 
-                      {ownerPartners.map((p) => (
-                        <tr key={p.partnerId}>
-                          <td>{p.partnerId}</td>
-                          <td>Работник</td>
-                          <td>{connectStatusToText(p.connectStatus)}</td>
-                          <td className="history-table__time">установлен</td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn-secondary"
-                              onClick={() => handleOwnerDelete(p.partnerId)}
-                            >
-                              Удалить
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {ownerPartners.map((p) => {
+                        const st = connectStatusBadge(p.connectStatus)
+                        return (
+                          <tr key={p.partnerId}>
+                            <td>
+                              <span className="partner-name">{p.login || `ID ${p.partnerId}`}</span>
+                              {p.login ? <span className="partner-id"> · ID {p.partnerId}</span> : null}
+                            </td>
+                            <td>
+                              <span className={`partner-status ${st.cls}`}>{st.text}</span>
+                            </td>
+                            <td className="history-table__time">{formatJoinedDate(p.createdAt)}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn-secondary"
+                                onClick={() => handleOwnerDelete(p.partnerId)}
+                              >
+                                Удалить
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -368,9 +382,9 @@ export function PartnersTab() {
                   <table className="history-table">
                     <thead>
                       <tr>
-                        <th>ID директора</th>
-                        <th>Роль</th>
-                        <th>Коннект</th>
+                        <th>Владелец аккаунта</th>
+                        <th>Статус</th>
+                        <th>Добавлен</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -394,19 +408,27 @@ export function PartnersTab() {
                         <tr>
                           <td colSpan={3}>
                             <span className="card-text" style={{ display: 'inline-block' }}>
-                              Пока нет директорів для подключения.
+                              Пока нет владельцев для подключения.
                             </span>
                           </td>
                         </tr>
                       )}
 
-                      {workerDirectors.map((d) => (
-                        <tr key={d.directorId}>
-                          <td>{d.directorId}</td>
-                          <td>Директор</td>
-                          <td>{connectStatusToText(d.connectStatus)}</td>
-                        </tr>
-                      ))}
+                      {workerDirectors.map((d) => {
+                        const st = connectStatusBadge(d.connectStatus)
+                        return (
+                          <tr key={d.directorId}>
+                            <td>
+                              <span className="partner-name">{d.login || `ID ${d.directorId}`}</span>
+                              {d.login ? <span className="partner-id"> · ID {d.directorId}</span> : null}
+                            </td>
+                            <td>
+                              <span className={`partner-status ${st.cls}`}>{st.text}</span>
+                            </td>
+                            <td className="history-table__time">{formatJoinedDate(d.createdAt)}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>

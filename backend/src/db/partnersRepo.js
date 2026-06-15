@@ -27,22 +27,26 @@ function setupPartnersRepo(db) {
 
   const getPartnersForOwner = db.prepare(`
     SELECT
-      worker_user_id AS partner_user_id,
-      connect_status,
-      created_at
-    FROM partner_invites
-    WHERE owner_user_id = ?
-    ORDER BY created_at DESC
+      pi.worker_user_id AS partner_user_id,
+      pi.connect_status,
+      pi.created_at,
+      u.login AS partner_login
+    FROM partner_invites pi
+    LEFT JOIN users u ON u.id = pi.worker_user_id
+    WHERE pi.owner_user_id = ?
+    ORDER BY pi.created_at DESC
   `)
 
   const getDirectorsForWorker = db.prepare(`
     SELECT
-      owner_user_id AS director_user_id,
-      connect_status,
-      created_at
-    FROM partner_invites
-    WHERE worker_user_id = ?
-    ORDER BY created_at DESC
+      pi.owner_user_id AS director_user_id,
+      pi.connect_status,
+      pi.created_at,
+      u.login AS director_login
+    FROM partner_invites pi
+    LEFT JOIN users u ON u.id = pi.owner_user_id
+    WHERE pi.worker_user_id = ?
+    ORDER BY pi.created_at DESC
   `)
 
   return {

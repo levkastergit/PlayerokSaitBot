@@ -34,11 +34,11 @@ function setupPlayerokOutboundIpRepo(db) {
   function loadRotation(userId) {
     try {
       const row = getRow.get(Number(userId))
-      if (!row || !row.rotation_json) return { enabled: false }
+      if (!row || !row.rotation_json) return { enabled: false, excludedIps: [] }
       return normalizeRotationConfig(JSON.parse(String(row.rotation_json)))
     } catch (e) {
       console.warn('[outbound-ip] loadRotation', e && e.message ? e.message : e)
-      return { enabled: false }
+      return { enabled: false, excludedIps: [] }
     }
   }
 

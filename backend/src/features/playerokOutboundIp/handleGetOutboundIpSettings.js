@@ -9,7 +9,7 @@ async function handleGetOutboundIpSettings({ currentUserId, deps }) {
   const rotation =
     typeof loadOutboundIpRotation === 'function'
       ? normalizeRotationConfig(loadOutboundIpRotation(currentUserId))
-      : { enabled: false }
+      : { enabled: false, excludedIps: [] }
   return {
     statusCode: 200,
     data: {
