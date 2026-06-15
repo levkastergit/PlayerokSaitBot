@@ -251,6 +251,13 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
 const DB_PATH = path.join(DATA_DIR, 'product-settings.db')
 const db = new Database(DB_PATH)
 
+// WAL + synchronous=NORMAL: на слабом 1-CPU сервере дефолтный rollback-journal делает
+// fsync на каждую запись и блокирует единственный поток. WAL переводит запись в журнал
+// с редкими checkpoint'ами — резко меньше блокировок event loop и объёма дисковой записи.
+db.pragma('journal_mode = WAL')
+db.pragma('synchronous = NORMAL')
+db.pragma('busy_timeout = 5000')
+
 const { initDbSchema } = require('./src/db/schema/initDbSchema')
 initDbSchema(db)
 
@@ -390,6 +397,15 @@ const {
   getDirectorsForWorker,
 } = setupPartnersRepo(db)
 
+const { setupRobloxAccountsRepo } = require('./src/db/robloxAccountsRepo')
+const robloxAccountsRepo = setupRobloxAccountsRepo(db)
+
+const { setupMicrosoftAccountsRepo } = require('./src/db/microsoftAccountsRepo')
+const microsoftAccountsRepo = setupMicrosoftAccountsRepo(db)
+
+const { setupRobloxOrdersRepo } = require('./src/db/robloxOrdersRepo')
+const robloxOrdersRepo = setupRobloxOrdersRepo(db)
+
 const CATEGORY_SETTINGS_PREFIX = '__category__::'
 const GROUP_SETTINGS_PREFIX = '__group__::'
 
@@ -409,6 +425,7 @@ const { dispatchPublicAuth, dispatchPrivateAuthAndSettings } = require('./src/ht
 const { dispatchFinance } = require('./src/http/dispatchFinance')
 const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { dispatchChatDb } = require('./src/http/dispatchChatDb')
+const { dispatchRoblox } = require('./src/http/dispatchRoblox')
 const { isAllActionsStopped } = require('./src/infra/runtimeControl')
 
 const { processActiveSupercellFlows } = require('./src/features/autolist/processActiveSupercellFlows')
@@ -917,6 +934,29 @@ const server = http.createServer(async (req, res) => {
         loadClodeApiKeyPlain,
         saveClodeApiKey,
         getClodeSettingsMeta,
+      },
+    })
+    if (handled) return
+  }
+
+  // Вкладка «Роблокс»: game-pass аккаунты + метод MS Store (заказы, MS-аккаунты, вход покупателя,
+  // воркер). Маршруты /roblox/2fa/* и /roblox/worker/* — публичные (не под сессией сайта).
+  {
+    const handled = await dispatchRoblox({
+      req,
+      res,
+      pathname,
+      currentUserId,
+      deps: {
+        robloxAccountsRepo,
+        microsoftAccountsRepo,
+        robloxOrdersRepo,
+        publicBaseUrl: process.env.PUBLIC_BASE_URL || '',
+        getCaptchaConfig: () => ({
+          provider: String(process.env.ROBLOX_CAPTCHA_PROVIDER || '').trim(),
+          apiKey: String(process.env.ROBLOX_CAPTCHA_API_KEY || '').trim(),
+          proxy: String(process.env.ROBLOX_CAPTCHA_PROXY || '').trim(),
+        }),
       },
     })
     if (handled) return

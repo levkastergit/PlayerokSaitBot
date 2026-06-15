@@ -27,6 +27,7 @@ import { BalanceHubTab } from './features/balance/BalanceHubTab.jsx'
 import { DockerTab } from './features/docker/DockerTab.jsx'
 import { TableTab } from './features/table/TableTab.jsx'
 import { ExecutionListTab } from './features/execution/ExecutionListTab.jsx'
+import { RobloxTab } from './features/roblox/RobloxTab.jsx'
 const LOTS_TABS = new Set(['active', 'auto-listing', 'auto-delivery', 'auto-delivery-api', 'lot-boost'])
 
 const TabIcon = ({ id }) => {
@@ -209,6 +210,14 @@ const TabIcon = ({ id }) => {
           <path d="M6.6 12h2.1l1.5-3.4 2.3 6.4 1.6-3h2.7" />
         </svg>
       )
+    case 'roblox':
+      return (
+        <svg {...common}>
+          <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="2.6" transform="rotate(8 12 12)" opacity="0.18" fill="currentColor" stroke="none" />
+          <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="2.6" transform="rotate(8 12 12)" />
+          <rect x="9.9" y="9.9" width="4.2" height="4.2" rx="0.6" transform="rotate(8 12 12)" fill="currentColor" stroke="none" />
+        </svg>
+      )
     default:
       return null
   }
@@ -230,6 +239,7 @@ const TABS = [
   { id: 'docker', label: 'Docker' },
   { id: 'table', label: 'Таблица' },
   { id: 'execution', label: 'Список выполнения' },
+  { id: 'roblox', label: 'Роблокс' },
 ]
 
 const TAB_IDS = new Set(TABS.map((t) => t.id))
@@ -686,6 +696,7 @@ function App() {
           {activeTab === 'docker' && <DockerTab />}
           {activeTab === 'table' && <TableTab />}
           {activeTab === 'execution' && <ExecutionListTab />}
+          {activeTab === 'roblox' && <RobloxTab />}
         </section>
       </main>
     </div>

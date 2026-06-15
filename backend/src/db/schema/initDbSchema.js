@@ -21,6 +21,9 @@ const { createTableTabsTables } = require('./createTableTabsTables')
 const { createTableColumnsTables } = require('./createTableColumnsTables')
 const { createSentAutomessagesTable } = require('./createSentAutomessagesTable')
 const { createSessionsTable } = require('./createSessionsTable')
+const { createRobloxAccountsTable } = require('./createRobloxAccountsTable')
+const { createMicrosoftAccountsTable } = require('./createMicrosoftAccountsTable')
+const { createRobloxOrdersTable } = require('./createRobloxOrdersTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -46,6 +49,9 @@ function initDbSchema(db) {
   createTableTabsTables(db)
   createTableColumnsTables(db)
   createSentAutomessagesTable(db)
+  createRobloxAccountsTable(db)
+  createMicrosoftAccountsTable(db)
+  createRobloxOrdersTable(db)
 }
 
 module.exports = { initDbSchema }
