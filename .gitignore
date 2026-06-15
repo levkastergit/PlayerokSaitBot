@@ -3,6 +3,9 @@ node_modules/
 *.log
 __pycache__/
 *.pyc
+# Перехваченный трафик может содержать cookie/токены — не коммитим.
+*.flows
+worker/msstore-worker/capture/robux-capture.*
 .DS_Store
 frontend/.env.local
 supercell_auto_otp_plugin/__pycache__/
