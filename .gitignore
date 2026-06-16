@@ -6,9 +6,18 @@ __pycache__/
 # Перехваченный трафик может содержать cookie/токены — не коммитим.
 *.flows
 worker/msstore-worker/capture/robux-capture.*
+worker/msstore-worker/capture/robux-purchase.*
 .DS_Store
 frontend/.env.local
 supercell_auto_otp_plugin/__pycache__/
 backend/data/_git_untracked_backup/
 backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal
 **/product-settings.db
+
+# Claude Code local settings — содержит права/креды сервера, не коммитим.
+.claude/settings.json
+
+# Runtime-кэш Supercell OTP (pickle + индекс бинов).
+supercell_auto_otp_plugin/cache/

@@ -12,6 +12,7 @@ mitmweb/mitmproxy). Релевантные запросы (Microsoft commerce + 
 или через start-capture.ps1.
 """
 
+import os
 import re
 from mitmproxy import http
 
@@ -21,7 +22,8 @@ TARGET_HOST = re.compile(
     re.IGNORECASE,
 )
 
-TXT = "robux-capture.txt"
+# Имя файла выжимки можно переопределить через CAPTURE_TXT (для отдельных прогонов).
+TXT = os.environ.get("CAPTURE_TXT") or "robux-capture.txt"
 MAX_BODY = 4000
 
 
