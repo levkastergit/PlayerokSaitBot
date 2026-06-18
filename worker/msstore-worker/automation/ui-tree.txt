@@ -1,9 +1,0 @@
-
-==================== WINDOW name='Roblox' class='WINDOWSCLIENT' ====================
-WindowControl name='Roblox' class='WINDOWSCLIENT' autoId=''
-  TitleBarControl name='' class='' autoId=''
-    MenuBarControl name='Система' class='' autoId='MenuBar'
-      MenuItemControl name='Система' class='' autoId=''
-    ButtonControl name='Свернуть' class='' autoId=''
-    ButtonControl name='Развернуть' class='' autoId=''
-    ButtonControl name='Закрыть' class='' autoId=''

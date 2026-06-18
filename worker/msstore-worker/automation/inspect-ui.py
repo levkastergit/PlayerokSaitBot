@@ -13,6 +13,7 @@
 import os
 import sys
 import time
+import collections
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui-tree.txt")
 
@@ -45,6 +46,52 @@ def bring_to_front(w):
         except Exception:
             pass
     time.sleep(1.5)
+
+
+# Ключевые слова экрана покупки Robux / нативного окна оплаты.
+KEYWORDS = (
+    "robux", "купить", "buy", "microsoft", "balance", "баланс", "оплат", "pay",
+    "подтверд", "confirm", "80 robux", "400 robux", "пакет", "package", "price", "цена",
+)
+
+
+def _match(name):
+    n = (name or "").lower()
+    return any(k in n for k in KEYWORDS)
+
+
+# Глобальный обход дерева UIA в поисках элементов покупки (на случай, если контент
+# WebView2 не попал в дерево окна Roblox). Ограничен по числу узлов, чтобы не зависнуть.
+def global_search(f, max_nodes=3500, max_depth=28):
+    f.write("\n==================== ГЛОБАЛЬНЫЙ ПОИСК элементов покупки ====================\n")
+    root = auto.GetRootControl()
+    q = collections.deque([(root, 0)])
+    seen = 0
+    hits = 0
+    while q and seen < max_nodes:
+        ctrl, depth = q.popleft()
+        seen += 1
+        try:
+            name = ctrl.Name
+            ctype = ctrl.ControlTypeName
+        except Exception:
+            continue
+        if _match(name):
+            try:
+                r = ctrl.BoundingRectangle
+                rect = f"({r.left},{r.top},{r.right},{r.bottom})"
+            except Exception:
+                rect = "?"
+            f.write(f"  HIT {ctype} name={name!r} rect={rect}\n")
+            hits += 1
+        if depth < max_depth:
+            try:
+                for c in ctrl.GetChildren():
+                    q.append((c, depth + 1))
+            except Exception:
+                pass
+    f.write(f"  --- осмотрено узлов: {seen}, совпадений: {hits} ---\n")
+    print(f"  глобальный поиск: узлов={seen}, совпадений={hits}")
 
 
 def dump(ctrl, f, depth, maxdepth=45, maxsiblings=400):
@@ -90,6 +137,7 @@ def main():
         for w in targets:
             f.write(f"\n==================== WINDOW name={w.Name!r} class={w.ClassName!r} ====================\n")
             dump(w, f, 0)
+        global_search(f)
     # Краткая сводка в консоль: сколько кнопок/текста удалось увидеть.
     print(f"Готово: {OUT}")
     try:
