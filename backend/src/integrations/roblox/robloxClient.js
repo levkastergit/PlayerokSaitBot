@@ -1,12 +1,12 @@
 'use strict'
 
-// Клиент к публичным API Roblox для автовыдачи доната методом game-pass (как swizzyer.com):
-//  1) валидация cookie .ROBLOSECURITY → кто это (id/ник),
+// Клиент к публичным API Roblox для метода MS Store: общие операции над аккаунтом по
+// cookie .ROBLOSECURITY:
+//  1) валидация cookie → кто это (id/ник),
 //  2) баланс Robux аккаунта,
-//  3) данные гейм-пасса (цена/продавец/productId),
-//  4) покупка гейм-пасса = перевод Robux покупателю (с 30% налогом Roblox).
-//
-// Запросы идут напрямую к Roblox (не через playerok.com-патч из server.js), обычным https.
+//  3) Premium / аватарка для отображения.
+// Используется при добавлении аккаунта по cookie и при сохранении сессии покупателя
+// (handleRobloxOrders.finalizeBuyerSession). Запросы идут напрямую к Roblox, обычным https.
 
 const https = require('https')
 
@@ -160,86 +160,10 @@ async function getAvatarHeadshotUrl(userId) {
   return null
 }
 
-// CSRF-токен для платёжных POST-запросов: любой state-changing эндпоинт без токена
-// возвращает 403 + заголовок x-csrf-token (само действие при этом НЕ выполняется).
-async function getCsrfToken(cookieRaw) {
-  const cookie = normalizeCookie(cookieRaw)
-  const res = await robloxRequest({ method: 'POST', url: 'https://auth.roblox.com/v2/logout', cookie })
-  const token = res.headers['x-csrf-token'] || res.headers['X-CSRF-TOKEN']
-  if (token) return String(token)
-  throw new Error('Roblox: не удалось получить CSRF-токен')
-}
-
-// Данные гейм-пасса по его id: цена, продавец, productId (нужны для покупки).
-async function getGamePassProductInfo(gamePassId) {
-  const id = Number(gamePassId)
-  if (!Number.isFinite(id) || id <= 0) {
-    const err = new Error('Некорректный ID гейм-пасса')
-    err.code = 'BAD_GAMEPASS'
-    throw err
-  }
-  const res = await robloxRequest({
-    url: `https://apis.roblox.com/game-passes/v1/game-passes/${id}/product-info`,
-  })
-  if (res.status === 200 && res.json) {
-    const j = res.json
-    const creator = j.Creator || j.creator || {}
-    const price = j.PriceInRobux != null ? j.PriceInRobux : j.priceInRobux
-    return {
-      gamePassId: id,
-      name: j.Name || j.name || null,
-      productId: j.ProductId != null ? Number(j.ProductId) : j.productId != null ? Number(j.productId) : null,
-      priceInRobux: price != null ? Number(price) : null,
-      sellerId:
-        creator.Id != null ? Number(creator.Id) : creator.id != null ? Number(creator.id) : null,
-      sellerName: creator.Name || creator.name || null,
-      isForSale: j.IsForSale != null ? Boolean(j.IsForSale) : j.isForSale != null ? Boolean(j.isForSale) : null,
-    }
-  }
-  if (res.status === 404) {
-    const err = new Error('Гейм-пасс не найден')
-    err.code = 'GAMEPASS_NOT_FOUND'
-    throw err
-  }
-  throw new Error(`Roblox: не удалось получить данные гейм-пасса (HTTP ${res.status})`)
-}
-
-// Покупка гейм-пасса по productId = перевод Robux продавцу (покупателю доната).
-// expectedPrice/expectedSellerId защищают от подмены цены/продавца на стороне Roblox.
-async function purchaseProduct(cookieRaw, { productId, expectedPrice, expectedSellerId }) {
-  const cookie = normalizeCookie(cookieRaw)
-  const csrfToken = await getCsrfToken(cookie)
-  const res = await robloxRequest({
-    method: 'POST',
-    url: `https://economy.roblox.com/v1/purchases/products/${Number(productId)}`,
-    cookie,
-    csrfToken,
-    body: {
-      expectedCurrency: 1, // 1 = Robux
-      expectedPrice: Number(expectedPrice),
-      expectedSellerId: Number(expectedSellerId),
-    },
-  })
-
-  const j = res.json || {}
-  const purchased = j.purchased === true
-  return {
-    httpStatus: res.status,
-    purchased,
-    // Roblox при отказе кладёт причину в reason/errorMsg/title.
-    reason: j.reason || j.errorMsg || j.title || (purchased ? null : `HTTP ${res.status}`),
-    price: j.price != null ? Number(j.price) : null,
-    raw: j,
-  }
-}
-
 module.exports = {
   normalizeCookie,
   getAuthenticatedUser,
   getRobuxBalance,
   getPremium,
   getAvatarHeadshotUrl,
-  getCsrfToken,
-  getGamePassProductInfo,
-  purchaseProduct,
 }

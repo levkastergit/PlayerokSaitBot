@@ -1,7 +1,46 @@
 # Роблокс-автовыдача (метод свизера / Microsoft Store) — статус и размышления
 
 Заметки для продолжения в новой сессии. Здесь — что выяснили, что работает, что дальше.
-Дата последнего апдейта: 2026-06-17.
+Дата последнего апдейта: 2026-06-19.
+
+## ⚠️ Реалити-чек 2026-06 (по веб-исследованию, с источниками)
+1. **Резервный метод game-pass УМЕР.** Roblox 2026-05-29 отключил cross-game продажи пассов и
+   dev-продуктов (DevForum «Disabling cross-game sales… Transfers API»). Перевод Robux покупкой
+   чужого гейм-пасса больше НЕ работает — поэтому код game-pass удалён из репо целиком. Замена
+   (Transfers API) непригодна для ресейла: нужен Roblox Plus + проверка возраста 18+, лимиты
+   **500 R$/день, 1000 R$/мес**, получателю 90% (без DevEx).
+2. **Покупка Robux в приложении MS Store за баланс MS — РАБОТАЕТ ЧАСТИЧНО / нестабильно.** Xbox Wire
+   (2025-09-12) подтверждает покупку за Microsoft-баланс; но модератор MS (2026-06-13) и ряд веток
+   MS Q&A сообщают, что опция «Microsoft Account Balance» в чекауте появляется НЕ у всех (регион /
+   версия приложения GDK vs legacy / привязка аккаунтов). Есть баг: платёж проходит, Robux не
+   зачисляются (DevForum, с 2025-05-31, не закрыт) — всегда сверяй `account.microsoft.com/billing/orders`
+   = Completed перед зачётом покупателю.
+3. **Смена аккаунта-получателя ≠ просто Disconnect на странице безопасности.** Приложение MS Store
+   логинит тот Roblox-аккаунт, что привязан к Microsoft-аккаунту, ВОШЕДШЕМУ В WINDOWS/XBOX.
+   Disconnect на roblox.com/my/account#!/security часто **сам привязывается обратно** при следующем
+   входе. Реальный рычаг — **выйти из Microsoft-аккаунта в Windows/Xbox** (или сменить пользователя
+   Windows) перед входом в новый. Disconnect необходим, но недостаточен.
+4. **Cookie .ROBLOSECURITY:** привязана к IP-РЕГИОНУ с 2022-03-08 (смена региона = сброс, логин
+   заново; не отключается). Формат+ротация изменены **2026-05-01** — надо читать `Set-Cookie` на
+   каждом ответе и обрабатывать 401, иначе автоматизация ломается.
+5. **«Генератор старых ссылок входа» = authentication-ticket.** Живой хост — `auth.roblox.com/v1/
+   authentication-ticket` (НЕ `apis.roblox.com/auth/v1/...`): get CSRF → POST `/v1/authentication-ticket/`
+   (тикет в ОТВЕТНОМ заголовке `rbx-authentication-ticket`) → POST `/v1/authentication-ticket/redeem`
+   `{authenticationTicket}` + заголовок `RBXAuthenticationNegotiation: 1` → новая cookie в `Set-Cookie`.
+   В 2026 работает частично: redeem валидирует IP источника (генераторы шлют `Roblox-CNP-True-IP`).
+   **Лучше — Quick Login** (`apis.roblox.com/auth-token-service/v1/login/create|status` → `auth.roblox.com/v2/login`
+   `{ctype:'AuthToken',cvalue:code,password:privateKey}`): официальный, без капчи; но проверяет
+   сеть/IP при подтверждении кода.
+
+## Новый инструмент (шаги 2-4): `automation/web_xbox_disconnect.py`
+Selenium-скрипт: чистый профиль (сброс прошлой сессии) → вход → страница security → проверка/отвязка
+Xbox. **Вход по логину/паролю** (`--username/--password` или env `ROBLOX_USER/ROBLOX_PASS`):
+браузер видимый, при FunCaptcha/2FA решаешь руками в окне (ждёт `--login-wait`, по умолч. 180с),
+после входа можно достать `.ROBLOSECURITY` (`--emit-cookie`) для переиспользования без повторной капчи.
+Запасной вход — по cookie (`--cookie`/env/stdin). Режимы `--check` / `--inspect` (дамп DOM+скриншот+API)
+/ `--run` (отвязка: сначала API `/v1/xbox(-live)/disconnect`, потом клик в DOM, потом перепроверка).
+Браузер chrome (проверен) | edge. Эндпоинты Xbox community-документированы и НЕ подтверждены на 2026 —
+гонять `--inspect` на живом аккаунте и сверять, что реально срабатывает.
 
 ## Суть метода (как у swizzyer.com)
 Доставка Robux покупателю = покупка Robux **в приложении Roblox из Microsoft Store**, оплаченная

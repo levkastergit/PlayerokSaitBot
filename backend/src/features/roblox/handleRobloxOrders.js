@@ -1,7 +1,11 @@
 'use strict'
 
 const roblox = require('../../integrations/roblox/robloxClient')
-const { startBuyerLogin, completeBuyer2fa } = require('../../integrations/roblox/robloxAuthClient')
+const {
+  startBuyerLogin,
+  completeBuyer2fa,
+  completeBuyerCaptcha,
+} = require('../../integrations/roblox/robloxAuthClient')
 
 // Короткоживущее состояние логина покупателя между запросом логина и вводом 2FA-кода на
 // hosted-странице. Хранит пароль для повтора логина — поэтому ТОЛЬКО в памяти, не в БД.
@@ -140,8 +144,27 @@ async function handleOrderLogin({ payload, currentUserId, deps }) {
     return { statusCode: 200, data: { ok: true, status: 'awaiting_2fa', needs2fa: true, twofaToken: token, twofaUrl, mediaType: result.mediaType } }
   }
 
+  // Кооперативная капча: отдаём покупателю hosted-ссылку, где он решит FunCaptcha.
+  if (result.outcome === 'captcha' && result.cooperative) {
+    const token = robloxOrdersRepo.setCaptchaPending(currentUserId, orderId)
+    pendingLogins.set(token, {
+      state: result, // содержит username/password/csrf/challenge — нужно для continue
+      orderId,
+      userId: currentUserId,
+      createdAt: Date.now(),
+    })
+    robloxOrdersRepo.setState(currentUserId, orderId, {
+      status: 'awaiting_captcha',
+      phase: 'awaiting_captcha',
+      logMessage: 'Требуется капча (FunCaptcha). Ссылка отправлена покупателю.',
+    })
+    const base = publicBaseUrl(deps)
+    const captchaUrl = `${base}/roblox/captcha/${token}`
+    return { statusCode: 200, data: { ok: true, status: 'awaiting_captcha', needsCaptcha: true, captchaToken: token, captchaUrl } }
+  }
+
   if (result.outcome === 'captcha') {
-    return { statusCode: 422, data: { ok: false, error: result.error || 'Логин требует капчу (солвер не настроен)' } }
+    return { statusCode: 422, data: { ok: false, error: result.error || 'Логин требует капчу' } }
   }
 
   return { statusCode: 422, data: { ok: false, error: result.error || 'Логин не удался' } }
@@ -224,6 +247,133 @@ async function handleTwofaSubmit({ token, code, deps }) {
   return { statusCode: 200, html: renderTwofaPage(token, { done: true }) }
 }
 
+// ── Кооперативная капча (hosted-страница с виджетом FunCaptcha/Arkose) ─────────
+// HTML hosted-страницы капчи: грузит Arkose с публичным ключом логина Roblox и blob из challenge,
+// при решении POST'ит токен назад. Покупатель решает капчу — бот получает готовый токен.
+function renderCaptchaPage(token, { publicKey, blob, error } = {}) {
+  const safeToken = String(token || '').replace(/[^a-f0-9]/gi, '')
+  const style = `body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0f1116;color:#e8eaed;display:flex;
+      min-height:100vh;align-items:center;justify-content:center;margin:0}
+    .card{background:#1a1d24;padding:28px 26px;border-radius:14px;max-width:420px;width:92%;
+      box-shadow:0 10px 40px rgba(0,0,0,.4)}
+    h1{font-size:1.15rem;margin:0 0 6px}
+    p.lead{color:#9aa0aa;font-size:.9rem;margin:0 0 18px;line-height:1.4}
+    #arkose{min-height:80px;display:flex;justify-content:center}
+    .err{color:#f87171;font-size:.9rem}.ok{color:#34d399;font-size:.95rem}`
+  if (error) {
+    return `<!doctype html><html lang="ru"><head><meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1"/><title>Проверка Roblox</title>
+      <style>${style}</style></head><body><div class="card"><h1>Подтверждение входа Roblox</h1>
+      <p class="err">${String(error).replace(/</g, '&lt;')}</p></div></body></html>`
+  }
+  const pk = String(publicKey || '').replace(/[^a-z0-9-]/gi, '')
+  const blobJs = JSON.stringify(blob || '')
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/><title>Проверка Roblox</title>
+    <style>${style}</style></head><body>
+    <div class="card">
+      <h1>Подтверждение входа Roblox</h1>
+      <p class="lead">Пройдите проверку безопасности, чтобы подтвердить вход в аккаунт. После прохождения страница сообщит результат.</p>
+      <div id="arkose"></div>
+      <p id="msg" class="lead"></p>
+    </div>
+    <script>
+      var BLOB = ${blobJs};
+      var PATH = location.pathname;
+      function msg(t, cls){ var m=document.getElementById('msg'); m.textContent=t; m.className = cls||'lead'; }
+      function submitToken(t){
+        msg('Проверяем…');
+        fetch(PATH, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({token:t})})
+          .then(function(r){return r.json();})
+          .then(function(j){
+            if (j.ok && j.status==='ready') { msg('✓ Готово! Вход подтверждён, можете закрыть страницу.', 'ok'); }
+            else if (j.ok && j.needs2fa && j.twofaUrl) { msg('Капча пройдена. Переходим к вводу кода 2FA…', 'ok'); setTimeout(function(){location.href=j.twofaUrl;}, 900); }
+            else { msg(j.error || 'Не удалось. Обновите страницу и попробуйте снова.', 'err'); }
+          })
+          .catch(function(){ msg('Сеть недоступна. Попробуйте ещё раз.', 'err'); });
+      }
+      function setupEnforcement(enf){
+        try {
+          enf.setConfig({
+            selector:'#arkose', mode:'inline',
+            data: BLOB ? { blob: BLOB } : undefined,
+            onCompleted: function(r){ submitToken(r.token); },
+            onError: function(){ msg('Ошибка проверки. Обновите страницу.', 'err'); },
+            onFailed: function(){ msg('Проверка не пройдена. Попробуйте снова.', 'err'); }
+          });
+          enf.run();
+        } catch (e) { msg('Не удалось загрузить проверку: ' + e, 'err'); }
+      }
+    </script>
+    <script src="https://roblox-api.arkoselabs.com/v2/${pk}/api.js" data-callback="setupEnforcement" async defer></script>
+    </body></html>`
+}
+
+// GET /roblox/captcha/:token — отдать страницу с виджетом.
+async function handleCaptchaPage({ token, deps }) {
+  const { robloxOrdersRepo } = deps
+  const order = robloxOrdersRepo.getOrderByTwofaToken(token)
+  const pending = pendingLogins.get(token)
+  if (!order || order.status !== 'awaiting_captcha' || !pending) {
+    return { statusCode: 404, html: renderCaptchaPage(token, { error: 'Ссылка недействительна или капча уже решена.' }) }
+  }
+  const st = pending.state || {}
+  return { statusCode: 200, html: renderCaptchaPage(token, { publicKey: st.publicKey, blob: st.blob }) }
+}
+
+// POST /roblox/captcha/:token — принять токен капчи, довести логин (может потребоваться 2FA).
+async function handleCaptchaSubmit({ token, captchaToken, deps }) {
+  const { robloxOrdersRepo } = deps
+  prunePending()
+  const pending = pendingLogins.get(token)
+  const order = robloxOrdersRepo.getOrderByTwofaToken(token)
+  if (!order || !pending) {
+    return { statusCode: 404, data: { ok: false, error: 'Ссылка недействительна или истекла. Запросите вход заново.' } }
+  }
+  if (!captchaToken) {
+    return { statusCode: 400, data: { ok: false, error: 'Нет токена капчи.' } }
+  }
+  let result
+  try {
+    result = await completeBuyerCaptcha({ state: pending.state, token: String(captchaToken) })
+  } catch (err) {
+    return { statusCode: 502, data: { ok: false, error: err && err.message ? String(err.message) : 'Ошибка проверки капчи.' } }
+  }
+
+  if (result.outcome === 'ok' && result.cookie) {
+    try {
+      await finalizeBuyerSession({ userId: pending.userId, order, cookie: result.cookie, fallbackUser: result.user, deps })
+    } catch (err) {
+      return { statusCode: 502, data: { ok: false, error: 'Сессия получена, но не сохранена: ' + (err && err.message ? err.message : '') } }
+    }
+    pendingLogins.delete(token)
+    return { statusCode: 200, data: { ok: true, status: 'ready' } }
+  }
+
+  // Капча пройдена, но дальше включена 2FA — переводим на hosted-страницу 2FA.
+  if (result.outcome === '2fa') {
+    const username = pending.state && pending.state.username
+    const password = pending.state && pending.state.password
+    const twofaToken = robloxOrdersRepo.setTwofaPending(pending.userId, order.id, result.mediaType)
+    pendingLogins.delete(token)
+    pendingLogins.set(twofaToken, {
+      state: { ...result, username, password },
+      orderId: order.id,
+      userId: pending.userId,
+      createdAt: Date.now(),
+    })
+    robloxOrdersRepo.setState(pending.userId, order.id, {
+      status: 'awaiting_2fa',
+      phase: 'awaiting_2fa',
+      logMessage: `Капча пройдена, требуется 2FA (${result.mediaType}).`,
+    })
+    const base = publicBaseUrl(deps)
+    return { statusCode: 200, data: { ok: true, status: 'awaiting_2fa', needs2fa: true, twofaUrl: `${base}/roblox/2fa/${twofaToken}`, mediaType: result.mediaType } }
+  }
+
+  return { statusCode: 422, data: { ok: false, error: result.error || 'Капча не принята, попробуйте ещё раз.' } }
+}
+
 module.exports = {
   handleOrdersList,
   handleOrderCreate,
@@ -231,4 +381,6 @@ module.exports = {
   handleOrderLogin,
   handleTwofaPage,
   handleTwofaSubmit,
+  handleCaptchaPage,
+  handleCaptchaSubmit,
 }

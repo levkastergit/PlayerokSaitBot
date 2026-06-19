@@ -939,7 +939,7 @@ const server = http.createServer(async (req, res) => {
     if (handled) return
   }
 
-  // Вкладка «Роблокс»: game-pass аккаунты + метод MS Store (заказы, MS-аккаунты, вход покупателя,
+  // Вкладка «Роблокс»: метод MS Store (аккаунты Roblox, MS-аккаунты, заказы, вход покупателя,
   // воркер). Маршруты /roblox/2fa/* и /roblox/worker/* — публичные (не под сессией сайта).
   {
     const handled = await dispatchRoblox({

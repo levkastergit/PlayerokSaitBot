@@ -7,10 +7,6 @@ const {
   handleRobloxAccountDelete,
 } = require('../features/roblox/handleRobloxAccounts')
 const {
-  handleRobloxGamepassInfo,
-  handleRobloxDeliverTest,
-} = require('../features/roblox/handleRobloxDelivery')
-const {
   handleMsAccountsList,
   handleMsAccountAdd,
   handleMsAccountUpdate,
@@ -23,6 +19,8 @@ const {
   handleOrderLogin,
   handleTwofaPage,
   handleTwofaSubmit,
+  handleCaptchaPage,
+  handleCaptchaSubmit,
 } = require('../features/roblox/handleRobloxOrders')
 const { handleWorkerPoll, handleWorkerReport } = require('../features/roblox/handleRobloxWorker')
 
@@ -68,7 +66,7 @@ function sendHtml(res, statusCode, html) {
 }
 
 // Эндпоинты вкладки «Роблокс»:
-//   /api/roblox/*  — приватные (владелец, по сессии): аккаунты, MS-аккаунты, заказы, game-pass тест.
+//   /api/roblox/*  — приватные (владелец, по сессии): аккаунты Roblox, MS-аккаунты, заказы.
 //   /roblox/2fa/*  — публичные: hosted-страница 2FA для покупателя (без сессии сайта).
 //   /roblox/worker/* — Windows-воркер (аутентификация по X-Worker-Token).
 async function dispatchRoblox({ req, res, pathname, currentUserId, deps }) {
@@ -88,6 +86,21 @@ async function dispatchRoblox({ req, res, pathname, currentUserId, deps }) {
       const body = parseFormOrJson(raw)
       const result = await handleTwofaSubmit({ token, code: body.code, deps })
       return sendHtml(res, result.statusCode, result.html)
+    }
+  }
+
+  // ── Публичная hosted-страница капчи (FunCaptcha): GET — виджет, POST — токен (JSON) ──
+  if (isPublic && /^\/roblox\/captcha\/[a-f0-9]+$/i.test(pathname)) {
+    const token = pathname.split('/').pop()
+    if (req.method === 'GET') {
+      const result = await handleCaptchaPage({ token, deps })
+      return sendHtml(res, result.statusCode, result.html)
+    }
+    if (req.method === 'POST') {
+      const raw = await readRawBody(req)
+      const body = parseFormOrJson(raw)
+      const result = await handleCaptchaSubmit({ token, captchaToken: body.token, deps })
+      return sendJson(res, result.statusCode, result.data) || true
     }
   }
 
@@ -113,14 +126,12 @@ async function dispatchRoblox({ req, res, pathname, currentUserId, deps }) {
 
   if (!isApi) return false
 
-  // ── Игровые (game-pass) аккаунты ─────────────────────────────────────────
+  // ── Аккаунты Roblox (общие для метода MS Store) ──────────────────────────
   const apiRoutes = [
     ['GET', '/api/roblox/accounts', () => handleRobloxAccountsList({ currentUserId, deps })],
     ['POST', '/api/roblox/accounts/add', (p) => handleRobloxAccountAdd({ payload: p, currentUserId, deps })],
     ['POST', '/api/roblox/accounts/refresh', (p) => handleRobloxAccountRefresh({ payload: p, currentUserId, deps })],
     ['POST', '/api/roblox/accounts/delete', (p) => handleRobloxAccountDelete({ payload: p, currentUserId, deps })],
-    ['POST', '/api/roblox/gamepass-info', (p) => handleRobloxGamepassInfo({ payload: p })],
-    ['POST', '/api/roblox/deliver-test', (p) => handleRobloxDeliverTest({ payload: p, currentUserId, deps })],
     // Microsoft-аккаунты
     ['GET', '/api/roblox/ms-accounts', () => handleMsAccountsList({ currentUserId, deps })],
     ['POST', '/api/roblox/ms-accounts/add', (p) => handleMsAccountAdd({ payload: p, currentUserId, deps })],

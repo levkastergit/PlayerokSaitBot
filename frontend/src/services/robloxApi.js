@@ -65,28 +65,6 @@ export async function deleteRobloxAccount(id) {
   }
 }
 
-export async function fetchGamepassInfo(gamePass) {
-  try {
-    const { res, data } = await postJson(`${BASE}/gamepass-info`, { gamePass })
-    if (!res.ok || !data.ok) return { ok: false, error: data.error || 'Не удалось получить данные гейм-пасса', info: data.info || null }
-    return { ok: true, info: data.info }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Ошибка сети' }
-  }
-}
-
-export async function deliverTest({ accountId, gamePass, maxPrice }) {
-  try {
-    const { res, data } = await postJson(`${BASE}/deliver-test`, { accountId, gamePass, maxPrice })
-    if (!res.ok || !data.ok) {
-      return { ok: false, error: data.error || data.reason || 'Выдача не прошла', info: data.info || null, reason: data.reason || null }
-    }
-    return { ok: true, ...data }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Ошибка сети' }
-  }
-}
-
 // ── Microsoft-аккаунты (метод MS Store) ──────────────────────────────────────
 export async function fetchMsAccounts() {
   try {

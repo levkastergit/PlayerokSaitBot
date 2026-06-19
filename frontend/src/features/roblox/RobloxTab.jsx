@@ -4,8 +4,6 @@ import {
   addRobloxAccount,
   refreshRobloxAccount,
   deleteRobloxAccount,
-  fetchGamepassInfo,
-  deliverTest,
   fetchMsAccounts,
   addMsAccount,
   deleteMsAccount,
@@ -28,6 +26,7 @@ const ACCOUNT_STATUS = {
 
 const ORDER_STATUS = {
   awaiting_login: { label: 'Ожидает входа', cls: 'idle' },
+  awaiting_captcha: { label: 'Ожидает капчи', cls: 'idle' },
   awaiting_2fa: { label: 'Ожидает 2FA', cls: 'idle' },
   ready: { label: 'Готов к выдаче', cls: 'ok' },
   claimed: { label: 'У воркера', cls: 'run' },
@@ -79,7 +78,7 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
       </div>
 
       <div className="roblox-order__actions">
-        {order.status === 'awaiting_login' || order.status === 'awaiting_2fa' ? (
+        {order.status === 'awaiting_login' || order.status === 'awaiting_captcha' || order.status === 'awaiting_2fa' ? (
           <button type="button" className="btn-secondary" onClick={() => setShowLogin((v) => !v)}>
             {showLogin ? 'Скрыть вход' : 'Войти в аккаунт покупателя'}
           </button>
@@ -118,6 +117,23 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
           </button>
           {loginResult && !loginResult.ok ? (
             <p className="settings-message settings-message--error">{loginResult.error}</p>
+          ) : null}
+          {loginResult && loginResult.ok && loginResult.needsCaptcha ? (
+            <div className="roblox-order__twofa">
+              <p className="settings-message settings-message--success">
+                Нужна капча. Отправьте покупателю ссылку — он решит проверку, и вход продолжится:
+              </p>
+              <div className="roblox-inline-row">
+                <input className="input-theme" readOnly value={loginResult.captchaUrl} onFocus={(e) => e.target.select()} />
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => navigator.clipboard?.writeText(loginResult.captchaUrl)}
+                >
+                  Копировать
+                </button>
+              </div>
+            </div>
           ) : null}
           {loginResult && loginResult.ok && loginResult.needs2fa ? (
             <div className="roblox-order__twofa">
@@ -375,30 +391,18 @@ function MsAccountsPanel({ accounts, reload }) {
   )
 }
 
-// ── Тест game-pass (резервный метод, уже работает) ───────────────────────────
-function GamepassTestPanel() {
+// ── Аккаунты Roblox (общие для метода MS Store) ──────────────────────────────
+function AccountsPanel() {
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
   const [cookie, setCookie] = useState('')
   const [adding, setAdding] = useState(false)
   const [addMessage, setAddMessage] = useState(null)
   const [addError, setAddError] = useState(null)
-  const [gamePass, setGamePass] = useState('')
-  const [gpInfo, setGpInfo] = useState(null)
-  const [gpError, setGpError] = useState(null)
-  const [gpLoading, setGpLoading] = useState(false)
-  const [selectedAccountId, setSelectedAccountId] = useState('')
-  const [maxPrice, setMaxPrice] = useState('')
-  const [delivering, setDelivering] = useState(false)
-  const [deliverResult, setDeliverResult] = useState(null)
-  const [deliverError, setDeliverError] = useState(null)
 
   const loadAccounts = async () => {
     const res = await fetchRobloxAccounts()
-    if (res.ok) {
-      setAccounts(res.accounts)
-      if (!selectedAccountId && res.accounts.length > 0) setSelectedAccountId(String(res.accounts[0].id))
-    }
+    if (res.ok) setAccounts(res.accounts)
     setLoading(false)
   }
 
@@ -427,51 +431,12 @@ function GamepassTestPanel() {
     await loadAccounts()
   }
 
-  const handleLookup = async (e) => {
-    e.preventDefault()
-    setGpError(null)
-    setGpInfo(null)
-    setDeliverResult(null)
-    if (!gamePass.trim()) return setGpError('Укажите ID или ссылку на гейм-пасс')
-    setGpLoading(true)
-    const res = await fetchGamepassInfo(gamePass.trim())
-    setGpLoading(false)
-    if (!res.ok) {
-      setGpError(res.error)
-      setGpInfo(res.info || null)
-      return
-    }
-    setGpInfo(res.info)
-    if (res.info?.priceInRobux != null && !maxPrice) setMaxPrice(String(res.info.priceInRobux))
-  }
-
-  const handleDeliver = async () => {
-    setDeliverError(null)
-    setDeliverResult(null)
-    if (!selectedAccountId) return setDeliverError('Выберите аккаунт')
-    if (!gamePass.trim()) return setDeliverError('Укажите гейм-пасс')
-    setDelivering(true)
-    const res = await deliverTest({
-      accountId: Number(selectedAccountId),
-      gamePass: gamePass.trim(),
-      maxPrice: maxPrice ? Number(maxPrice) : undefined,
-    })
-    setDelivering(false)
-    if (!res.ok) {
-      setDeliverError(res.error)
-      if (res.info) setGpInfo(res.info)
-      return
-    }
-    setDeliverResult(res)
-    await loadAccounts()
-  }
-
   return (
     <div className="tab-grid">
       <section className="card" style={{ gridColumn: '1 / -1' }}>
         <p className="roblox-hint" style={{ marginTop: 0 }}>
-          Резервный метод game-pass (как PLS Donate): один из ваших Robux-аккаунтов покупает
-          гейм-пасс покупателя. Работает мгновенно, но −30% налога. Это НЕ метод свизера.
+          Аккаунты Roblox метода MS Store: ваши seed-аккаунты (добавленные по cookie) и сохранённые
+          сессии покупателей после входа. Используются для проверки баланса и выдачи воркером.
         </p>
         <h2 className="roblox-section-title">Добавить аккаунт (cookie)</h2>
         <form className="settings-form" onSubmit={handleAdd}>
@@ -527,51 +492,6 @@ function GamepassTestPanel() {
           </div>
         )}
       </section>
-
-      <section className="card" style={{ gridColumn: '1 / -1' }}>
-        <h2 className="roblox-section-title">Тест выдачи game-pass</h2>
-        <form className="settings-form" onSubmit={handleLookup}>
-          <div className="roblox-inline-row">
-            <input className="input-theme" value={gamePass} onChange={(e) => setGamePass(e.target.value)} placeholder="ID или ссылка на гейм-пасс" spellCheck={false} />
-            <button type="submit" className="btn-secondary" disabled={gpLoading}>{gpLoading ? 'Проверяем…' : 'Проверить'}</button>
-          </div>
-          {gpError ? <p className="settings-message settings-message--error">{gpError}</p> : null}
-        </form>
-        {gpInfo ? (
-          <div className="roblox-gp-info">
-            <div><span>Название</span><b>{gpInfo.name || '—'}</b></div>
-            <div><span>Цена</span><b>{formatRobux(gpInfo.priceInRobux)}</b></div>
-            <div><span>Продавец</span><b>{gpInfo.sellerName || gpInfo.sellerId || '—'}</b></div>
-            <div><span>В продаже</span><b>{gpInfo.isForSale === false ? 'Нет' : 'Да'}</b></div>
-          </div>
-        ) : null}
-        <div className="roblox-deliver-controls">
-          <div className="roblox-field">
-            <label className="roblox-field-label">Аккаунт выдачи</label>
-            <select className="input-theme" value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
-              <option value="">— выберите —</option>
-              {accounts.map((acc) => (
-                <option key={acc.id} value={acc.id}>{(acc.displayName || acc.username || acc.robloxUserId)} · {formatRobux(acc.robux)}</option>
-              ))}
-            </select>
-          </div>
-          <div className="roblox-field roblox-field--narrow">
-            <label className="roblox-field-label">Лимит, R$</label>
-            <input className="input-theme" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" />
-          </div>
-          <button type="button" className="btn-primary roblox-deliver-btn" disabled={delivering} onClick={handleDeliver}>
-            {delivering ? 'Выдаём…' : 'Выдать (тест)'}
-          </button>
-        </div>
-        {deliverError ? <p className="settings-message settings-message--error">{deliverError}</p> : null}
-        {deliverResult ? (
-          <p className={`settings-message settings-message--${deliverResult.purchased ? 'success' : 'error'}`}>
-            {deliverResult.purchased
-              ? `✓ Выдано: ${formatRobux(deliverResult.price)}. Баланс: ${formatRobux(deliverResult.account?.robux)}`
-              : `Не выдано: ${deliverResult.reason || 'отказ Roblox'}`}
-          </p>
-        ) : null}
-      </section>
     </div>
   )
 }
@@ -579,7 +499,7 @@ function GamepassTestPanel() {
 const VIEWS = [
   { id: 'orders', label: 'Заказы (MS Store)' },
   { id: 'ms', label: 'Microsoft-аккаунты' },
-  { id: 'gamepass', label: 'Тест game-pass' },
+  { id: 'accounts', label: 'Аккаунты Roblox' },
 ]
 
 export function RobloxTab() {
@@ -622,7 +542,7 @@ export function RobloxTab() {
 
       {view === 'orders' ? <OrdersPanel msAccounts={msAccounts} /> : null}
       {view === 'ms' ? <MsAccountsPanel accounts={msAccounts} reload={reloadMs} /> : null}
-      {view === 'gamepass' ? <GamepassTestPanel /> : null}
+      {view === 'accounts' ? <AccountsPanel /> : null}
     </div>
   )
 }

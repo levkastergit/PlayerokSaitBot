@@ -28,6 +28,7 @@ import os
 import sys
 import time
 import json
+import subprocess
 import urllib.request
 import urllib.error
 
@@ -35,6 +36,16 @@ BACKEND = os.environ.get("ROBLOX_WORKER_BACKEND", "").rstrip("/")
 TOKEN = os.environ.get("ROBLOX_WORKER_TOKEN", "").strip()
 WORKER_ID = os.environ.get("ROBLOX_WORKER_ID", "win-worker").strip()
 POLL_SEC = float(os.environ.get("ROBLOX_WORKER_POLL_SEC", "5"))
+
+# Драйвер UIA-покупки и предохранитель от случайной траты денег.
+AUTOMATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automation")
+BUY_ROBUX_SCRIPT = os.path.join(AUTOMATION_DIR, "buy_robux.py")
+# Реальная оплата (--buy) выполняется ТОЛЬКО при ROBLOX_WORKER_ENABLE_BUY=1. По умолчанию воркер
+# не тратит: помечает заказ failed с пояснением. Включай осознанно, убедившись, что приложение
+# Roblox вошло в аккаунт ПОКУПАТЕЛЯ и открыт экран Buy Robux (смена аккаунта — пока вручную).
+ENABLE_BUY = os.environ.get("ROBLOX_WORKER_ENABLE_BUY", "").strip() == "1"
+# buy_robux работает паками; заказ должен попадать в один из них.
+SUPPORTED_PACKS = {80, 500, 1000, 2000}
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RobloxMsStoreWorker/0.1"
 
@@ -120,39 +131,45 @@ class NotImplementedStep(Exception):
 
 def purchase_robux(order):
     """
-    phase_ms_buy: купить Robux-пак в приложении Roblox (Microsoft Store), оплатив
-    балансом Microsoft-аккаунта order['microsoft'].
+    phase_ms_buy: купить Robux-пак в приложении Roblox (Microsoft Store) UIA-драйвером
+    buy_robux.py, оплатив балансом Microsoft-аккаунта.
 
-    Чисто HTTP это сделать НЕЛЬЗЯ: оплату балансом проводит UWP-вызов
-    Windows.Services.Store.StoreContext.RequestPurchaseAsync внутри приложения.
-    Реализация (Фаза 2) — один из вариантов:
-      (а) UI-автоматизация приложения Roblox (pywinauto / FlaUI / WinAppDriver):
-          логин MS-аккаунта в Store, логин аккаунта покупателя в приложении,
-          выбор пака Robux, оплата «Microsoft account balance», подтверждение;
-      (б) повтор снятых «живых» запросов покупки/лицензирования (см. README →
-          «Снятие эндпоинтов»), если они воспроизводимы вне приложения.
+    ПРЕДУСЛОВИЯ (пока обеспечиваются оператором вручную — авто-смена аккаунта в приложении
+    через Windows/Xbox не автоматизируется): приложение Roblox запущено, ВОШЛО В АККАУНТ
+    ПОКУПАТЕЛЯ и открыт экран Buy Robux; в Windows/Store вошёл MS-аккаунт с балансом нужного
+    региона. Предохранитель: реальная оплата идёт только при ROBLOX_WORKER_ENABLE_BUY=1.
     """
-    raise NotImplementedStep(
-        "phase_ms_buy не реализован: нужна UWP-автоматизация приложения Roblox "
-        "или снятые эндпоинты покупки. См. worker/msstore-worker/README.md."
+    amount = int(order.get("robuxAmount") or 0)
+    if amount not in SUPPORTED_PACKS:
+        raise NotImplementedStep(
+            f"Сумма {amount} R$ не совпадает с паком {sorted(SUPPORTED_PACKS)}. "
+            "buy_robux покупает фиксированные паки — заказ нужно бить на паки."
+        )
+    if not ENABLE_BUY:
+        raise NotImplementedStep(
+            "Оплата отключена предохранителем. Поставь ROBLOX_WORKER_ENABLE_BUY=1 и убедись, "
+            "что приложение вошло в аккаунт покупателя и открыт экран Buy Robux."
+        )
+    if not os.path.exists(BUY_ROBUX_SCRIPT):
+        raise NotImplementedStep(f"Не найден драйвер покупки: {BUY_ROBUX_SCRIPT}")
+
+    proc = subprocess.run(
+        [sys.executable, BUY_ROBUX_SCRIPT, "--buy", str(amount)],
+        capture_output=True, text=True, timeout=300,
     )
+    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        raise RuntimeError(f"buy_robux --buy {amount} не удалась (код {proc.returncode}): {out[-600:]}")
+    return out[-600:]
 
 
 def claim_robux(order):
     """
-    phase_generate_store_id + phase_claim: привязать покупку Microsoft Store к аккаунту
-    Roblox покупателя и зачислить Robux.
-
-    Точный эндпоинт Roblox для Windows/Xbox-покупки НЕ опубликован (документированы только
-    /v1/apple/purchase и /v1/google/purchase). Его нужно СНЯТЬ с живого UWP-клиента
-    (Fiddler/mitmproxy) — см. README → «Снятие эндпоинтов». В типовом UWP-флоу Robux
-    зачисляются автоматически после успешной оплаты, поэтому отдельный claim может не
-    потребоваться; оставлено хуком на случай ручного «redeem».
+    phase_claim: в UWP-флоу Robux зачисляются автоматически сразу после успешной оплаты,
+    отдельный «redeem» не требуется. Фактический зачёт подтверждает phase_verify (рост баланса).
+    Оставлено хуком на случай, если Roblox введёт явный шаг зачисления Windows-покупки.
     """
-    raise NotImplementedStep(
-        "phase_claim не реализован: нужен снятый эндпоинт зачисления Windows-покупки Roblox. "
-        "См. worker/msstore-worker/README.md."
-    )
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,10 +194,12 @@ def process_order(order):
 
     # phase_ms_buy
     try:
-        purchase_robux(order)
+        buy_out = purchase_robux(order)
+        report(oid, status="purchasing", phase="phase_ms_buy",
+               message=f"buy_robux: {buy_out}" if buy_out else "Покупка выполнена")
     except NotImplementedStep as e:
         report(oid, status="failed", phase="phase_ms_buy", error=str(e),
-               message="Шаг покупки не автоматизирован (Фаза 2). Заказ требует ручной выдачи.")
+               message="Шаг покупки не выполнен (предусловия/предохранитель). Заказ требует ручной выдачи.")
         return
     except Exception as e:  # noqa: BLE001
         report(oid, status="failed", phase="phase_ms_buy", error=str(e))

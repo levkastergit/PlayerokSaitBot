@@ -1,7 +1,7 @@
 const crypto = require('crypto')
 
 // Машина состояний заказов автовыдачи Robux (метод MS Store). См. createRobloxOrdersTable.js.
-const ACTIVE_STATUSES = ['queued', 'awaiting_login', 'awaiting_2fa', 'ready', 'claimed', 'purchasing', 'claiming', 'verifying']
+const ACTIVE_STATUSES = ['queued', 'awaiting_login', 'awaiting_captcha', 'awaiting_2fa', 'ready', 'claimed', 'purchasing', 'claiming', 'verifying']
 const TERMINAL_STATUSES = ['delivered', 'failed', 'canceled']
 
 function setupRobloxOrdersRepo(db) {
@@ -49,6 +49,14 @@ function setupRobloxOrdersRepo(db) {
     UPDATE roblox_orders
     SET status = 'awaiting_2fa', phase = 'awaiting_2fa', twofa_token = @twofa_token,
         twofa_media_type = @twofa_media_type, updated_at = @now
+    WHERE user_id = @user_id AND id = @id
+  `)
+
+  // Кооперативная капча: переиспользуем колонку twofa_token как «токен текущего челленджа».
+  const setCaptchaStmt = db.prepare(`
+    UPDATE roblox_orders
+    SET status = 'awaiting_captcha', phase = 'awaiting_captcha', twofa_token = @twofa_token,
+        twofa_media_type = 'captcha', updated_at = @now
     WHERE user_id = @user_id AND id = @id
   `)
 
@@ -171,6 +179,17 @@ function setupRobloxOrdersRepo(db) {
     return token
   }
 
+  function setCaptchaPending(userId, id) {
+    const token = crypto.randomBytes(16).toString('hex')
+    setCaptchaStmt.run({
+      user_id: Number(userId),
+      id: Number(id),
+      twofa_token: token,
+      now: Math.floor(Date.now() / 1000),
+    })
+    return token
+  }
+
   function setBuyerSession(userId, id, { buyerAccountId, buyerUsername }) {
     setBuyerAccountStmt.run({
       id: Number(id),
@@ -226,6 +245,7 @@ function setupRobloxOrdersRepo(db) {
     createOrder,
     setState,
     setTwofaPending,
+    setCaptchaPending,
     setBuyerSession,
     setMicrosoftAccount,
     claimNextReady,

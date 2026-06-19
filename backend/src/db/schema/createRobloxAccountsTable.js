@@ -1,5 +1,6 @@
-// Аккаунты Roblox для автовыдачи доната (метод game-pass, как у swizzyer.com).
-// Cookie .ROBLOSECURITY хранится в зашифрованном виде (cookie_enc), как и токены Playerok.
+// Аккаунты Roblox для метода MS Store: ваши seed-аккаунты (добавленные по cookie) и
+// сохранённые сессии покупателей (после входа). Cookie .ROBLOSECURITY хранится в
+// зашифрованном виде (cookie_enc), как и токены Playerok.
 function createRobloxAccountsTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS roblox_accounts (

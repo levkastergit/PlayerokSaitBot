@@ -19,7 +19,7 @@
 // часть помечена TODO «подтвердить живым перехватом». Капча решается через captchaSolver (Фаза 3).
 
 const https = require('https')
-const { solveLoginFunCaptcha } = require('./captchaSolver')
+const { solveLoginFunCaptcha, ROBLOX_LOGIN_ARKOSE_PUBLIC_KEY } = require('./captchaSolver')
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
@@ -84,7 +84,9 @@ function decodeChallengeMeta(b64) {
 }
 
 async function getCsrfToken() {
-  const res = await request({ method: 'POST', url: 'https://auth.roblox.com/v2/logout' })
+  // /v2/logout без сессии теперь отдаёт 401 без токена. /v2/login без тела → 403 + x-csrf-token
+  // (проверка CSRF идёт ДО проверки логина, так что это не попытка входа и не триггерит лимиты).
+  const res = await request({ method: 'POST', url: 'https://auth.roblox.com/v2/login', body: {} })
   return res.headers['x-csrf-token'] || res.headers['X-CSRF-TOKEN'] || null
 }
 
@@ -124,7 +126,10 @@ function interpretLoginResponse(res, ctx) {
         ctx,
       }
     }
-    return { outcome: 'error', error: `Неизвестный challenge: ${challType}` }
+    if (/proofofwork|pow/i.test(challType)) {
+      return { outcome: 'proofofwork', challengeType: challType, challengeId: challId, meta, metaB64: challMetaB64, ctx }
+    }
+    return { outcome: 'error', error: `Неизвестный challenge: ${challType}`, challengeType: challType, meta, metaB64: challMetaB64 }
   }
 
   // Legacy: 2FA в теле ответа.
@@ -168,50 +173,97 @@ async function startBuyerLogin({ username, password, captcha } = {}) {
 
   let result = interpretLoginResponse(res, { csrf })
 
-  // Попытка решить капчу, если есть конфиг солвера.
   if (result.outcome === 'captcha') {
-    const blob = result.meta && (result.meta.dataExchangeBlob || result.meta.blob)
-    const solved = await solveLoginFunCaptcha({
-      provider: captcha && captcha.provider,
-      apiKey: captcha && captcha.apiKey,
-      blob,
-      proxy: captcha && captcha.proxy,
-    })
-    if (!solved.ok) {
-      return {
-        outcome: 'captcha',
-        error:
-          solved.error === 'CAPTCHA_SOLVER_NOT_CONFIGURED'
-            ? 'Логин требует капчу (FunCaptcha) — настройте солвер в Фазе 3'
-            : `Капча не решена: ${solved.error}`,
-      }
-    }
+    const blob =
+      result.meta && (result.meta.dataExchangeBlob || result.meta.blob || result.meta.data_exchange_blob)
     const unifiedCaptchaId = result.meta && result.meta.unifiedCaptchaId
-    await request({
-      method: 'POST',
-      url: 'https://apis.roblox.com/challenge/v1/continue',
-      headers: baseHeaders,
-      body: {
-        challengeId: result.challengeId,
-        challengeType: 'captcha',
-        challengeMetadata: JSON.stringify({ unifiedCaptchaId, captchaToken: solved.token, actionType: 'Login' }),
-      },
-    })
-    res = await request({
-      method: 'POST',
-      url: 'https://auth.roblox.com/v2/login',
-      headers: {
-        ...baseHeaders,
-        'Rblx-Challenge-Id': result.challengeId,
-        'Rblx-Challenge-Type': 'captcha',
-        'Rblx-Challenge-Metadata': result.metaB64,
-      },
-      body: { ctype: 'Username', cvalue: String(username), password: String(password) },
-    })
-    result = interpretLoginResponse(res, { csrf })
+
+    // 1) Быстрый путь: платный солвер, если настроен.
+    if (captcha && captcha.provider && captcha.apiKey) {
+      const solved = await solveLoginFunCaptcha({
+        provider: captcha.provider,
+        apiKey: captcha.apiKey,
+        blob,
+        proxy: captcha.proxy,
+      })
+      if (solved.ok) {
+        return continueWithCaptchaToken({
+          csrf,
+          challengeId: result.challengeId,
+          unifiedCaptchaId,
+          metaB64: result.metaB64,
+          token: solved.token,
+          username,
+          password,
+        })
+      }
+      // солвер не справился — падаем в кооперативный путь ниже
+    }
+
+    // 2) Кооперативный путь (как у swizzyer): данные для hosted-страницы, токен решит покупатель.
+    return {
+      outcome: 'captcha',
+      cooperative: true,
+      publicKey: ROBLOX_LOGIN_ARKOSE_PUBLIC_KEY,
+      blob: blob || null,
+      challengeId: result.challengeId,
+      unifiedCaptchaId: unifiedCaptchaId || null,
+      metaB64: result.metaB64,
+      ctx: { csrf },
+      username,
+      password,
+    }
   }
 
   return result
+}
+
+// Довести логин после получения captcha-токена: challenge/continue + повтор /v2/login.
+// Результат — тот же унифицированный исход (может быть 'ok' / '2fa' / 'error').
+async function continueWithCaptchaToken({ csrf, challengeId, unifiedCaptchaId, metaB64, token, username, password }) {
+  const baseHeaders = { 'X-CSRF-TOKEN': csrf }
+  await request({
+    method: 'POST',
+    url: 'https://apis.roblox.com/challenge/v1/continue',
+    headers: baseHeaders,
+    body: {
+      challengeId,
+      challengeType: 'captcha',
+      challengeMetadata: JSON.stringify({ unifiedCaptchaId, captchaToken: token, actionType: 'Login' }),
+    },
+  })
+  const res = await request({
+    method: 'POST',
+    url: 'https://auth.roblox.com/v2/login',
+    headers: {
+      ...baseHeaders,
+      'Rblx-Challenge-Id': challengeId,
+      'Rblx-Challenge-Type': 'captcha',
+      'Rblx-Challenge-Metadata': metaB64,
+    },
+    body: { ctype: 'Username', cvalue: String(username), password: String(password) },
+  })
+  return interpretLoginResponse(res, { csrf })
+}
+
+/**
+ * Завершить капчу кооперативно: покупатель решил FunCaptcha на hosted-странице, прислал токен.
+ * @param {object} state  то, что вернул startBuyerLogin при outcome:'captcha' cooperative
+ * @param {string} token  Arkose-токен из виджета
+ */
+async function completeBuyerCaptcha({ state, token }) {
+  if (!state) return { outcome: 'error', error: 'Нет состояния капчи' }
+  if (!token) return { outcome: 'error', error: 'Нет токена капчи' }
+  const csrf = (state.ctx && state.ctx.csrf) || (await getCsrfToken())
+  return continueWithCaptchaToken({
+    csrf,
+    challengeId: state.challengeId,
+    unifiedCaptchaId: state.unifiedCaptchaId,
+    metaB64: state.metaB64,
+    token,
+    username: state.username,
+    password: state.password,
+  })
 }
 
 /**
@@ -293,4 +345,4 @@ async function completeBuyer2fa({ state, code }) {
   return interpretLoginResponse(res, { csrf })
 }
 
-module.exports = { startBuyerLogin, completeBuyer2fa, getCsrfToken }
+module.exports = { startBuyerLogin, completeBuyer2fa, completeBuyerCaptcha, getCsrfToken }

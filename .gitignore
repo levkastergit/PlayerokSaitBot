@@ -10,6 +10,8 @@ worker/msstore-worker/capture/robux-purchase.*
 # Записи UI/покупки — содержат скриншоты/заголовки окон, не коммитим.
 worker/msstore-worker/automation/recording/
 worker/msstore-worker/automation/ui-tree.txt
+# Дампы веб-инспекции (страница security реального аккаунта + скрины) — не коммитим.
+worker/msstore-worker/automation/web-inspect/
 worker/msstore-worker/capture/robux-purchase.*
 .DS_Store
 frontend/.env.local
