@@ -4,6 +4,7 @@ const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 
 function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
@@ -131,6 +132,7 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok items')
       req.end()
         })
     )

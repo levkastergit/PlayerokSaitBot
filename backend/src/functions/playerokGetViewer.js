@@ -3,6 +3,7 @@
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 
 function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
   if (!VIEWER_QUERY) throw new Error('VIEWER_QUERY is required')
@@ -91,6 +92,7 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok viewer')
       req.write(body)
       req.end()
         })

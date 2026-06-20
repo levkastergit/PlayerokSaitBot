@@ -3,6 +3,7 @@
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { extractItemImageUrl } = require('./extractItemImageUrl')
 
 function dealCategoryHintFromNode(deal) {
@@ -232,6 +233,7 @@ function createRequestChatMessagesPage() {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok chatMessages')
       req.write(body)
       req.end()
         })

@@ -4,6 +4,7 @@ const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PERSISTED_HASH }) {
@@ -94,6 +95,7 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok userChats')
       req.end()
         })
     )
