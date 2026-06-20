@@ -36,11 +36,15 @@ if ! command -v google-chrome >/dev/null 2>&1; then
 fi
 google-chrome --version
 
-echo "==> Python: selenium (Selenium Manager сам подтянет chromedriver)"
-python3 -m pip install --upgrade --break-system-packages selenium 2>/dev/null || python3 -m pip install --upgrade selenium
-
 echo "==> Пользователь сервиса: $RUN_USER"
 id -u "$RUN_USER" >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin "$RUN_USER"
+
+echo "==> venv + selenium (Ubuntu 24.04 PEP668: ставим в venv, не в систему)"
+python3 -m venv "$AUTOMATION_DIR/venv"
+"$AUTOMATION_DIR/venv/bin/pip" install --upgrade pip >/dev/null
+"$AUTOMATION_DIR/venv/bin/pip" install selenium
+chown -R "$RUN_USER:$RUN_USER" "$AUTOMATION_DIR"
+echo "selenium: $("$AUTOMATION_DIR/venv/bin/python" -c 'import selenium; print(selenium.__version__)')"
 
 echo "==> systemd-юнит login_service (headed Chrome под Xvfb на :8765 → 127.0.0.1)"
 cat > /etc/systemd/system/roblox-login.service <<UNIT
@@ -54,7 +58,7 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$AUTOMATION_DIR
 # xvfb-run даёт виртуальный дисплей → Chrome НЕ headless (Arkose/PoW не палят автоматизацию)
-ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x1024x24" /usr/bin/python3 $AUTOMATION_DIR/login_service.py --port $SERVICE_PORT
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x1024x24" $AUTOMATION_DIR/venv/bin/python $AUTOMATION_DIR/login_service.py --port $SERVICE_PORT
 Restart=on-failure
 RestartSec=5
 # чистим временные профили браузера
