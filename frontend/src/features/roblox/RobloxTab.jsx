@@ -77,6 +77,22 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
         {lastLog ? <span className="roblox-order__phase" title={lastLog.message}>· {lastLog.message}</span> : null}
       </div>
 
+      {order.loginLink ? (
+        <div className="roblox-order__twofa">
+          <p className="settings-message settings-message--success">
+            {order.status === 'awaiting_captcha'
+              ? 'Ссылка покупателю — решить капчу:'
+              : `Ссылка покупателю — подтвердить вход${order.twofaMediaType && !['pending', 'push'].includes(order.twofaMediaType) ? ` (код: ${order.twofaMediaType})` : order.twofaMediaType === 'push' ? ' (апрув в приложении)' : ''}:`}
+          </p>
+          <div className="roblox-inline-row">
+            <input className="input-theme" readOnly value={order.loginLink} onFocus={(e) => e.target.select()} />
+            <button type="button" className="btn-secondary" onClick={() => navigator.clipboard?.writeText(order.loginLink)}>
+              Копировать
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="roblox-order__actions">
         {order.status === 'awaiting_login' || order.status === 'awaiting_captcha' || order.status === 'awaiting_2fa' ? (
           <button type="button" className="btn-secondary" onClick={() => setShowLogin((v) => !v)}>
@@ -118,34 +134,19 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
           {loginResult && !loginResult.ok ? (
             <p className="settings-message settings-message--error">{loginResult.error}</p>
           ) : null}
-          {loginResult && loginResult.ok && loginResult.needsCaptcha ? (
+          {loginResult && loginResult.ok && loginResult.needsLink && loginResult.loginLink ? (
             <div className="roblox-order__twofa">
               <p className="settings-message settings-message--success">
-                Нужна капча. Отправьте покупателю ссылку — он решит проверку, и вход продолжится:
+                {loginResult.loginStatus === 'awaiting_captcha'
+                  ? 'Нужна капча. Отправьте покупателю ссылку — он решит проверку, и вход продолжится:'
+                  : 'Нужно подтверждение входа. Отправьте покупателю ссылку:'}
               </p>
               <div className="roblox-inline-row">
-                <input className="input-theme" readOnly value={loginResult.captchaUrl} onFocus={(e) => e.target.select()} />
+                <input className="input-theme" readOnly value={loginResult.loginLink} onFocus={(e) => e.target.select()} />
                 <button
                   type="button"
                   className="btn-secondary"
-                  onClick={() => navigator.clipboard?.writeText(loginResult.captchaUrl)}
-                >
-                  Копировать
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {loginResult && loginResult.ok && loginResult.needs2fa ? (
-            <div className="roblox-order__twofa">
-              <p className="settings-message settings-message--success">
-                Нужна 2FA ({loginResult.mediaType}). Отправьте покупателю ссылку для ввода кода:
-              </p>
-              <div className="roblox-inline-row">
-                <input className="input-theme" readOnly value={loginResult.twofaUrl} onFocus={(e) => e.target.select()} />
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => navigator.clipboard?.writeText(loginResult.twofaUrl)}
+                  onClick={() => navigator.clipboard?.writeText(loginResult.loginLink)}
                 >
                   Копировать
                 </button>
@@ -175,6 +176,7 @@ function OrdersPanel({ msAccounts }) {
   const [error, setError] = useState(null)
   const [amount, setAmount] = useState('')
   const [buyer, setBuyer] = useState('')
+  const [buyerPassword, setBuyerPassword] = useState('')
   const [msId, setMsId] = useState('')
   const [note, setNote] = useState('')
   const [creating, setCreating] = useState(false)
@@ -204,6 +206,7 @@ function OrdersPanel({ msAccounts }) {
     const res = await createOrder({
       robuxAmount: Number(amount),
       buyerUsername: buyer.trim() || undefined,
+      password: buyerPassword || undefined,
       microsoftAccountId: msId ? Number(msId) : undefined,
       note: note.trim() || undefined,
     })
@@ -211,6 +214,7 @@ function OrdersPanel({ msAccounts }) {
     if (res.ok) {
       setAmount('')
       setBuyer('')
+      setBuyerPassword('')
       setNote('')
       await load()
     } else {
@@ -246,8 +250,12 @@ function OrdersPanel({ msAccounts }) {
               />
             </div>
             <div className="roblox-field">
-              <label className="roblox-field-label">Логин покупателя (необязательно)</label>
-              <input className="input-theme" value={buyer} onChange={(e) => setBuyer(e.target.value)} placeholder="username" />
+              <label className="roblox-field-label">Логин покупателя</label>
+              <input className="input-theme" value={buyer} onChange={(e) => setBuyer(e.target.value)} placeholder="username" autoComplete="off" />
+            </div>
+            <div className="roblox-field">
+              <label className="roblox-field-label">Пароль покупателя</label>
+              <input className="input-theme" type="password" value={buyerPassword} onChange={(e) => setBuyerPassword(e.target.value)} placeholder="пароль" autoComplete="off" />
             </div>
             <div className="roblox-field">
               <label className="roblox-field-label">Microsoft-аккаунт (оплата)</label>

