@@ -52,6 +52,9 @@ async function withRetry(fn, opts = {}) {
         return result
       } catch (err) {
         lastErr = err
+        // Брейкер (PLAYEROK_CIRCUIT_OPEN) — запрос НЕ ушёл в сеть: не ретраим и НЕ
+        // трогаем cooldown-лестницу (иначе фантомный 429 на IP, который не использовали).
+        if (err && (err.nonRetryable || err.code === 'PLAYEROK_CIRCUIT_OPEN')) break
         // 429 на использованном IP — эскалируем его блок в ротации (по лестнице).
         if (isPlayerokRateLimitError(err)) reportOutboundResult(false)
         const retryable = attempt < retries && shouldRetry(err)

@@ -27,29 +27,38 @@ function createFetchActiveItemsFromPlayerok({
       }
     }
 
-    // Загружаем свежие данные
-    const viewer = await getViewer(token, userAgent)
+    // Загружаем свежие данные; при любом сбое (брейкер/таймаут/429) отдаём last-good из кэша.
+    let result
+    try {
+      const viewer = await getViewer(token, userAgent)
 
-    const allItems = []
-    let afterCursor = null
-    let totalCount = 0
+      const allItems = []
+      let afterCursor = null
+      let totalCount = 0
 
-    do {
-      const page = await requestItemsPage(
-        token,
-        userAgent,
-        viewer.id,
-        afterCursor,
-        ['APPROVED']
-      )
-      allItems.push(...page.items)
-      if (page.totalCount != null) totalCount = page.totalCount
-      afterCursor = page.hasNextPage ? page.endCursor : null
-    } while (afterCursor)
+      do {
+        const page = await requestItemsPage(
+          token,
+          userAgent,
+          viewer.id,
+          afterCursor,
+          ['APPROVED']
+        )
+        allItems.push(...page.items)
+        if (page.totalCount != null) totalCount = page.totalCount
+        afterCursor = page.hasNextPage ? page.endCursor : null
+      } while (afterCursor)
 
-    const result = {
-      items: allItems,
-      totalCount: totalCount || allItems.length,
+      result = {
+        items: allItems,
+        totalCount: totalCount || allItems.length,
+      }
+    } catch (err) {
+      const cached = lotsCache.get(token)
+      if (cached?.active?.data) {
+        return { ...cached.active.data, _stale: true }
+      }
+      throw err
     }
 
     // Сохраняем в кэш

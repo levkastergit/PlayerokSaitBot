@@ -250,6 +250,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         sendChatImage: deps.sendChatImage,
         automessageImagesDir: deps.automessageImagesDir,
         fetchDealChatMessagesFromPlayerok: deps.fetchDealChatMessagesFromPlayerok,
+        isOutboundCircuitOpen: require('../infra/playerokOutboundIp').isOutboundCircuitOpen,
       },
     }))
     return sendJson(res, result.statusCode, result.data) || true

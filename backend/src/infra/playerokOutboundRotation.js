@@ -32,9 +32,7 @@ const LADDER_MS = [
   60 * 1000, // 1 мин
   10 * 60 * 1000, // 10 мин
   30 * 60 * 1000, // 30 мин
-  60 * 60 * 1000, // 1 час
-  3 * 60 * 60 * 1000, // 3 часа
-  24 * 60 * 60 * 1000, // 24 часа (максимум)
+  60 * 60 * 1000, // 1 час (максимум — глубже эскалировать смысла нет: брейкер не даёт долбить мёртвый пул)
 ]
 
 // ip -> { level: 1..6, until: ts(ms) }. level сохраняется и после истечения until
@@ -119,6 +117,64 @@ function isIpOnCooldown(ip) {
 }
 
 /**
+ * Все IP пула сейчас в активном блоке (cooldown)? Тогда любой исходящий запрос
+ * почти гарантированно словит 429 — это сигнал «открыть» circuit breaker. Пустой
+ * пул → false (ротации нет, обычный путь). Чистое чтение ipState без мутаций.
+ * Восстановление таймерное: как только истечёт ближайший until (минимум 60с),
+ * функция вернёт false и брейкер закроется сам.
+ */
+function areAllPoolIpsOnCooldown(pool) {
+  if (!Array.isArray(pool) || pool.length === 0) return false
+  for (const ip of pool) {
+    if (!isIpOnCooldown(ip)) return false
+  }
+  return true
+}
+
+/** Ближайший момент (ts, мс), когда истечёт cooldown среди IP пула; Infinity если никто не в блоке. */
+function earliestCooldownUntil(pool) {
+  if (!Array.isArray(pool) || pool.length === 0) return Infinity
+  const now = Date.now()
+  let min = Infinity
+  for (const ip of pool) {
+    const st = ipState.get(ip)
+    if (st && st.until > now && st.until < min) min = st.until
+  }
+  return min
+}
+
+// Полуоткрытие (half-open): даже при полностью остывшем пуле раз в интервал пропускаем
+// ОДИН пробный запрос — иначе на верхних ступенях лестницы сайт ослеп бы надолго.
+// Глобальный single-flight; серийный гейт сам троттлит до ~1 пробы за интервал.
+let __lastProbeAt = 0
+function allowCircuitProbe(intervalMs) {
+  const iv =
+    Number.isFinite(intervalMs) && intervalMs >= 0
+      ? intervalMs
+      : Number(process.env.PLAYEROK_CIRCUIT_PROBE_INTERVAL_MS) || 15000
+  const now = Date.now()
+  if (now - __lastProbeAt >= iv) {
+    __lastProbeAt = now
+    return true
+  }
+  return false
+}
+
+/** Операционный аварийный сброс блокировок (оператор подтвердил, что Playerok поднят).
+ *  Без ip — чистит весь Map. Возвращает число снятых записей. */
+function resetCooldowns(ip) {
+  if (ip) {
+    const had = ipState.delete(String(ip))
+    if (had) console.log(`[outbound-ip] ручной сброс блокировки IP ${ip}`)
+    return had ? 1 : 0
+  }
+  const n = ipState.size
+  ipState.clear()
+  if (n > 0) console.log(`[outbound-ip] ручной сброс ВСЕХ блокировок (${n})`)
+  return n
+}
+
+/**
  * Выбрать следующий IP из пула по кругу, исключая уже опробованные в этой операции
  * (для данного канала) и заблокированные (cooldown). Деградация мягкая: если живых
  * нет — игнорируем блок; если все опробованы — берём по кругу.
@@ -191,6 +247,10 @@ module.exports = {
   reportIpRateLimited,
   reportIpSuccess,
   isIpOnCooldown,
+  areAllPoolIpsOnCooldown,
+  earliestCooldownUntil,
+  allowCircuitProbe,
+  resetCooldowns,
   getRotationCursor,
   getCooldownSnapshot,
   LADDER_MS,

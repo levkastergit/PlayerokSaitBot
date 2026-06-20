@@ -29,6 +29,14 @@ async function handleActiveLots({ payload, currentUserId, deps }) {
         },
       }
     }
+    // Брейкер: весь пул IP в cooldown — быстрая 503 (не 504), фронт покажет «временно
+    // перегружено» вместо красной ошибки/спиннера. Срабатывает лишь когда нет даже stale-кэша.
+    if ((err && err.code === 'PLAYEROK_CIRCUIT_OPEN') || statusCode === 503) {
+      return {
+        statusCode: 503,
+        data: { error: message, circuitOpen: true, soft: true },
+      }
+    }
     return { statusCode: 500, data: { error: message } }
   }
 }

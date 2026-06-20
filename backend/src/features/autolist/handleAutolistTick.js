@@ -26,6 +26,11 @@ const {
 // CHAT_AUTOMESSAGE_MAX_TRIGGER_AGE_SEC (2ч).
 const AUTOMSG_RESCAN_FLOOR_SEC = 300
 
+// Потолок длительности одного тика автолиста (wall-clock). При превышении — мягко
+// прекращаем сканирование на границах чатов/кандидатов/флоу и до-обработаем на
+// следующем тике (стадии флоу резюмируемы). Защита от 35-мин монополизации гейта.
+const AUTOLIST_TICK_BUDGET_MS = Math.max(15000, Number(process.env.AUTOLIST_TICK_BUDGET_MS) || 75000)
+
 async function handleAutolistTick({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -102,9 +107,14 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     updateDealStatus,
     requestChatDealIdPost,
     requestChatById,
+    isOutboundCircuitOpen,
   } = deps
 
   const nowTs = Math.floor(Date.now() / 1000)
+  const tickStartedAt = Date.now()
+  const budgetExceeded = () => Date.now() - tickStartedAt > AUTOLIST_TICK_BUDGET_MS
+  const circuitOpen = () => typeof isOutboundCircuitOpen === 'function' && isOutboundCircuitOpen()
+  const shouldStopScan = () => budgetExceeded() || circuitOpen()
 
   // ── Инструментирование подзадач для вкладки «Список выполнения» ──────────────
   // Лёгкий сбор статуса/таймингов по подзадачам одного прохода. Полностью
@@ -340,9 +350,11 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     }
 
     for (const chatNode of chatsSlice) {
+      if (shouldStopScan()) break
       await tryCollectPaidChatCandidate(chatNode)
     }
     for (const chatNode of chatNodes.slice(0, AUTOLIST_MAX_CHATS_TO_SCAN)) {
+      if (shouldStopScan()) break
       await tryCollectPaidChatCandidate(chatNode, { approuteOnly: true })
     }
 
@@ -388,6 +400,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
 
     const paidChatHandledChatIds = []
     for (const cand of paidChatCandidates) {
+      if (shouldStopScan()) break // остальных обработаем на следующем тике (watermark не сдвинут)
       const { chatNode, lm, d, chatId, currMsgId, dItemId, scopedMessages } = cand
       const candidateDealId = cand.candidateDealId || d?.id || null
       const dealEventKey = `deal:${candidateDealId || dItemId}`
@@ -608,7 +621,9 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     let automsgHandled = 0
     for (const scan of chatAutomessageScans) {
       if (!scan.handler) continue
+      if (shouldStopScan()) break
       for (const chatNode of chatsSlice) {
+        if (shouldStopScan()) break
         const chatId = chatNode?.id != null ? String(chatNode.id) : null
         const lm = chatNode?.lastMessage || null
         const currMsgId = lm?.id != null ? String(lm.id) : null
@@ -706,6 +721,18 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     }
     stepEnd({ status: automsgHandled > 0 ? 'ok' : 'idle', count: automsgHandled })
 
+    // Флоу-автовыдача (Clode/Supercell/Topup/GPT) приоритетна: при ЗАКРЫТОМ брейкере
+    // выполняем её всегда (даже если скан исчерпал бюджет тика), чтобы не задерживать
+    // доставку покупателю. При ОТКРЫТОМ брейкере (весь пул IP остыл) — пропускаем тик.
+    if (circuitOpen()) {
+      stepFlows.status = 'skip'
+      stepFlows.note = 'circuit open'
+      return {
+        statusCode: 200,
+        data: { ok: true, skipped: 'circuit_open', partial: true, steps },
+      }
+    }
+
     stepStart(stepFlows)
     if (supercellModuleEnabled) {
       await processActiveSupercellFlows({
@@ -740,6 +767,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetClodeFlowMap,
         processSingleClodeFlow,
+        shouldStop: circuitOpen,
       })
     }
 

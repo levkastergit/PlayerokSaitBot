@@ -163,15 +163,23 @@ function scheduleChatsSnapshotRefresh(userId, token, userAgent, opts = {}) {
   }, 0)
 }
 
-// Периодическая очистка устаревших записей из кэша
+// Периодическая очистка кэша лотов. ВАЖНО: истёкшую запись НЕ удаляем сразу —
+// держим её как last-good для отдачи при storm/брейкере/504 (помечаем stale).
+// Жёсткое выселение — только сильно протухшие (LOTS_STALE_HARD_EVICT_MS, 30 мин).
+const LOTS_STALE_HARD_EVICT_MS = Number(process.env.LOTS_STALE_HARD_EVICT_MS) || 30 * 60 * 1000
 setInterval(() => {
   const now = Date.now()
   for (const [token, cache] of lotsCache.entries()) {
-    if (cache.active && now >= cache.active.expiresAt) {
-      delete cache.active
-    }
-    if (cache.completed && now >= cache.completed.expiresAt) {
-      delete cache.completed
+    for (const side of ['active', 'completed']) {
+      const e = cache[side]
+      if (!e) continue
+      if (now >= e.expiresAt && !e.stale) {
+        e.stale = true
+        e.staleSince = now
+      }
+      if (e.stale && now - Number(e.staleSince || now) > LOTS_STALE_HARD_EVICT_MS) {
+        delete cache[side]
+      }
     }
     // Удаляем запись, если оба кэша пусты
     if (!cache.active && !cache.completed) {

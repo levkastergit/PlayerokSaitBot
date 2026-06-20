@@ -9,7 +9,7 @@ const {
   isOutboundRotateBindingValue,
 } = require('./playerokOutboundChannels')
 const { getPlayerokRequestUserId } = require('./playerokRequestContext')
-const { pickRotationIp } = require('./playerokOutboundRotation')
+const { pickRotationIp, areAllPoolIpsOnCooldown } = require('./playerokOutboundRotation')
 
 let bindingsResolver = null
 let rotationResolver = null
@@ -81,6 +81,35 @@ class PlayerokChannelDisabledError extends Error {
 function assertPlayerokChannelEnabled(channel) {
   if (isOutboundChannelDisabled(channel)) {
     throw new PlayerokChannelDisabledError(channel)
+  }
+}
+
+// Circuit breaker: весь пул исходящих IP в cooldown → запрос почти наверняка словит
+// 429. Быстро падаем НЕ-ретраиваемой 503 (без слов "429"/"rate limit", чтобы
+// isPlayerokRateLimitError вернул false и withRetry не повторял и не трогал лестницу).
+class PlayerokAllIpsCooldownError extends Error {
+  constructor(channel, retryAfterMs) {
+    const label = getOutboundChannelLabel(channel)
+    super(`Playerok временно недоступен: все исходящие IP на паузе после блокировок (канал «${label}»)`)
+    this.name = 'PlayerokAllIpsCooldownError'
+    this.code = 'PLAYEROK_CIRCUIT_OPEN'
+    this.channel = String(channel || 'default')
+    this.statusCode = 503
+    this.retryAfterMs = Number.isFinite(retryAfterMs) ? retryAfterMs : null
+    this.nonRetryable = true
+    this.soft = true
+  }
+}
+
+/** Весь пул ротации сейчас в cooldown? Для фоновых задач (autolist tick) — ранний
+ *  выход, чтобы не молотить обречёнными запросами. Канал не важен: пул общий. */
+function isOutboundCircuitOpen() {
+  try {
+    const rotation = loadRotationForCurrentUser()
+    const pool = listRotationPool(rotation && rotation.excludedIps)
+    return pool.length > 0 && areAllPoolIpsOnCooldown(pool)
+  } catch (_) {
+    return false
   }
 }
 
@@ -190,6 +219,8 @@ module.exports = {
   isOutboundChannelDisabled,
   assertPlayerokChannelEnabled,
   PlayerokChannelDisabledError,
+  PlayerokAllIpsCooldownError,
+  isOutboundCircuitOpen,
   getOutboundChannelLabel,
   isIpv4BoundLocally,
   listAvailableOutboundIpv4,

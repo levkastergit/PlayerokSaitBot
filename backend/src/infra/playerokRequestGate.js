@@ -2,6 +2,12 @@
 
 const { AsyncLocalStorage } = require('async_hooks')
 const { PLAYEROK_REQUEST_TIMEOUT_MS } = require('./playerokRequestTimeout')
+const { listRotationPool, loadRotationForCurrentUser } = require('./playerokOutboundIp')
+const {
+  areAllPoolIpsOnCooldown,
+  allowCircuitProbe,
+  earliestCooldownUntil,
+} = require('./playerokOutboundRotation')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -58,14 +64,75 @@ function shouldSkipPlayerokGate() {
 let gateChain = Promise.resolve()
 let lastStartTime = 0
 
+// Снимок пула ротации кэшируем на 3с: listRotationPool читает os.networkInterfaces() —
+// не дёргаем на каждом входе в гейт на 1-CPU боксе.
+let __poolSnapAt = 0
+let __poolSnap = []
+function poolSnapshot() {
+  const now = Date.now()
+  if (now - __poolSnapAt < 3000) return __poolSnap
+  try {
+    const rotation = loadRotationForCurrentUser()
+    __poolSnap = listRotationPool(rotation && rotation.excludedIps) || []
+  } catch (_) {
+    __poolSnap = []
+  }
+  __poolSnapAt = now
+  return __poolSnap
+}
+
+let __circuitOpen = false
+let __lastCircuitLogAt = 0
+function logCircuit(open, pool) {
+  const now = Date.now()
+  if (open === __circuitOpen && now - __lastCircuitLogAt < 30000) return
+  __lastCircuitLogAt = now
+  if (open) {
+    const until = earliestCooldownUntil(pool)
+    const leftMin = Number.isFinite(until) ? Math.round(Math.max(0, until - now) / 60000) : null
+    console.warn(
+      `[outbound-ip] CIRCUIT OPEN: все ${pool.length} IP в блоке — отдаём устаревшие данные` +
+        (leftMin != null ? `, ближайшее восстановление ~${leftMin} мин` : '')
+    )
+  } else if (__circuitOpen) {
+    console.warn('[outbound-ip] CIRCUIT CLOSED: появился живой IP, обычная работа')
+  }
+  __circuitOpen = open
+}
+
+function circuitOpenError() {
+  const e = new Error('Playerok временно недоступен: все исходящие IP на cooldown')
+  e.code = 'PLAYEROK_CIRCUIT_OPEN'
+  e.statusCode = 503
+  e.nonRetryable = true
+  e.soft = true
+  return e
+}
+
+// Брейкер: если весь пул IP в cooldown — быстро падаем (или пропускаем одну half-open
+// пробу), не занимая серийный гейт обречёнными запросами. Единый вызов allowCircuitProbe
+// на запрос (без двойного списания бюджета). Возвращает true, если запрос надо пропустить.
+function circuitAllowsRequest() {
+  const pool = poolSnapshot()
+  if (pool.length === 0 || !areAllPoolIpsOnCooldown(pool)) {
+    if (pool.length > 0) logCircuit(false, pool)
+    return true
+  }
+  if (allowCircuitProbe()) return true // half-open: пропускаем одну пробу
+  logCircuit(true, pool)
+  return false
+}
+
 /**
  * Глобальная очередь: один исходящий HTTP-запрос к Playerok за раз
  * и минимальный интервал между стартами соседних запросов.
  */
 function withPlayerokGate(fn) {
   if (shouldSkipPlayerokGate()) {
+    if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
     return withGateTimeout(fn)
   }
+  if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
   const run = gateChain.then(async () => {
     const now = Date.now()
     const wait = Math.max(0, MIN_GAP_MS - (now - lastStartTime))

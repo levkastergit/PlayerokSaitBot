@@ -34,6 +34,9 @@ async function handleCompletedLots({ payload, currentUserId, nowTs, deps }) {
     return { statusCode: 200, data: result }
   } catch (err) {
     const message = err && err.message ? String(err.message) : 'Не удалось загрузить завершённые лоты с Playerok'
+    if ((err && err.code === 'PLAYEROK_CIRCUIT_OPEN') || Number(err && err.statusCode) === 503) {
+      return { statusCode: 503, data: { error: message, circuitOpen: true, soft: true } }
+    }
     return { statusCode: 500, data: { error: message } }
   }
 }
