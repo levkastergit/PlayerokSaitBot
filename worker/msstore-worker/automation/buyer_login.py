@@ -119,30 +119,35 @@ def who_am_i(driver):
 
 
 def detect_challenge(driver):
-    """Грубая классификация того, что на экране, если вход ещё не прошёл: '2fa' | 'captcha' | None."""
+    """Классификация экрана, если вход ещё не прошёл:
+    '2fa_push' (апрув с телефона — ЖДЁМ) | '2fa_code' (код — ссылка покупателю) | 'captcha' | None."""
     try:
         body = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
     except WebDriverException:
         body = ""
-    # 2FA / код
-    twofa_markers = ["2-step verification", "two-step", "verification code", "enter the code",
-                     "authenticator", "проверьте", "код подтверждения", "двухэтап"]
-    if any(m in body for m in twofa_markers):
-        # уточним тип по тексту
+    # Push-апрув 2SV: кода нет, аккаунт подтверждает в мобильном приложении.
+    push_markers = ["approve or reject", "open the roblox app", "logged-in mobile",
+                    "approve this attempt", "подтвердите", "одобрить", "в приложении roblox"]
+    is_2sv = any(m in body for m in ("2-step verification", "two-step", "двухэтап", "2sv"))
+    if is_2sv and any(m in body for m in push_markers):
+        return ("2fa_push", None)
+    # Код-2SV: вводится 6-значный код (email/authenticator/sms).
+    code_markers = ["verification code", "enter the code", "код подтверждения", "введите код", "6-digit"]
+    if any(m in body for m in code_markers) or is_2sv:
         media = "authenticator"
         if "email" in body or "почт" in body:
             media = "email"
-        elif "text" in body or "sms" in body or "phone" in body:
+        elif "text" in body or "sms" in body or "phone number" in body:
             media = "sms"
-        return ("2fa", media)
-    # интерактивная капча (видимый iframe Arkose)
+        return ("2fa_code", media)
+    # Интерактивная капча (видимый iframe Arkose).
     try:
         for fr in driver.find_elements(By.CSS_SELECTOR, "iframe[src*='arkoselabs'], iframe[id*='arkose'], iframe[data-e2e*='enforcement']"):
             if fr.is_displayed() and fr.size.get("height", 0) > 60:
                 return ("captcha", None)
     except WebDriverException:
         pass
-    if "enter the code" in body or "puzzle" in body or "verify you are human" in body:
+    if "puzzle" in body or "verify you are human" in body or "solve the" in body:
         return ("captcha", None)
     return (None, None)
 
@@ -179,7 +184,7 @@ def submit_login(driver, username, password):
     return True
 
 
-def run(username, password, headless, timeout):
+def run(username, password, headless, timeout, wait=False):
     out = {"ok": False, "needs": None, "error": None}
     profile = tempfile.mkdtemp(prefix="rbx-login-")
     driver = None
@@ -195,7 +200,7 @@ def run(username, password, headless, timeout):
         log("Логин отправлен. Жду авторизацию до %ss (браузер сам решает PoW/прозрачную капчу)…" % timeout)
 
         deadline = time.time() + timeout
-        last_challenge = (None, None)
+        push_logged = False
         while time.time() < deadline:
             user = who_am_i(driver)
             if user:
@@ -210,22 +215,31 @@ def run(username, password, headless, timeout):
                     pass
                 log("Вошёл как @%s (id=%s)" % (user.get("name"), user.get("id")))
                 return out
-            last_challenge = detect_challenge(driver)
-            if last_challenge[0] == "2fa":
-                out["needs"] = "2fa"
-                out["mediaType"] = last_challenge[1]
+            ch, media = detect_challenge(driver)
+            if not wait and ch == "2fa_code":
+                out["needs"] = "2fa"; out["mediaType"] = media
                 out["error"] = "Требуется 2FA-код от покупателя."
                 return out
+            if not wait and ch == "captcha":
+                out["needs"] = "captcha"
+                out["error"] = "Нужна интерактивная капча (решает покупатель по ссылке)."
+                return out
+            if wait and ch and not push_logged:
+                push_logged = True
+                log("wait-режим: заверши challenge (%s) в окне — жду вход и заберу cookie…" % ch)
+            if ch == "2fa_push" and not push_logged:
+                push_logged = True
+                log("2SV push: жду, пока покупатель подтвердит вход в мобильном приложении Roblox…")
             time.sleep(3)
 
         # таймаут — классифицируем, почему не вошли
         ch, media = detect_challenge(driver)
         if ch == "captcha":
-            out["needs"] = "captcha"
-            out["error"] = "Нужна интерактивная капча (покупатель решает по ссылке)."
-        elif ch == "2fa":
-            out["needs"] = "2fa"; out["mediaType"] = media
-            out["error"] = "Требуется 2FA-код."
+            out["needs"] = "captcha"; out["error"] = "Нужна интерактивная капча."
+        elif ch == "2fa_code":
+            out["needs"] = "2fa"; out["mediaType"] = media; out["error"] = "Требуется 2FA-код."
+        elif ch == "2fa_push":
+            out["needs"] = "2fa_push"; out["error"] = "Не дождался push-подтверждения с телефона за %ss." % timeout
         else:
             out["error"] = "Не удалось войти за %ss (неверные данные или непройденная капча)." % timeout
         return out
@@ -249,13 +263,14 @@ def main():
     # (проверено на @levkaster). Воркер — выделенная Windows-машина, видимое окно там нормально.
     ap.add_argument("--headless", action="store_true", help="headless (НЕ рекомендуется: Arkose детектит, вход не проходит)")
     ap.add_argument("--timeout", type=int, default=75, help="сек ожидания авторизации")
+    ap.add_argument("--wait", action="store_true", help="не выходить на challenge — ждать, пока его завершат в окне (для теста/оператора)")
     args = ap.parse_args()
     username = (args.username or os.environ.get("ROBLOX_USER", "")).strip()
     password = args.password if args.password is not None else os.environ.get("ROBLOX_PASS", "")
     if not username or not password:
         print(json.dumps({"ok": False, "error": "Нужны --username/--password или env ROBLOX_USER/ROBLOX_PASS"}, ensure_ascii=False))
         return 2
-    res = run(username, password, headless=args.headless, timeout=args.timeout)
+    res = run(username, password, headless=args.headless, timeout=args.timeout, wait=args.wait)
     print(json.dumps(res, ensure_ascii=False))
     return 0 if res.get("ok") else 1
 
