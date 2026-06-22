@@ -19,13 +19,37 @@
 // часть помечена TODO «подтвердить живым перехватом». Капча решается через captchaSolver (Фаза 3).
 
 const https = require('https')
+const crypto = require('crypto')
 const { solveLoginFunCaptcha, ROBLOX_LOGIN_ARKOSE_PUBLIC_KEY } = require('./captchaSolver')
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 const TIMEOUT_MS = 20000
 
-function request({ method = 'GET', url, headers = {}, body, cookie }) {
+// Cookie-jar: браузер тащит GuestData/RBXEventTrackerV2 через весь флоу, и Generic Challenge
+// привязан к сессионной cookie — без неё финальный /v2/login даёт «Challenge failed to authorize».
+// jar — простой объект {name: value}; передаётся в request() и обновляется из Set-Cookie.
+function jarToHeader(jar) {
+  if (!jar) return null
+  const keys = Object.keys(jar)
+  return keys.length ? keys.map((k) => `${k}=${jar[k]}`).join('; ') : null
+}
+function jarUpdate(jar, setCookie) {
+  if (!jar || !setCookie) return
+  const arr = Array.isArray(setCookie) ? setCookie : [setCookie]
+  for (const c of arr) {
+    const pair = String(c).split(';')[0]
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const name = pair.slice(0, eq).trim()
+    const value = pair.slice(eq + 1).trim()
+    if (!name) continue
+    if (value === 'DELETE' || value === '') delete jar[name]
+    else jar[name] = value
+  }
+}
+
+function request({ method = 'GET', url, headers = {}, body, cookie, jar }) {
   return new Promise((resolve, reject) => {
     let u
     try {
@@ -36,7 +60,8 @@ function request({ method = 'GET', url, headers = {}, body, cookie }) {
     }
     const payload = body == null ? null : typeof body === 'string' ? body : JSON.stringify(body)
     const h = { 'User-Agent': DEFAULT_UA, Accept: 'application/json', ...headers }
-    if (cookie) h.Cookie = cookie
+    const cookieHeader = cookie || jarToHeader(jar)
+    if (cookieHeader) h.Cookie = cookieHeader
     if (payload != null) {
       h['Content-Type'] = 'application/json'
       h['Content-Length'] = Buffer.byteLength(payload)
@@ -47,6 +72,7 @@ function request({ method = 'GET', url, headers = {}, body, cookie }) {
         const chunks = []
         res.on('data', (c) => chunks.push(c))
         res.on('end', () => {
+          if (jar) jarUpdate(jar, res.headers && res.headers['set-cookie'])
           const text = Buffer.concat(chunks).toString('utf8')
           let json = null
           try {
@@ -83,11 +109,46 @@ function decodeChallengeMeta(b64) {
   }
 }
 
-async function getCsrfToken() {
+async function getCsrfToken(jar) {
   // /v2/logout без сессии теперь отдаёт 401 без токена. /v2/login без тела → 403 + x-csrf-token
   // (проверка CSRF идёт ДО проверки логина, так что это не попытка входа и не триггерит лимиты).
-  const res = await request({ method: 'POST', url: 'https://auth.roblox.com/v2/login', body: {} })
+  const res = await request({ method: 'POST', url: 'https://auth.roblox.com/v2/login', body: {}, jar })
   return res.headers['x-csrf-token'] || res.headers['X-CSRF-TOKEN'] || null
+}
+
+// Secure Authentication Intent (HBA / Bound Auth Token). Снято живым перехватом:
+//   GET hba-service/v1/getServerNonce -> nonce (JSON-строка)
+//   saiSignature = ECDSA-P256( `${clientPublicKey}|${clientEpochTimestamp}|${serverNonce}` ), base64 raw r||s.
+// Сейчас enforcement у Roblox выключен (intent опционален), но шлём — браузер всегда шлёт, и это
+// страхует от включения проверки. На неудаче возвращаем null и логинимся без intent.
+async function getServerNonce(jar) {
+  const res = await request({ method: 'GET', url: 'https://apis.roblox.com/hba-service/v1/getServerNonce', jar })
+  if (res.status === 200 && typeof res.json === 'string' && res.json) return res.json
+  return null
+}
+
+async function buildSecureAuthIntent(jar) {
+  try {
+    const serverNonce = await getServerNonce(jar)
+    if (!serverNonce) return null
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+    const clientPublicKey = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+    const clientEpochTimestamp = Math.floor(Date.now() / 1000)
+    const msg = `${clientPublicKey}|${clientEpochTimestamp}|${serverNonce}`
+    const saiSignature = crypto
+      .sign('SHA256', Buffer.from(msg, 'utf8'), { key: privateKey, dsaEncoding: 'ieee-p1363' })
+      .toString('base64')
+    return { clientPublicKey, clientEpochTimestamp, serverNonce, saiSignature }
+  } catch (_) {
+    return null
+  }
+}
+
+// Тело /v2/login с опциональным secureAuthenticationIntent.
+function loginBody({ username, password, sai }) {
+  const b = { ctype: 'Username', cvalue: String(username), password: String(password) }
+  if (sai) b.secureAuthenticationIntent = sai
+  return b
 }
 
 // Разбор ответа /v2/login в унифицированный результат.
@@ -151,6 +212,147 @@ function interpretLoginResponse(res, ctx) {
   return { outcome: 'error', error: errMsg }
 }
 
+const POW_PUZZLE_URL = 'https://apis.roblox.com/proof-of-work-service/v1/pow-puzzle'
+
+// Решить VDF-головоломку Roblox PoW (puzzleType "1"): ответ = A^(2^T) mod N,
+// считается T последовательными возведениями в квадрат — это «задержка» (не параллелится).
+// Протокол снят живым перехватом: GET ?sessionID -> {artifacts:"{N,A,T}"};
+// POST {sessionID,solution} -> {answerCorrect, redemptionToken}.
+function solvePowPuzzle(nStr, aStr, t) {
+  const N = BigInt(nStr)
+  let x = BigInt(aStr) % N
+  for (let i = 0; i < t; i++) x = (x * x) % N
+  return x.toString()
+}
+
+async function fetchAndSolvePow({ csrf, sessionId, jar }) {
+  const headers = { 'X-CSRF-TOKEN': csrf }
+  const pz = await request({
+    method: 'GET',
+    url: `${POW_PUZZLE_URL}?sessionID=${encodeURIComponent(sessionId)}`,
+    headers,
+    jar,
+  })
+  if (pz.status !== 200 || !pz.json || pz.json.artifacts == null) {
+    return { ok: false, error: `PoW: не получил головоломку (HTTP ${pz.status})` }
+  }
+  if (pz.json.puzzleType != null && String(pz.json.puzzleType) !== '1') {
+    return { ok: false, error: `PoW: неизвестный puzzleType ${pz.json.puzzleType}` }
+  }
+  let art = null
+  try {
+    art = JSON.parse(pz.json.artifacts)
+  } catch (_) {
+    art = null
+  }
+  if (!art || art.N == null || art.A == null || art.T == null) {
+    return { ok: false, error: 'PoW: не разобрал artifacts {N,A,T}' }
+  }
+  let solution
+  try {
+    solution = solvePowPuzzle(String(art.N), String(art.A), Number(art.T))
+  } catch (e) {
+    return { ok: false, error: `PoW: ошибка вычисления (${e && e.message ? e.message : e})` }
+  }
+  const ans = await request({
+    method: 'POST',
+    url: POW_PUZZLE_URL,
+    headers,
+    body: { sessionID: sessionId, solution },
+    jar,
+  })
+  if (!ans.json || ans.json.answerCorrect !== true || !ans.json.redemptionToken) {
+    const m = (ans.json && ans.json.message) || `HTTP ${ans.status}`
+    return { ok: false, error: `PoW: ответ не принят (${m})` }
+  }
+  return { ok: true, redemptionToken: ans.json.redemptionToken }
+}
+
+// Довести proof-of-work: решить PoW, отдать redemptionToken в challenge/continue, шагнуть дальше.
+// Generic Challenge цепляет следом captcha (Arkose) или 2FA — тогда возвращаем соответствующий
+// outcome, и обычные ветки startBuyerLogin их подхватывают. Иначе — повтор /v2/login до cookie.
+async function continueProofOfWork({ csrf, sai, jar, challengeId, metaB64, username, password }) {
+  let metaJson = null
+  try {
+    metaJson = Buffer.from(String(metaB64 || ''), 'base64').toString('utf8')
+  } catch (_) {
+    metaJson = null
+  }
+  let meta = null
+  try {
+    meta = metaJson ? JSON.parse(metaJson) : null
+  } catch (_) {
+    meta = null
+  }
+  const sessionId = meta && meta.sessionId
+  if (!sessionId) return { outcome: 'error', error: 'PoW: нет sessionId в метаданных' }
+
+  const solved = await fetchAndSolvePow({ csrf, sessionId, jar })
+  if (!solved.ok) return { outcome: 'error', error: solved.error }
+
+  // Браузер шлёт в PoW-continue ТОЛЬКО {redemptionToken, sessionId} (снято живьём).
+  const powMeta = JSON.stringify({ redemptionToken: solved.redemptionToken, sessionId })
+  const cont = await request({
+    method: 'POST',
+    url: 'https://apis.roblox.com/challenge/v1/continue',
+    headers: { 'X-CSRF-TOKEN': csrf },
+    body: { challengeId, challengeType: 'proofofwork', challengeMetadata: powMeta },
+    jar,
+  })
+
+  // Следующий шаг Generic Challenge приходит прямо в ответе continue.
+  const nextType = cont.json && cont.json.challengeType
+  const nextMetaStr = cont.json && cont.json.challengeMetadata
+  const nextChallengeId = (cont.json && cont.json.challengeId) || challengeId
+  if (nextType === 'captcha' && nextMetaStr) {
+    let cm = {}
+    try {
+      cm = JSON.parse(nextMetaStr)
+    } catch (_) {
+      cm = {}
+    }
+    return {
+      outcome: 'captcha',
+      challengeId: nextChallengeId,
+      meta: cm,
+      metaB64: Buffer.from(nextMetaStr, 'utf8').toString('base64'),
+      ctx: { csrf, sai, jar },
+    }
+  }
+  if (/twostep/i.test(nextType || '') && nextMetaStr) {
+    let cm = {}
+    try {
+      cm = JSON.parse(nextMetaStr)
+    } catch (_) {
+      cm = {}
+    }
+    return {
+      outcome: '2fa',
+      challengeId: cm.challengeId || nextChallengeId,
+      headerChallengeId: nextChallengeId,
+      userId: cm.userId || null,
+      mediaType: cm.mediaType || 'authenticator',
+      metaB64: Buffer.from(nextMetaStr, 'utf8').toString('base64'),
+      ctx: { csrf, sai, jar },
+    }
+  }
+
+  // Иначе — повтор логина с заголовками PoW-челленджа.
+  const retry = await request({
+    method: 'POST',
+    url: 'https://auth.roblox.com/v2/login',
+    headers: {
+      'X-CSRF-TOKEN': csrf,
+      'Rblx-Challenge-Id': challengeId,
+      'Rblx-Challenge-Type': 'proofofwork',
+      'Rblx-Challenge-Metadata': Buffer.from(powMeta, 'utf8').toString('base64'),
+    },
+    body: loginBody({ username, password, sai }),
+    jar,
+  })
+  return interpretLoginResponse(retry, { csrf, sai })
+}
+
 /**
  * Начать логин покупателя. Возвращает один из исходов:
  *   {outcome:'ok', cookie, user}
@@ -160,18 +362,42 @@ function interpretLoginResponse(res, ctx) {
  */
 async function startBuyerLogin({ username, password, captcha } = {}) {
   if (!username || !password) return { outcome: 'error', error: 'Нужны логин и пароль покупателя' }
-  const csrf = await getCsrfToken()
+  // Один cookie-jar на весь флоу (как браузер): GuestData/RBXEventTrackerV2 и т.п. нужны, чтобы
+  // Generic Challenge авторизовался на финальном /v2/login.
+  const jar = {}
+  // Прогрев cookie страницей логина (как браузер делает GET перед входом) — не /v2/login, лимит не трогает.
+  await request({ method: 'GET', url: 'https://www.roblox.com/Login', jar }).catch(() => {})
+  const csrf = await getCsrfToken(jar)
   if (!csrf) return { outcome: 'error', error: 'Не удалось получить CSRF-токен' }
+
+  // Secure Authentication Intent — браузер всегда шлёт его в теле логина (HBA). Генерим один раз
+  // и протаскиваем через весь флоу (challenge/continue + повторы /v2/login).
+  const sai = await buildSecureAuthIntent(jar)
 
   const baseHeaders = { 'X-CSRF-TOKEN': csrf }
   let res = await request({
     method: 'POST',
     url: 'https://auth.roblox.com/v2/login',
     headers: baseHeaders,
-    body: { ctype: 'Username', cvalue: String(username), password: String(password) },
+    body: loginBody({ username, password, sai }),
+    jar,
   })
 
-  let result = interpretLoginResponse(res, { csrf })
+  let result = interpretLoginResponse(res, { csrf, sai })
+
+  // Generic Challenge начинается с proof-of-work — решаем его сами и шагаем дальше
+  // (обычно следом captcha, реже сразу cookie/2FA).
+  if (result.outcome === 'proofofwork') {
+    result = await continueProofOfWork({
+      csrf,
+      sai,
+      jar,
+      challengeId: result.challengeId,
+      metaB64: result.metaB64,
+      username,
+      password,
+    })
+  }
 
   if (result.outcome === 'captcha') {
     const blob =
@@ -189,9 +415,10 @@ async function startBuyerLogin({ username, password, captcha } = {}) {
       if (solved.ok) {
         return continueWithCaptchaToken({
           csrf,
+          sai,
+          jar,
           challengeId: result.challengeId,
           unifiedCaptchaId,
-          metaB64: result.metaB64,
           token: solved.token,
           username,
           password,
@@ -209,7 +436,7 @@ async function startBuyerLogin({ username, password, captcha } = {}) {
       challengeId: result.challengeId,
       unifiedCaptchaId: unifiedCaptchaId || null,
       metaB64: result.metaB64,
-      ctx: { csrf },
+      ctx: { csrf, sai, jar },
       username,
       password,
     }
@@ -219,18 +446,18 @@ async function startBuyerLogin({ username, password, captcha } = {}) {
 }
 
 // Довести логин после получения captcha-токена: challenge/continue + повтор /v2/login.
-// Результат — тот же унифицированный исход (может быть 'ok' / '2fa' / 'error').
-async function continueWithCaptchaToken({ csrf, challengeId, unifiedCaptchaId, metaB64, token, username, password }) {
+// Снято живьём: continue с {unifiedCaptchaId, captchaToken, actionType}; повтор /v2/login несёт
+// ТО ЖЕ в Rblx-Challenge-Metadata (base64), а Rblx-Challenge-Type остаётся 'proofofwork'
+// (корневой тип Generic Challenge), плюс secureAuthenticationIntent в теле.
+async function continueWithCaptchaToken({ csrf, sai, jar, challengeId, unifiedCaptchaId, token, username, password }) {
   const baseHeaders = { 'X-CSRF-TOKEN': csrf }
+  const solvedMeta = JSON.stringify({ unifiedCaptchaId, captchaToken: token, actionType: 'Login' })
   await request({
     method: 'POST',
     url: 'https://apis.roblox.com/challenge/v1/continue',
     headers: baseHeaders,
-    body: {
-      challengeId,
-      challengeType: 'captcha',
-      challengeMetadata: JSON.stringify({ unifiedCaptchaId, captchaToken: token, actionType: 'Login' }),
-    },
+    body: { challengeId, challengeType: 'captcha', challengeMetadata: solvedMeta },
+    jar,
   })
   const res = await request({
     method: 'POST',
@@ -238,10 +465,11 @@ async function continueWithCaptchaToken({ csrf, challengeId, unifiedCaptchaId, m
     headers: {
       ...baseHeaders,
       'Rblx-Challenge-Id': challengeId,
-      'Rblx-Challenge-Type': 'captcha',
-      'Rblx-Challenge-Metadata': metaB64,
+      'Rblx-Challenge-Type': 'proofofwork',
+      'Rblx-Challenge-Metadata': Buffer.from(solvedMeta, 'utf8').toString('base64'),
     },
-    body: { ctype: 'Username', cvalue: String(username), password: String(password) },
+    body: loginBody({ username, password, sai }),
+    jar,
   })
   return interpretLoginResponse(res, { csrf })
 }
@@ -254,12 +482,14 @@ async function continueWithCaptchaToken({ csrf, challengeId, unifiedCaptchaId, m
 async function completeBuyerCaptcha({ state, token }) {
   if (!state) return { outcome: 'error', error: 'Нет состояния капчи' }
   if (!token) return { outcome: 'error', error: 'Нет токена капчи' }
-  const csrf = (state.ctx && state.ctx.csrf) || (await getCsrfToken())
+  const jar = (state.ctx && state.ctx.jar) || {}
+  const csrf = (state.ctx && state.ctx.csrf) || (await getCsrfToken(jar))
   return continueWithCaptchaToken({
     csrf,
+    sai: state.ctx && state.ctx.sai,
+    jar,
     challengeId: state.challengeId,
     unifiedCaptchaId: state.unifiedCaptchaId,
-    metaB64: state.metaB64,
     token,
     username: state.username,
     password: state.password,
@@ -274,7 +504,9 @@ async function completeBuyerCaptcha({ state, token }) {
 async function completeBuyer2fa({ state, code }) {
   if (!state) return { outcome: 'error', error: 'Нет состояния 2FA' }
   if (!code) return { outcome: 'error', error: 'Нет кода 2FA' }
-  const csrf = (state.ctx && state.ctx.csrf) || (await getCsrfToken())
+  const jar = (state.ctx && state.ctx.jar) || {}
+  const csrf = (state.ctx && state.ctx.csrf) || (await getCsrfToken(jar))
+  const sai = state.ctx && state.ctx.sai
   const userId = state.userId
   const mediaType = state.mediaType || 'authenticator'
   if (!userId) return { outcome: 'error', error: 'Неизвестен userId для 2FA' }
@@ -287,6 +519,7 @@ async function completeBuyer2fa({ state, code }) {
     url: `https://twostepverification.roblox.com/v1/users/${Number(userId)}/challenges/${mediaType}/verify`,
     headers,
     body: { challengeId: state.challengeId || state.ticket, actionType: 'Login', code: String(code) },
+    jar,
   })
   const verificationToken =
     verifyRes.json && (verifyRes.json.verificationToken || verifyRes.json.token)
@@ -304,13 +537,12 @@ async function completeBuyer2fa({ state, code }) {
       url: 'https://auth.roblox.com/v2/login',
       headers,
       body: {
-        ctype: 'Username',
-        cvalue: String(state.username || ''),
-        password: String(state.password || ''),
+        ...loginBody({ username: state.username || '', password: state.password || '', sai }),
         challengeId: state.ticket,
         securityQuestionSessionId: state.ticket,
         twoStepVerificationChallenge: { verificationToken, rememberDevice: true },
       },
+      jar,
     })
     return interpretLoginResponse(res, { csrf })
   }
@@ -330,6 +562,7 @@ async function completeBuyer2fa({ state, code }) {
         challengeId: state.challengeId,
       }),
     },
+    jar,
   })
   const res = await request({
     method: 'POST',
@@ -340,7 +573,8 @@ async function completeBuyer2fa({ state, code }) {
       'Rblx-Challenge-Type': 'twostepverification',
       'Rblx-Challenge-Metadata': state.metaB64 || '',
     },
-    body: { ctype: 'Username', cvalue: String(state.username || ''), password: String(state.password || '') },
+    body: loginBody({ username: state.username || '', password: state.password || '', sai }),
+    jar,
   })
   return interpretLoginResponse(res, { csrf })
 }

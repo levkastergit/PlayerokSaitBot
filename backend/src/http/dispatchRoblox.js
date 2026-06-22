@@ -84,7 +84,7 @@ async function dispatchRoblox({ req, res, pathname, currentUserId, deps }) {
     if (req.method === 'POST') {
       const raw = await readRawBody(req)
       const body = parseFormOrJson(raw)
-      const result = await handleTwofaSubmit({ token, code: body.code, deps })
+      const result = await handleTwofaSubmit({ token, code: body.code, resend: body.resend, deps })
       return sendHtml(res, result.statusCode, result.html)
     }
   }

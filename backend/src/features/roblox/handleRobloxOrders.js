@@ -5,8 +5,11 @@ const loginService = require('../../integrations/roblox/loginServiceClient')
 
 // Токен заказа (twofa_token) ↔ живая сессия браузера в login_service (sid). Только в памяти:
 // сессия короткоживущая, login_service сам её закрывает по TTL.
-const loginSessions = new Map() // token -> { sid, userId, orderId, type, mediaType, blob, publicKey, createdAt }
+const loginSessions = new Map() // token -> { sid, userId, orderId, type, mediaType, blob, publicKey, createdAt, username, password, attemptAt }
 const SESSION_TTL_MS = 15 * 60 * 1000
+// Через сколько 2FA-попытку считаем истёкшей: код/пуш Roblox живёт недолго. После этого страница
+// показывает «истекло» и кнопку «Запросить повторно» (пере-логин по тем же кредам, пока жива сессия).
+const ATTEMPT_TTL_MS = 4 * 60 * 1000
 
 function pruneSessions() {
   const now = Date.now()
@@ -95,7 +98,7 @@ async function startLoginForOrder({ username, password, order, currentUserId, de
 
   if (res.status === '2fa' && res.sid) {
     const token = robloxOrdersRepo.setTwofaPending(currentUserId, order.id, res.mediaType || 'authenticator')
-    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: '2fa', mediaType: res.mediaType, createdAt: Date.now() })
+    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: '2fa', mediaType: res.mediaType, username, password, createdAt: Date.now(), attemptAt: Date.now() })
     robloxOrdersRepo.setState(currentUserId, order.id, {
       status: 'awaiting_2fa', phase: 'awaiting_2fa',
       logMessage: `Требуется 2FA (${res.mediaType || 'код'}). Ссылка покупателю сформирована.`,
@@ -105,7 +108,7 @@ async function startLoginForOrder({ username, password, order, currentUserId, de
 
   if (res.status === '2fa_push' && res.sid) {
     const token = robloxOrdersRepo.setTwofaPending(currentUserId, order.id, 'push')
-    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'push', createdAt: Date.now() })
+    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'push', mediaType: 'push', username, password, createdAt: Date.now(), attemptAt: Date.now() })
     robloxOrdersRepo.setState(currentUserId, order.id, {
       status: 'awaiting_2fa', phase: 'awaiting_2fa',
       logMessage: 'Требуется подтверждение входа в приложении Roblox (апрув с телефона).',
@@ -115,7 +118,7 @@ async function startLoginForOrder({ username, password, order, currentUserId, de
 
   if (res.status === 'captcha' && res.sid) {
     const token = robloxOrdersRepo.setCaptchaPending(currentUserId, order.id)
-    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'captcha', blob: res.blob, publicKey: res.publicKey, createdAt: Date.now() })
+    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'captcha', blob: res.blob, publicKey: res.publicKey, username, password, createdAt: Date.now(), attemptAt: Date.now() })
     robloxOrdersRepo.setState(currentUserId, order.id, {
       status: 'awaiting_captcha', phase: 'awaiting_captcha',
       logMessage: 'Требуется капча. Ссылка покупателю сформирована.',
@@ -125,7 +128,7 @@ async function startLoginForOrder({ username, password, order, currentUserId, de
 
   if (res.status === 'pending' && res.sid) {
     const token = robloxOrdersRepo.setTwofaPending(currentUserId, order.id, 'pending')
-    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'pending', createdAt: Date.now() })
+    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'pending', username, password, createdAt: Date.now(), attemptAt: Date.now() })
     robloxOrdersRepo.setState(currentUserId, order.id, {
       status: 'awaiting_2fa', phase: 'awaiting_login',
       logMessage: 'Вход выполняется (login_service: pending).',
@@ -217,23 +220,42 @@ async function handleOrderLogin({ payload, currentUserId, deps }) {
 }
 
 // ── Hosted-страница 2FA (отдаётся покупателю, без сессии сайта) ───────────────
-function renderTwofaPage(token, { error, done } = {}) {
+function renderTwofaPage(token, { error, done, expired, canResend, expiresInSec } = {}) {
   const safeToken = String(token || '').replace(/[^a-f0-9]/gi, '')
-  const msg = done
-    ? '<p class="ok">✓ Вход выполнен. Можете закрыть страницу.</p>'
-    : error
-      ? `<p class="err">${String(error).replace(/</g, '&lt;')}</p>`
-      : ''
-  const form = done
-    ? ''
-    : `<form method="POST" action="/roblox/2fa/${safeToken}">
-         <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
-                placeholder="6-значный код" pattern="[0-9]*" autofocus />
-         <button type="submit">Подтвердить</button>
-       </form>
-       <form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px">
-         <button type="submit" class="sec">Я подтвердил в приложении</button>
+  const resendForm = `<form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px">
+         <input type="hidden" name="resend" value="1" />
+         <button type="submit">Запросить код повторно</button>
        </form>`
+  const expiredBlock = `<p class="err">⏳ Срок действия истёк.${canResend ? ' Запросите код заново.' : ' Попросите продавца прислать новую ссылку.'}</p>${canResend ? resendForm : ''}`
+
+  let lead = ''
+  let inner = ''
+  if (done) {
+    inner = '<p class="ok">✓ Вход выполнен. Можете закрыть страницу.</p>'
+  } else if (expired) {
+    inner = expiredBlock
+  } else {
+    lead = `<p class="lead">Введите 6-значный код двухфакторной аутентификации (приложение-аутентификатор, SMS или e-mail).
+      Если у вас подтверждение в приложении Roblox — одобрите вход на телефоне и нажмите «Я подтвердил».</p>`
+    const msg = error ? `<p class="err">${String(error).replace(/</g, '&lt;')}</p>` : ''
+    const liveForm = `<div id="liveForm">
+         <form method="POST" action="/roblox/2fa/${safeToken}">
+           <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+                  placeholder="6-значный код" pattern="[0-9]*" autofocus />
+           <button type="submit">Подтвердить</button>
+         </form>
+         <form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px">
+           <button type="submit" class="sec">Я подтвердил в приложении</button>
+         </form>
+       </div>
+       <div id="expiredBlock" style="display:none">${expiredBlock}</div>`
+    const ttl = Number(expiresInSec) > 0 ? Math.floor(Number(expiresInSec)) : 0
+    const countdown = ttl > 0
+      ? `<script>setTimeout(function(){var f=document.getElementById('liveForm'),e=document.getElementById('expiredBlock');if(f)f.style.display='none';if(e)e.style.display='block';},${ttl}*1000);</script>`
+      : ''
+    inner = `${msg}${liveForm}${countdown}`
+  }
+
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Подтверждение Roblox</title>
@@ -252,30 +274,70 @@ function renderTwofaPage(token, { error, done } = {}) {
     </style></head><body>
     <div class="card">
       <h1>Подтверждение входа Roblox</h1>
-      <p class="lead">Введите 6-значный код двухфакторной аутентификации (приложение-аутентификатор, SMS или e-mail).
-      Если у вас подтверждение в приложении Roblox — одобрите вход на телефоне и нажмите «Я подтвердил».</p>
-      ${msg}${form}
+      ${lead}${inner}
     </div></body></html>`
 }
 
 // GET /roblox/2fa/:token — отдать страницу.
 async function handleTwofaPage({ token, deps }) {
   const { robloxOrdersRepo } = deps
+  pruneSessions()
   const order = robloxOrdersRepo.getOrderByTwofaToken(token)
   if (!order || order.status !== 'awaiting_2fa') {
     return { statusCode: 404, html: renderTwofaPage(token, { error: 'Ссылка недействительна или вход уже выполнен.' }) }
   }
-  return { statusCode: 200, html: renderTwofaPage(token) }
+  const sess = loginSessions.get(token)
+  if (!sess) {
+    // Сессия браузера выметена по TTL — пере-логин кредами уже невозможен, нужна новая ссылка.
+    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false }) }
+  }
+  const elapsed = Date.now() - Number(sess.attemptAt || sess.createdAt || 0)
+  if (elapsed > ATTEMPT_TTL_MS) {
+    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: !!sess.password }) }
+  }
+  const expiresInSec = Math.max(10, Math.round((ATTEMPT_TTL_MS - elapsed) / 1000))
+  return { statusCode: 200, html: renderTwofaPage(token, { expiresInSec, canResend: !!sess.password }) }
 }
 
-// POST /roblox/2fa/:token — код (или пустой = опрос для push) → довести вход через login_service.
-async function handleTwofaSubmit({ token, code, deps }) {
+// Пере-логин теми же кредами, переиспользуя тот же token (ссылка покупателю не меняется).
+async function reloginForToken({ token, order, sess, deps }) {
+  try { if (sess.sid) await loginService.close(sess.sid) } catch (_) {}
+  const r = await loginService.start(sess.username, sess.password, 30)
+  if (r.status === 'ok' && r.roblosecurity) {
+    try {
+      await finalizeBuyerSession({ userId: sess.userId, order, cookie: r.roblosecurity, fallbackUser: r.account, deps })
+    } catch (err) {
+      return { statusCode: 502, html: renderTwofaPage(token, { error: 'Сессия получена, но не сохранена: ' + (err && err.message ? err.message : '') }) }
+    }
+    loginSessions.delete(token)
+    return { statusCode: 200, html: renderTwofaPage(token, { done: true }) }
+  }
+  if ((r.status === '2fa' || r.status === '2fa_push' || r.status === 'pending') && r.sid) {
+    const mediaType = r.mediaType || (r.status === '2fa_push' ? 'push' : sess.mediaType) || 'authenticator'
+    loginSessions.set(token, {
+      sid: r.sid, userId: sess.userId, orderId: order.id, type: r.status, mediaType,
+      username: sess.username, password: sess.password, createdAt: Date.now(), attemptAt: Date.now(),
+    })
+    deps.robloxOrdersRepo.setState(sess.userId, order.id, {
+      status: 'awaiting_2fa', phase: 'awaiting_2fa', logMessage: 'Покупатель запросил код повторно.',
+    })
+    return { statusCode: 200, html: renderTwofaPage(token, { expiresInSec: Math.round(ATTEMPT_TTL_MS / 1000), canResend: true }) }
+  }
+  return { statusCode: 200, html: renderTwofaPage(token, { error: (r && r.error) || 'Не удалось перезапросить код. Попросите у продавца новую ссылку.' }) }
+}
+
+// POST /roblox/2fa/:token — код / пустой (опрос push) / resend=1 (запросить повторно).
+async function handleTwofaSubmit({ token, code, resend, deps }) {
   const { robloxOrdersRepo } = deps
   pruneSessions()
   const order = robloxOrdersRepo.getOrderByTwofaToken(token)
   const sess = loginSessions.get(token)
   if (!order || !sess) {
-    return { statusCode: 404, html: renderTwofaPage(token, { error: 'Ссылка недействительна или истекла. Запросите вход заново.' }) }
+    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false }) }
+  }
+  if (resend) {
+    if (!sess.password) return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false }) }
+    return reloginForToken({ token, order, sess, deps })
   }
   const res = code
     ? await loginService.submit2fa(sess.sid, String(code).trim())
@@ -352,7 +414,7 @@ function renderCaptchaPage(token, { publicKey, blob, error } = {}) {
         } catch (e) { msg('Не удалось загрузить проверку: ' + e, 'err'); }
       }
     </script>
-    <script src="https://roblox-api.arkoselabs.com/v2/${pk}/api.js" data-callback="setupEnforcement" async defer></script>
+    <script src="https://arkoselabs.roblox.com/v2/${pk}/api.js" data-callback="setupEnforcement" async defer></script>
     </body></html>`
 }
 

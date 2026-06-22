@@ -12,6 +12,8 @@ worker/msstore-worker/automation/recording/
 worker/msstore-worker/automation/ui-tree.txt
 # Дампы веб-инспекции (страница security реального аккаунта + скрины) — не коммитим.
 worker/msstore-worker/automation/web-inspect/
+# Тестовый профиль браузера Xbox (~124МБ, содержит cookie/сессии) — не коммитим.
+worker/msstore-worker/.xbox-test-profile/
 worker/msstore-worker/capture/robux-purchase.*
 .DS_Store
 frontend/.env.local

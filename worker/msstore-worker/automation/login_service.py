@@ -6,6 +6,14 @@
 решает капчу по ссылке. PoW и сессия challenge'а живут в этом браузере — токен капчи надо «довнести»
 в ТУ ЖЕ сессию (challenge/v1/continue + повтор /v2/login), иначе Roblox его не примет.
 
+КАПЧА — PATH C (проверено живьём 2026-06-21): FunCaptcha решается ПРЯМО В ЭТОМ БРАУЗЕРЕ. Виджет Arkose
+рендерит сам фронт Roblox (origin = roblox.com), и для чистого IP капча проходит прозрачно (sup=1) —
+вход завершается без участия покупателя (start ждёт who_am_i). Кооперативная отдача токена покупателю
+на свой домен НЕРАБОЧАЯ и больше не используется: Roblox делает Arkose API Source Validation и бракует
+токен, решённый не под roblox.com (continue → 403 «internal error»). Хэндлеры /captcha оставлены
+мёртвыми для совместимости; start «captcha» больше не возвращает. Грязный IP с визуальным пазлом →
+start вернёт error (нужен чистый IP/резидентный прокси); платный солвер не подключаем (выбран путь C).
+
 Поток (как swizzyer):
   1) POST /start {username,password}     → запускаем браузер, логинимся (браузер сам решает PoW),
                                             ловим исход:
@@ -172,17 +180,14 @@ def start_login(username, password, headless, wait=25):
         _close(sid)
         return {"status": "error", "error": "Не нашёл форму логина."}
     deadline = time.time() + wait
+    saw_captcha = False
     while time.time() < deadline:
         u = bl.who_am_i(driver)
         if u:
             ck = _cookie(driver)
             _close(sid)
             return {"status": "ok", "account": _user_brief(u), "roblosecurity": ck}
-        cap = _read_captcha(driver)
-        if cap and cap.get("blob"):
-            with LOCK:
-                SESSIONS[sid]["status"] = "captcha"; SESSIONS[sid]["captcha"] = cap
-            return {"status": "captcha", "sid": sid, "publicKey": ARKOSE_PUBLIC_KEY, "blob": cap["blob"]}
+        # 2FA — единственная остановка, где реально нужен покупатель (код/апрув с телефона).
         ch, media = bl.detect_challenge(driver)
         if ch == "2fa_code":
             with LOCK:
@@ -192,7 +197,20 @@ def start_login(username, password, headless, wait=25):
             with LOCK:
                 SESSIONS[sid]["status"] = "2fa_push"
             return {"status": "2fa_push", "sid": sid}
+        # Path C: капчу покупателю НЕ отдаём. Виджет Arkose уже рендерит фронт Roblox в ЭТОМ
+        # браузере (origin = roblox.com), и для чистого IP FunCaptcha проходит прозрачно (sup=1) —
+        # вход завершается сам. Кооперативная отдача токена с чужого домена тут невозможна в
+        # принципе: Roblox делает Arkose API Source Validation и бракует токен, решённый не под
+        # roblox.com (проверено живьём). Поэтому просто ждём, пока браузер сам добьёт вход.
+        cap = _read_captcha(driver)
+        if cap and cap.get("blob"):
+            saw_captcha = True
         time.sleep(2)
+    # Таймаут. Если капча была, а вход не завершился — прозрачно не прошло: грязный IP/нужен прокси.
+    if saw_captcha:
+        _close(sid)
+        return {"status": "error",
+                "error": "Капча Roblox не прошла автоматически (нужен чистый IP/резидентный прокси для login_service)."}
     with LOCK:
         SESSIONS[sid]["status"] = "pending"
     return {"status": "pending", "sid": sid}
