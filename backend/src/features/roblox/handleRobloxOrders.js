@@ -45,7 +45,10 @@ function loginLinkFor(order, deps) {
 
 function withLink(order, deps) {
   if (!order) return order
-  return { ...order, loginLink: loginLinkFor(order, deps) }
+  // Отдаём сохранённый пароль (из памяти) обратно владельцу заказа — чтобы карточка показала его
+  // звёздочками с «глазиком» и не переспрашивала. Только своему авторизованному продавцу.
+  const c = orderCreds.get(Number(order.id))
+  return { ...order, loginLink: loginLinkFor(order, deps), buyerPasswordStored: (c && c.password) || null }
 }
 
 // Сохранить полученную сессию покупателя как roblox_accounts и перевести заказ в ready.
@@ -89,9 +92,26 @@ async function finalizeBuyerSession({ userId, order, cookie, fallbackUser, deps 
   return saved
 }
 
+const loginInFlight = new Set() // orderId с входом «в полёте» — не пускаем параллельный/повторный вход
+
 // Запустить вход покупателя для заказа через login_service (браузерный движок: логин+PoW+капча/2FA).
 // Возвращает {status:'ready'|'awaiting_2fa'|'awaiting_captcha'|'pending'|'failed', token?, error?}.
-async function startLoginForOrder({ username, password, order, currentUserId, deps }) {
+// Обёртка: пока один вход для заказа идёт, второй (авто+ручной гонка) отклоняем — иначе Roblox
+// ловит «An unknown error» на параллельном входе и заказ откатывается с ready.
+async function startLoginForOrder(args) {
+  const id = args && args.order && args.order.id
+  if (id != null && loginInFlight.has(id)) {
+    return { status: 'failed', error: 'Вход для этого заказа уже выполняется — подождите немного.' }
+  }
+  if (id != null) loginInFlight.add(id)
+  try {
+    return await startLoginForOrderImpl(args)
+  } finally {
+    if (id != null) loginInFlight.delete(id)
+  }
+}
+
+async function startLoginForOrderImpl({ username, password, order, currentUserId, deps }) {
   const { robloxOrdersRepo } = deps
   pruneSessions()
   const res = await loginService.start(username, password, 30)
@@ -216,6 +236,11 @@ async function handleOrderLogin({ payload, currentUserId, deps }) {
 
   const order = robloxOrdersRepo.getOrder(currentUserId, orderId)
   if (!order) return { statusCode: 404, data: { ok: false, error: 'Заказ не найден' } }
+  // Уже вошли — повторный вход не нужен и опасен (Roblox даёт «unknown error» на повторном входе,
+  // и заказ откатывается). Просто возвращаем текущее состояние.
+  if (order.status === 'ready') {
+    return { statusCode: 200, data: { ok: true, status: 'ready', loginStatus: 'ready', order: withLink(order, deps) } }
+  }
 
   const stored = orderCreds.get(orderId) || {}
   const username =

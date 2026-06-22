@@ -44,7 +44,8 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
   const [open, setOpen] = useState(false)
   const [showLogin, setShowLogin] = useState(false)
   const [username, setUsername] = useState(order.buyerUsername || '')
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(order.buyerPasswordStored || '')
+  const [showPw, setShowPw] = useState(false)
   const [busy, setBusy] = useState(false)
   const [loginResult, setLoginResult] = useState(null)
 
@@ -120,14 +121,19 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="off"
           />
-          <input
-            className="input-theme"
-            type="password"
-            placeholder="Пароль (пусто — возьмём введённый при создании)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="off"
-          />
+          <div className="roblox-inline-row">
+            <input
+              className="input-theme"
+              type={showPw ? 'text' : 'password'}
+              placeholder="Пароль покупателя"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="off"
+            />
+            <button type="button" className="btn-secondary" onClick={() => setShowPw((v) => !v)} title={showPw ? 'Скрыть пароль' : 'Показать пароль'}>
+              {showPw ? '🙈' : '👁'}
+            </button>
+          </div>
           <button type="submit" className="btn-primary" disabled={busy}>
             {busy ? 'Входим…' : 'Войти'}
           </button>

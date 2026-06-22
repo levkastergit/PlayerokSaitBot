@@ -165,6 +165,8 @@ def login_error(driver):
     if ("account has been locked" in body or "too many attempts" in body
             or "слишком много попыток" in body or "временно заблокир" in body):
         return "Аккаунт временно заблокирован (слишком много попыток). Попробуйте позже."
+    if "an unknown error occurred" in body or "unknown error occurred" in body:
+        return "Roblox: временная ошибка входа («unknown error»). Повторите через минуту."
     return ""
 
 
