@@ -434,6 +434,7 @@ const { dispatchFinance } = require('./src/http/dispatchFinance')
 const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { dispatchChatDb } = require('./src/http/dispatchChatDb')
 const { dispatchRoblox } = require('./src/http/dispatchRoblox')
+const { dispatchDownload } = require('./src/http/dispatchDownload')
 const { isAllActionsStopped } = require('./src/infra/runtimeControl')
 
 const { processActiveSupercellFlows } = require('./src/features/autolist/processActiveSupercellFlows')
@@ -868,6 +869,12 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname
   const query = Object.fromEntries(parsedUrl.searchParams)
   const nowTs = Math.floor(Date.now() / 1000)
+
+  // Публичный раздел «Загрузка» (скрипты для скачивания) — без сессии, до фронтенд-статики.
+  {
+    const handled = await dispatchDownload({ req, res, pathname })
+    if (handled) return
+  }
 
   // Auth endpoints (no session required): login/register
   {
