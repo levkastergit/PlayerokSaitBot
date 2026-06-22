@@ -36,6 +36,9 @@ function call(path, method, body, timeoutMs = 70000) {
     const mod = u.protocol === 'https:' ? https : http
     const payload = body == null ? null : JSON.stringify(body)
     const headers = {}
+    // Shared-secret для login_service, когда он слушает по сети (на отдельной машине).
+    const lsToken = String(process.env.LOGIN_SERVICE_TOKEN || '').trim()
+    if (lsToken) headers['X-Login-Token'] = lsToken
     if (payload != null) {
       headers['Content-Type'] = 'application/json'
       headers['Content-Length'] = Buffer.byteLength(payload)

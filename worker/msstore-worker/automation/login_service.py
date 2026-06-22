@@ -87,6 +87,9 @@ WRAPPER = r"""
 
 SESSIONS = {}  # sid -> {driver, profile, username, password, status, created, captcha:{...}}
 LOCK = threading.Lock()
+# Опциональный shared-secret: если задан LOGIN_SERVICE_TOKEN — POST'ы обязаны нести X-Login-Token.
+# Нужен, когда сервис слушает не только localhost (--host 0.0.0.0) и доступен по сети.
+AUTH_TOKEN = os.environ.get("LOGIN_SERVICE_TOKEN", "").strip()
 
 
 def log(m):
@@ -439,6 +442,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if AUTH_TOKEN and self.headers.get("X-Login-Token", "") != AUTH_TOKEN:
+            return self._json(401, {"status": "error", "error": "unauthorized"})
         u = urlparse(self.path)
         b = self._body()
         try:
@@ -464,13 +469,16 @@ HEADLESS = False
 def main():
     global HEADLESS
     ap = argparse.ArgumentParser(description="Сервис кооперативного входа покупателя Roblox.")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("LOGIN_SERVICE_PORT", "8765")))
+    ap.add_argument("--host", default=os.environ.get("LOGIN_SERVICE_HOST", "127.0.0.1"),
+                    help="интерфейс прослушивания; 0.0.0.0 — доступен снаружи (по умолчанию только localhost)")
     ap.add_argument("--headless", action="store_true", help="headless (НЕ рекомендуется: Arkose детектит)")
     args = ap.parse_args()
     HEADLESS = args.headless
     threading.Thread(target=_reap, daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    log("login_service на http://127.0.0.1:%d  (start/captcha/2fa/poll/close, GET /captcha?sid=)" % args.port)
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    log("login_service на http://%s:%d  (start/captcha/2fa/poll/close, GET /captcha?sid=)%s"
+        % (args.host, args.port, "  [token-auth ON]" if AUTH_TOKEN else ""))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
