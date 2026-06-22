@@ -512,6 +512,32 @@ def upload_report(path):
     return None, last
 
 
+def post_to_server(path, endpoint, token):
+    """Шлёт ТОЛЬКО замаскированный отчёт напрямую на приёмник (Claude заберёт оттуда).
+    Возвращает (id, err)."""
+    try:
+        data = open(path, "rb").read()
+    except Exception as e:
+        return None, "не прочитать отчёт: %s" % e
+    if len(data) > 5_000_000:
+        return None, "отчёт >5МБ"
+    try:
+        req = Request(endpoint, data=data,
+                      headers={"X-Capture-Token": token,
+                               "Content-Type": "text/markdown",
+                               "User-Agent": "robux-capture/1"}, method="POST")
+        resp = urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        try:
+            obj = json.loads(resp)
+        except Exception:
+            return None, "ответ не JSON: %s" % resp[:120]
+        if obj.get("ok"):
+            return obj.get("id") or "ok", None
+        return None, "сервер: %s" % resp[:160]
+    except Exception as e:
+        return None, str(e)
+
+
 def to_clipboard(text):
     try:
         p = subprocess.Popen("clip", stdin=subprocess.PIPE, shell=True)
@@ -530,7 +556,11 @@ def main():
     ap.add_argument("--attach", action="store_true",
                     help="не запускать браузер, подключиться к уже запущенному на --port")
     ap.add_argument("--no-upload", action="store_true",
-                    help="не загружать отчёт автоматически (только локальные файлы)")
+                    help="не отправлять отчёт автоматически (только локальные файлы)")
+    ap.add_argument("--endpoint", default="https://wesqaliqo.com/download/capture",
+                    help="куда слать замаскированный отчёт (приёмник Claude)")
+    ap.add_argument("--token", default="rbxcap-2f9a4c7e",
+                    help="upload-токен приёмника")
     args = ap.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -612,23 +642,33 @@ def main():
 
     report_path = os.path.join(out_dir, "capture-report.md")
     if not args.no_upload:
-        print("\nЗагружаю замаскированный отчёт (полный jsonl с секретами НЕ грузится)...")
-        url, err = upload_report(report_path)
-        if url:
-            with open(os.path.join(out_dir, "UPLOAD_URL.txt"), "w", encoding="utf-8") as f:
-                f.write(url + "\n")
-            copied = to_clipboard(url)
+        print("\nОтправляю замаскированный отчёт (полный jsonl с секретами НЕ уходит)...")
+        # 1) напрямую на приёмник — Claude заберёт сам, пересылать ничего не нужно
+        cap_id, err1 = post_to_server(report_path, args.endpoint, args.token)
+        if cap_id:
             print("\n" + "=" * 70)
-            print(" ОТЧЁТ ЗАГРУЖЕН. ПРИШЛИ ЭТУ ССЫЛКУ В ЧАТ:")
-            print("    " + url)
+            print(" ✅ ОТЧЁТ ОТПРАВЛЕН НАПРЯМУЮ (id=%s)." % cap_id)
+            print(" Пересылать ничего не нужно — просто напиши в чате, что покупку сделал.")
             print("=" * 70)
-            if copied:
-                print(" (ссылка уже в буфере обмена — Ctrl+V)")
         else:
-            print("Авто-загрузка не удалась (%s)." % err)
-            print("Пришли файл вручную: %s" % report_path)
+            # 2) фолбэк: публичный паст + ссылка
+            print(" Прямая отправка не удалась (%s) — пробую запасной канал..." % err1)
+            url, err2 = upload_report(report_path)
+            if url:
+                with open(os.path.join(out_dir, "UPLOAD_URL.txt"), "w", encoding="utf-8") as f:
+                    f.write(url + "\n")
+                copied = to_clipboard(url)
+                print("\n" + "=" * 70)
+                print(" ОТЧЁТ ЗАГРУЖЕН. ПРИШЛИ ЭТУ ССЫЛКУ В ЧАТ:")
+                print("    " + url)
+                print("=" * 70)
+                if copied:
+                    print(" (ссылка уже в буфере обмена — Ctrl+V)")
+            else:
+                print(" Авто-отправка не удалась (%s)." % err2)
+                print(" Пришли файл вручную: %s" % report_path)
     else:
-        print("\n--no-upload: отчёт не загружен. Файл: %s" % report_path)
+        print("\n--no-upload: отчёт не отправлен. Файл: %s" % report_path)
 
     if proc:
         print("\nБраузер оставляю открытым (закрой сам).")

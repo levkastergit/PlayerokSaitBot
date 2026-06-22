@@ -1,16 +1,26 @@
-// Публичный раздел «Загрузка»: отдаёт служебные скрипты (напр. капчур покупки Robux).
-// Без сессии сайта. Файлы кладутся в образ через Dockerfile (COPY ... ./public/downloads/).
+// Публичный раздел «Загрузка» + приёмник капчур-отчётов.
+//   GET  /download                     — HTML-страница раздела (без сессии)
+//   GET  /download/<file>              — отдача файла из public/downloads (белый список)
+//   POST /download/capture             — приём отчёта со скрипта пользователя (X-Capture-Token = upload)
+//   GET  /download/captures[/<id>]     — выдача принятых отчётов (X-Capture-Token = read; для Claude)
 const fs = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 
 const DOWNLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'downloads')
+const CAPTURES_DIR = path.join(__dirname, '..', '..', 'data', 'captures')
 
-// Белый список отдаваемых файлов (что не в списке — не отдаётся).
+// upload-токен зашит в публичный скрипт (анти-бот, не секрет). read-токен — только из env (секрет, для Claude).
+const UPLOAD_TOKEN = String(process.env.CAPTURE_UPLOAD_TOKEN || 'rbxcap-2f9a4c7e').trim()
+const READ_TOKEN = String(process.env.CAPTURE_READ_TOKEN || '').trim()
+const MAX_UPLOAD = 5 * 1024 * 1024
+const KEEP_CAPTURES = 60
+
 const FILES = {
   'capture_robux_purchase.py': {
     type: 'text/x-python; charset=utf-8',
     title: 'capture_robux_purchase.py',
-    desc: 'Пассивный захват сетевого трафика покупки Robux (CDP, без MITM-прокси). Запускается на твоём ПК, после захвата сам загружает замаскированный отчёт и даёт ссылку.',
+    desc: 'Пассивный захват сетевого трафика покупки Robux (CDP, без MITM-прокси). После захвата сам отправляет замаскированный отчёт на сервер — пересылать вручную ничего не нужно.',
   },
 }
 
@@ -24,6 +34,58 @@ function fileSizeKb(name) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve) => {
+    const chunks = []
+    let size = 0
+    let aborted = false
+    req.on('data', (c) => {
+      if (aborted) return
+      size += c.length
+      if (size > maxBytes) {
+        aborted = true
+        resolve(null)
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      if (!aborted) resolve(Buffer.concat(chunks))
+    })
+    req.on('error', () => resolve(null))
+  })
+}
+
+function listCaptures() {
+  try {
+    return fs
+      .readdirSync(CAPTURES_DIR)
+      .filter((n) => n.endsWith('.md'))
+      .map((n) => {
+        const st = fs.statSync(path.join(CAPTURES_DIR, n))
+        return { id: n.replace(/\.md$/, ''), size: st.size, mtime: st.mtimeMs }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+  } catch (_) {
+    return []
+  }
+}
+
+function pruneCaptures(keep) {
+  const items = listCaptures()
+  for (const it of items.slice(keep)) {
+    try {
+      fs.unlinkSync(path.join(CAPTURES_DIR, it.id + '.md'))
+    } catch (_) {}
+  }
+}
+
+function sendJsonRaw(res, code, obj) {
+  res.statusCode = code
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify(obj))
 }
 
 function renderPage() {
@@ -89,9 +151,9 @@ function renderPage() {
         <li>Запусти: <code>python capture_robux_purchase.py</code></li>
         <li>В открывшемся браузере войди на <code>roblox.com</code> и купи <b>80 Robux</b> (на оплате выбери Microsoft / Windows-баланс, если предложат).</li>
         <li>Вернись в консоль и нажми <code>Ctrl+C</code>.</li>
-        <li>Скрипт загрузит замаскированный отчёт и напечатает <b>ссылку</b> — пришли её в чат.</li>
+        <li>Скрипт <b>сам отправит замаскированный отчёт на сервер</b> — пересылать ничего не нужно, просто напиши в чате, что покупку сделал.</li>
       </ol>
-      <p class="note"><span class="ok">Безопасно:</span> скрипт не трогает процесс Roblox, не ставит прокси/сертификат и не инжектит в страницы — только пассивно слушает сеть своего браузера. Cookies/токены остаются в локальном <code>capture-full.jsonl</code>, наружу уходит лишь замаскированный отчёт.</p>
+      <p class="note"><span class="ok">Безопасно:</span> скрипт не трогает процесс Roblox, не ставит прокси/сертификат и не инжектит в страницы — только пассивно слушает сеть своего браузера. Cookies/токены остаются в локальном <code>capture-full.jsonl</code> и наружу не уходят — отправляется лишь замаскированный отчёт.</p>
     </div>
   </div>
 </body>
@@ -99,8 +161,67 @@ function renderPage() {
 }
 
 async function dispatchDownload({ req, res, pathname }) {
+  // ── Приём отчёта со скрипта пользователя (anti-bot upload-токен) ──
+  if (req.method === 'POST' && pathname === '/download/capture') {
+    const provided = String(req.headers['x-capture-token'] || '').trim()
+    if (!UPLOAD_TOKEN || provided !== UPLOAD_TOKEN) {
+      sendJsonRaw(res, 401, { ok: false, error: 'bad token' })
+      return true
+    }
+    const buf = await readRawBody(req, MAX_UPLOAD)
+    if (!buf || buf.length === 0) {
+      sendJsonRaw(res, 400, { ok: false, error: 'empty or too large' })
+      return true
+    }
+    try {
+      fs.mkdirSync(CAPTURES_DIR, { recursive: true })
+    } catch (_) {}
+    const id = 'cap-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex')
+    try {
+      fs.writeFileSync(path.join(CAPTURES_DIR, id + '.md'), buf)
+    } catch (e) {
+      sendJsonRaw(res, 500, { ok: false, error: 'write failed' })
+      return true
+    }
+    pruneCaptures(KEEP_CAPTURES)
+    sendJsonRaw(res, 200, { ok: true, id })
+    return true
+  }
+
+  // ── Выдача принятых отчётов (read-токен из env; для Claude) ──
+  if (req.method === 'GET' && (pathname === '/download/captures' || pathname.startsWith('/download/captures/'))) {
+    const provided = String(req.headers['x-capture-token'] || '').trim()
+    if (!READ_TOKEN || provided !== READ_TOKEN) {
+      res.statusCode = 403
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.end('forbidden')
+      return true
+    }
+    if (pathname === '/download/captures') {
+      sendJsonRaw(res, 200, { ok: true, items: listCaptures() })
+      return true
+    }
+    const id = pathname.split('/').pop()
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+      res.statusCode = 400
+      res.end('bad id')
+      return true
+    }
+    const fp = path.join(CAPTURES_DIR, id.endsWith('.md') ? id : id + '.md')
+    if (!fs.existsSync(fp)) {
+      res.statusCode = 404
+      res.end('not found')
+      return true
+    }
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
+    res.end(fs.readFileSync(fp))
+    return true
+  }
+
   if (req.method !== 'GET') return false
 
+  // ── Страница раздела ──
   if (pathname === '/download' || pathname === '/download/') {
     res.statusCode = 200
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -108,6 +229,7 @@ async function dispatchDownload({ req, res, pathname }) {
     return true
   }
 
+  // ── Отдача файла (белый список) ──
   const m = pathname.match(/^\/download\/([A-Za-z0-9._-]+)$/)
   if (m) {
     const name = m[1]
