@@ -95,9 +95,9 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
       ) : null}
 
       <div className="roblox-order__actions">
-        {order.status === 'awaiting_login' || order.status === 'awaiting_captcha' || order.status === 'awaiting_2fa' ? (
+        {order.status === 'failed' ? (
           <button type="button" className="btn-secondary" onClick={() => setShowLogin((v) => !v)}>
-            {showLogin ? 'Скрыть вход' : 'Войти в аккаунт покупателя'}
+            {showLogin ? 'Скрыть' : 'Повторить вход'}
           </button>
         ) : null}
         {order.log && order.log.length ? (

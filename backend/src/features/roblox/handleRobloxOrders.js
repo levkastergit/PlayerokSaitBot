@@ -165,10 +165,10 @@ async function startLoginForOrderImpl({ username, password, order, currentUserId
     // заказ в awaiting_login для повторной попытки продавцом.
     try { await loginService.close(res.sid) } catch (_) {}
     robloxOrdersRepo.setState(currentUserId, order.id, {
-      status: 'awaiting_login', phase: 'awaiting_login',
-      logMessage: 'Вход не завершился вовремя (login_service: pending). Нажмите «Войти» ещё раз.',
+      status: 'failed', phase: 'login',
+      logMessage: 'Вход не завершился вовремя (login_service: pending). Нажмите «Повторить вход».',
     })
-    return { status: 'pending' }
+    return { status: 'failed', error: 'Вход не завершился вовремя — повторите.' }
   }
 
   robloxOrdersRepo.setState(currentUserId, order.id, {
