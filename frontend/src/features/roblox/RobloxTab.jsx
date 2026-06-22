@@ -83,8 +83,17 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
           <p className="settings-message settings-message--success">
             {order.status === 'awaiting_captcha'
               ? 'Ссылка покупателю — решить капчу:'
-              : `Ссылка покупателю — подтвердить вход${order.twofaMediaType && !['pending', 'push'].includes(order.twofaMediaType) ? ` (код: ${order.twofaMediaType})` : order.twofaMediaType === 'push' ? ' (апрув в приложении)' : ''}:`}
+              : order.twofaMediaType === 'push'
+                ? 'Покупателю — подтвердить вход в приложении Roblox (ссылка):'
+                : `Покупателю — ввести код из ${order.twofaMediaType === 'email' ? 'письма на e-mail' : order.twofaMediaType === 'sms' ? 'SMS' : 'приложения-аутентификатора'} (ссылка):`}
           </p>
+          {order.status === 'awaiting_2fa' ? (
+            order.twofaExpired ? (
+              <p className="settings-message settings-message--error">⏳ Срок действия истёк — нажмите «Повторить вход» ниже, чтобы запросить заново.</p>
+            ) : (
+              <p className="roblox-order__phase">Действует ещё ~{Math.max(1, Math.ceil((order.twofaExpiresInSec || 0) / 60))} мин.</p>
+            )
+          ) : null}
           <div className="roblox-inline-row">
             <input className="input-theme" readOnly value={order.loginLink} onFocus={(e) => e.target.select()} />
             <button type="button" className="btn-secondary" onClick={() => navigator.clipboard?.writeText(order.loginLink)}>
@@ -95,7 +104,7 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
       ) : null}
 
       <div className="roblox-order__actions">
-        {order.status === 'failed' ? (
+        {order.status === 'failed' || (order.status === 'awaiting_2fa' && order.twofaExpired) ? (
           <button type="button" className="btn-secondary" onClick={() => setShowLogin((v) => !v)}>
             {showLogin ? 'Скрыть' : 'Повторить вход'}
           </button>

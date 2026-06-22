@@ -9,7 +9,7 @@ const loginSessions = new Map() // token -> { sid, userId, orderId, type, mediaT
 const SESSION_TTL_MS = 15 * 60 * 1000
 // Через сколько 2FA-попытку считаем истёкшей: код/пуш Roblox живёт недолго. После этого страница
 // показывает «истекло» и кнопку «Запросить повторно» (пере-логин по тем же кредам, пока жива сессия).
-const ATTEMPT_TTL_MS = 4 * 60 * 1000
+const ATTEMPT_TTL_MS = 5 * 60 * 1000
 // Креды покупателя в ПАМЯТИ (не в БД): чтобы не переспрашивать пароль при повторном входе по заказу.
 // Заводим при создании заказа/входе, чистим после успешного входа и по TTL.
 const orderCreds = new Map() // orderId -> { username, password, at }
@@ -48,7 +48,20 @@ function withLink(order, deps) {
   // Отдаём сохранённый пароль (из памяти) обратно владельцу заказа — чтобы карточка показала его
   // звёздочками с «глазиком» и не переспрашивала. Только своему авторизованному продавцу.
   const c = orderCreds.get(Number(order.id))
-  return { ...order, loginLink: loginLinkFor(order, deps), buyerPasswordStored: (c && c.password) || null }
+  const out = { ...order, loginLink: loginLinkFor(order, deps), buyerPasswordStored: (c && c.password) || null }
+  // Срок действия 2FA-подтверждения — чтобы карточка заказа показала таймер/«истекло».
+  if (order.status === 'awaiting_2fa' && order.twofaToken) {
+    const sess = loginSessions.get(order.twofaToken)
+    if (!sess) {
+      out.twofaExpired = true
+      out.twofaExpiresInSec = 0
+    } else {
+      const left = Math.round((Number(sess.attemptAt || sess.createdAt || 0) + ATTEMPT_TTL_MS - Date.now()) / 1000)
+      out.twofaExpired = left <= 0
+      out.twofaExpiresInSec = Math.max(0, left)
+    }
+  }
+  return out
 }
 
 // Сохранить полученную сессию покупателя как roblox_accounts и перевести заказ в ready.
@@ -268,13 +281,14 @@ async function handleOrderLogin({ payload, currentUserId, deps }) {
 }
 
 // ── Hosted-страница 2FA (отдаётся покупателю, без сессии сайта) ───────────────
-function renderTwofaPage(token, { error, done, expired, canResend, expiresInSec } = {}) {
+function renderTwofaPage(token, { error, done, expired, canResend, expiresInSec, mediaType } = {}) {
   const safeToken = String(token || '').replace(/[^a-f0-9]/gi, '')
-  const resendForm = `<form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px">
-         <input type="hidden" name="resend" value="1" />
-         <button type="submit">Запросить код повторно</button>
-       </form>`
-  const expiredBlock = `<p class="err">⏳ Срок действия истёк.${canResend ? ' Запросите код заново.' : ' Попросите продавца прислать новую ссылку.'}</p>${canResend ? resendForm : ''}`
+  const isPush = mediaType === 'push'
+  const codeSrc = { authenticator: 'приложения-аутентификатора', email: 'письма на e-mail аккаунта', sms: 'SMS' }[mediaType]
+    || 'приложения-аутентификатора / SMS / e-mail'
+  const resendForm = `<form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px"><input type="hidden" name="resend" value="1" /><button type="submit">Запросить заново</button></form>`
+  const expiredBlock = `<p class="err">⏳ Срок действия подтверждения истёк.${canResend ? ' Запросите заново.' : ' Попросите у продавца новую ссылку.'}</p>${canResend ? resendForm : ''}`
+  const errLine = error ? `<p class="err">${String(error).replace(/</g, '&lt;')}</p>` : ''
 
   let lead = ''
   let inner = ''
@@ -283,25 +297,20 @@ function renderTwofaPage(token, { error, done, expired, canResend, expiresInSec 
   } else if (expired) {
     inner = expiredBlock
   } else {
-    lead = `<p class="lead">Введите 6-значный код двухфакторной аутентификации (приложение-аутентификатор, SMS или e-mail).
-      Если у вас подтверждение в приложении Roblox — одобрите вход на телефоне и нажмите «Я подтвердил».</p>`
-    const msg = error ? `<p class="err">${String(error).replace(/</g, '&lt;')}</p>` : ''
-    const liveForm = `<div id="liveForm">
-         <form method="POST" action="/roblox/2fa/${safeToken}">
-           <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
-                  placeholder="6-значный код" pattern="[0-9]*" autofocus />
-           <button type="submit">Подтвердить</button>
-         </form>
-         <form method="POST" action="/roblox/2fa/${safeToken}" style="margin-top:8px">
-           <button type="submit" class="sec">Я подтвердил в приложении</button>
-         </form>
-       </div>
-       <div id="expiredBlock" style="display:none">${expiredBlock}</div>`
     const ttl = Number(expiresInSec) > 0 ? Math.floor(Number(expiresInSec)) : 0
-    const countdown = ttl > 0
-      ? `<script>setTimeout(function(){var f=document.getElementById('liveForm'),e=document.getElementById('expiredBlock');if(f)f.style.display='none';if(e)e.style.display='block';},${ttl}*1000);</script>`
+    const timer = ttl > 0 ? `<p class="lead" id="cdline">Действует ещё <b id="cd">--:--</b></p>` : ''
+    let formBlock
+    if (isPush) {
+      lead = `<p class="lead">В приложении <b>Roblox</b> на телефоне придёт запрос «Это вы пытаетесь войти?» — нажмите <b>Yes / Это я</b>, затем кнопку ниже.</p>`
+      formBlock = `<form method="POST" action="/roblox/2fa/${safeToken}"><button type="submit">Я подтвердил в приложении</button></form>`
+    } else {
+      lead = `<p class="lead">Введите 6-значный код из ${codeSrc}.</p>`
+      formBlock = `<form method="POST" action="/roblox/2fa/${safeToken}"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-значный код" pattern="[0-9]*" autofocus /><button type="submit">Подтвердить</button></form>`
+    }
+    const cdScript = ttl > 0
+      ? `<script>(function(){var left=${ttl},cd=document.getElementById('cd');(function t(){var m=Math.floor(left/60),s=left%60;if(cd)cd.textContent=m+':'+(s<10?'0':'')+s;if(left<=0){['liveForm','cdline'].forEach(function(i){var x=document.getElementById(i);if(x)x.style.display='none';});var e=document.getElementById('expiredBlock');if(e)e.style.display='block';return;}left--;setTimeout(t,1000);})();})();</script>`
       : ''
-    inner = `${msg}${liveForm}${countdown}`
+    inner = `${timer}<div id="liveForm">${errLine}${formBlock}</div><div id="expiredBlock" style="display:none">${expiredBlock}</div>${cdScript}`
   }
 
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8" />
@@ -335,16 +344,17 @@ async function handleTwofaPage({ token, deps }) {
     return { statusCode: 404, html: renderTwofaPage(token, { error: 'Ссылка недействительна или вход уже выполнен.' }) }
   }
   const sess = loginSessions.get(token)
+  const media = (sess && sess.mediaType) || order.twofaMediaType || 'authenticator'
   if (!sess) {
     // Сессия браузера выметена по TTL — пере-логин кредами уже невозможен, нужна новая ссылка.
-    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false }) }
+    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false, mediaType: media }) }
   }
   const elapsed = Date.now() - Number(sess.attemptAt || sess.createdAt || 0)
   if (elapsed > ATTEMPT_TTL_MS) {
-    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: !!sess.password }) }
+    return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: !!sess.password, mediaType: media }) }
   }
   const expiresInSec = Math.max(10, Math.round((ATTEMPT_TTL_MS - elapsed) / 1000))
-  return { statusCode: 200, html: renderTwofaPage(token, { expiresInSec, canResend: !!sess.password }) }
+  return { statusCode: 200, html: renderTwofaPage(token, { expiresInSec, canResend: !!sess.password, mediaType: media }) }
 }
 
 // Пере-логин теми же кредами, переиспользуя тот же token (ссылка покупателю не меняется).
