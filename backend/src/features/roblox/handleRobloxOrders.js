@@ -140,13 +140,15 @@ async function startLoginForOrder({ username, password, order, currentUserId, de
   }
 
   if (res.status === 'pending' && res.sid) {
-    const token = robloxOrdersRepo.setTwofaPending(currentUserId, order.id, 'pending')
-    loginSessions.set(token, { sid: res.sid, userId: currentUserId, orderId: order.id, type: 'pending', username, password, createdAt: Date.now(), attemptAt: Date.now() })
+    // pending = login_service не определился за wait (затянулось/застряло). Это НЕ 2FA —
+    // ссылку покупателю НЕ даём и за 2FA не выдаём. Закрываем зависшую сессию, оставляем
+    // заказ в awaiting_login для повторной попытки продавцом.
+    try { await loginService.close(res.sid) } catch (_) {}
     robloxOrdersRepo.setState(currentUserId, order.id, {
-      status: 'awaiting_2fa', phase: 'awaiting_login',
-      logMessage: 'Вход выполняется (login_service: pending).',
+      status: 'awaiting_login', phase: 'awaiting_login',
+      logMessage: 'Вход не завершился вовремя (login_service: pending). Нажмите «Войти» ещё раз.',
     })
-    return { status: 'pending', token }
+    return { status: 'pending' }
   }
 
   robloxOrdersRepo.setState(currentUserId, order.id, {

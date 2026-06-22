@@ -152,6 +152,22 @@ def detect_challenge(driver):
     return (None, None)
 
 
+def login_error(driver):
+    """Текст ошибки входа, если Roblox её показал (неверный логин/пароль, локаут), иначе ''.
+    Нужно, чтобы НЕ ждать таймаут и НЕ путать неверный пароль с pending/2FA."""
+    try:
+        body = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+    except WebDriverException:
+        return ""
+    if ("incorrect username or password" in body or "invalid username or password" in body
+            or "неверное имя пользователя или пароль" in body or "неверный логин или пароль" in body):
+        return "Неверный логин или пароль покупателя."
+    if ("account has been locked" in body or "too many attempts" in body
+            or "слишком много попыток" in body or "временно заблокир" in body):
+        return "Аккаунт временно заблокирован (слишком много попыток). Попробуйте позже."
+    return ""
+
+
 def submit_login(driver, username, password):
     safe_get(driver, LOGIN_URL)
     time.sleep(1.2)

@@ -212,6 +212,11 @@ def start_login(username, password, headless, wait=25):
                 with LOCK:
                     SESSIONS[sid]["status"] = "2fa_push"
                 return {"status": "2fa_push", "sid": sid}
+            # Неверный логин/пароль (или локаут) — не ждём таймаут, сразу отдаём ошибку.
+            err = bl.login_error(driver)
+            if err:
+                _close(sid)
+                return {"status": "error", "error": err}
             # Path C: капчу покупателю НЕ отдаём. Виджет Arkose уже рендерит фронт Roblox в ЭТОМ
             # браузере (origin = roblox.com), и для чистого IP FunCaptcha проходит прозрачно (sup=1) —
             # вход завершается сам. Кооперативная отдача токена с чужого домена тут невозможна в
