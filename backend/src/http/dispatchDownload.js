@@ -17,10 +17,20 @@ const MAX_UPLOAD = 5 * 1024 * 1024
 const KEEP_CAPTURES = 60
 
 const FILES = {
+  'run_msstore_capture.ps1': {
+    type: 'text/plain; charset=utf-8',
+    title: 'run_msstore_capture.ps1',
+    desc: 'ГЛАВНЫЙ. Лаунчер перехвата трафика приложения Roblox (MS Store) при покупке Robux. Запускать от Администратора; рядом положи capture_msstore_app.py. Сам ставит mitmproxy, по выходу всё откатывает и шлёт отчёт.',
+  },
+  'capture_msstore_app.py': {
+    type: 'text/x-python; charset=utf-8',
+    title: 'capture_msstore_app.py',
+    desc: 'Аддон mitmproxy к лаунчеру выше (положи в ту же папку). Фильтрует/маскирует трафик и отправляет отчёт на сервер.',
+  },
   'capture_robux_purchase.py': {
     type: 'text/x-python; charset=utf-8',
     title: 'capture_robux_purchase.py',
-    desc: 'Пассивный захват сетевого трафика покупки Robux (CDP, без MITM-прокси). После захвата сам отправляет замаскированный отчёт на сервер — пересылать вручную ничего не нужно.',
+    desc: 'ЗАПАСНОЙ: захват покупки через БРАУЗЕР (roblox.com), без прокси. Только если покупаешь не в приложении, а на сайте.',
   },
 }
 
@@ -145,15 +155,15 @@ function renderPage() {
     <p class="sub">Служебные скрипты. Скачай и запусти у себя на ПК.</p>
     ${cards}
     <div class="steps">
-      <h2>Как запустить капчур-скрипт</h2>
+      <h2>Как снять трафик покупки в приложении Roblox (MS Store)</h2>
       <ol>
-        <li>Установи зависимость: <code>pip install websocket-client</code></li>
-        <li>Запусти: <code>python capture_robux_purchase.py</code></li>
-        <li>В открывшемся браузере войди на <code>roblox.com</code> и купи <b>80 Robux</b> (на оплате выбери Microsoft / Windows-баланс, если предложат).</li>
-        <li>Вернись в консоль и нажми <code>Ctrl+C</code>.</li>
-        <li>Скрипт <b>сам отправит замаскированный отчёт на сервер</b> — пересылать ничего не нужно, просто напиши в чате, что покупку сделал.</li>
+        <li>Скачай <b>оба</b> файла — <code>run_msstore_capture.ps1</code> и <code>capture_msstore_app.py</code> — в <b>одну папку</b>. Нужен установленный Python 3.</li>
+        <li>Запусти лаунчер <b>от Администратора</b>: <code>powershell -ExecutionPolicy Bypass -File run_msstore_capture.ps1</code></li>
+        <li>Когда увидишь «ПЕРЕХВАТ ИДЁТ» — открой <b>приложение Roblox</b> (из MS Store) и купи <b>80 Robux</b> (оплата — Microsoft-баланс).</li>
+        <li>Если на оплате <b>белый экран</b> — это ожидаемо (хост пиннит сертификат), просто закрой окно.</li>
+        <li>Вернись в консоль и нажми <code>Ctrl+C</code> — скрипт <b>сам отправит</b> замаскированный отчёт и всё откатит. Напиши мне «сделал».</li>
       </ol>
-      <p class="note"><span class="ok">Безопасно:</span> скрипт не трогает процесс Roblox, не ставит прокси/сертификат и не инжектит в страницы — только пассивно слушает сеть своего браузера. Cookies/токены остаются в локальном <code>capture-full.jsonl</code> и наружу не уходят — отправляется лишь замаскированный отчёт.</p>
+      <p class="note"><span class="ok">Безопасно по анткиту:</span> перехватывается только <b>сеть</b> (временный локальный прокси + доверенный CA), процесс Roblox <b>не трогается</b> — Hyperion стережёт память процесса, а не сеть. По выходу лаунчер сам убирает прокси, loopback-exempt и доверие к CA. Cookies/токены остаются в локальном <code>capture-full.jsonl</code> — на сервер уходит только замаскированный отчёт.</p>
     </div>
   </div>
 </body>

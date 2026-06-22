@@ -42,8 +42,10 @@ COPY --from=backend-deps /app/backend/node_modules ./node_modules
 COPY backend/ ./
 COPY --from=frontend-builder /app/frontend/dist ../frontend/dist
 
-# Раздел «Загрузка»: скрипт капчура впекаем из worker/ (единый источник правды).
+# Раздел «Загрузка»: скрипты капчура впекаем из worker/ (единый источник правды).
 COPY worker/msstore-worker/automation/capture_robux_purchase.py ./public/downloads/capture_robux_purchase.py
+COPY worker/msstore-worker/automation/capture_msstore_app.py ./public/downloads/capture_msstore_app.py
+COPY worker/msstore-worker/automation/run_msstore_capture.ps1 ./public/downloads/run_msstore_capture.ps1
 
 ENV PORT=3000
 EXPOSE 3000

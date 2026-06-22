@@ -32,4 +32,5 @@ supercell_auto_otp_plugin/cache/
 
 # Вывод капчур-скрипта покупки Robux — содержит cookies/токены, НЕ коммитим.
 worker/msstore-worker/automation/robux-capture-*/
+worker/msstore-worker/automation/robux-app-capture-*/
 worker/msstore-worker/automation/.capture-profile/
