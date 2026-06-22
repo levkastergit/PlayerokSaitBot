@@ -123,7 +123,7 @@ function OrderRow({ order, msAccounts, onLogin, onCancel }) {
           <input
             className="input-theme"
             type="password"
-            placeholder="Пароль покупателя"
+            placeholder="Пароль (пусто — возьмём введённый при создании)"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="off"

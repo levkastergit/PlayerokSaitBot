@@ -10,12 +10,24 @@ const SESSION_TTL_MS = 15 * 60 * 1000
 // Через сколько 2FA-попытку считаем истёкшей: код/пуш Roblox живёт недолго. После этого страница
 // показывает «истекло» и кнопку «Запросить повторно» (пере-логин по тем же кредам, пока жива сессия).
 const ATTEMPT_TTL_MS = 4 * 60 * 1000
+// Креды покупателя в ПАМЯТИ (не в БД): чтобы не переспрашивать пароль при повторном входе по заказу.
+// Заводим при создании заказа/входе, чистим после успешного входа и по TTL.
+const orderCreds = new Map() // orderId -> { username, password, at }
+const ORDER_CREDS_TTL_MS = 30 * 60 * 1000
 
 function pruneSessions() {
   const now = Date.now()
   for (const [k, v] of loginSessions) {
     if (now - Number(v.createdAt || 0) > SESSION_TTL_MS) loginSessions.delete(k)
   }
+  for (const [k, v] of orderCreds) {
+    if (now - Number(v.at || 0) > ORDER_CREDS_TTL_MS) orderCreds.delete(k)
+  }
+}
+
+function rememberOrderCreds(orderId, username, password) {
+  if (!orderId || !username || !password) return
+  orderCreds.set(Number(orderId), { username: String(username), password: String(password), at: Date.now() })
 }
 
 function publicBaseUrl(deps) {
@@ -73,6 +85,7 @@ async function finalizeBuyerSession({ userId, order, cookie, fallbackUser, deps 
     phase: 'ready',
     logMessage: `Вход выполнен: @${user.name}. Заказ готов к выдаче.`,
   })
+  orderCreds.delete(Number(order.id)) // вход выполнен — пароль больше не нужен
   return saved
 }
 
@@ -168,6 +181,7 @@ async function handleOrderCreate({ payload, currentUserId, deps }) {
 
   let login = null
   if (username && password) {
+    rememberOrderCreds(order.id, username, password)
     try {
       login = await startLoginForOrder({ username, password, order, currentUserId, deps })
     } catch (err) {
@@ -190,18 +204,25 @@ async function handleOrderCancel({ payload, currentUserId, deps }) {
   return { statusCode: 200, data: { ok: true, order: withLink(order, deps) } }
 }
 
-// Повторный/ручной запуск входа для существующего заказа (логин+пароль).
+// Повторный/ручной запуск входа для существующего заказа. Пароль можно НЕ передавать — возьмём
+// сохранённый при создании заказа (в памяти). Передан непустой — перезапишем (возможность исправить).
 async function handleOrderLogin({ payload, currentUserId, deps }) {
   const { robloxOrdersRepo } = deps
   pruneSessions()
   const orderId = payload && payload.orderId != null ? Number(payload.orderId) : null
-  const username = payload && payload.username != null ? String(payload.username).trim() : ''
-  const password = payload && payload.password != null ? String(payload.password) : ''
   if (!Number.isFinite(orderId)) return { statusCode: 400, data: { ok: false, error: 'Не передан orderId' } }
-  if (!username || !password) return { statusCode: 400, data: { ok: false, error: 'Нужны логин и пароль покупателя' } }
 
   const order = robloxOrdersRepo.getOrder(currentUserId, orderId)
   if (!order) return { statusCode: 404, data: { ok: false, error: 'Заказ не найден' } }
+
+  const stored = orderCreds.get(orderId) || {}
+  const username =
+    (payload && payload.username != null && String(payload.username).trim()) || stored.username || order.buyerUsername || ''
+  const password = (payload && payload.password != null && String(payload.password)) || stored.password || ''
+  if (!username || !password) {
+    return { statusCode: 400, data: { ok: false, error: 'Введите пароль покупателя' } }
+  }
+  rememberOrderCreds(orderId, username, password)
 
   const r = await startLoginForOrder({ username, password, order, currentUserId, deps })
   const fresh = withLink(robloxOrdersRepo.getOrder(currentUserId, orderId), deps)

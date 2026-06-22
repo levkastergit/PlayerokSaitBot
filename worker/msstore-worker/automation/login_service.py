@@ -170,50 +170,65 @@ def _close(sid):
     shutil.rmtree(s.get("profile", ""), ignore_errors=True)
 
 
+MAX_SESSIONS = int(os.environ.get("ROBLOX_MAX_SESSIONS", "2"))
+
+
 def start_login(username, password, headless, wait=25):
+    # На слабом VPS (1 ядро / ~1ГБ) каждый Chrome ~400МБ. Больше MAX_SESSIONS браузеров не поднимаем —
+    # иначе OOM/таймауты и зависшие процессы. Лишние входы отклоняем сразу (а не плодим Chrome).
+    with LOCK:
+        active = len(SESSIONS)
+    if active >= MAX_SESSIONS:
+        return {"status": "error",
+                "error": "login_service занят (%d вход(а) уже в работе). Повторите через минуту." % active}
+
     driver, profile = _new_driver(headless)
     sid = uuid.uuid4().hex
     with LOCK:
         SESSIONS[sid] = {"driver": driver, "profile": profile, "username": username,
                          "password": password, "status": "starting", "created": time.time()}
-    if not bl.submit_login(driver, username, password):
-        _close(sid)
-        return {"status": "error", "error": "Не нашёл форму логина."}
-    deadline = time.time() + wait
-    saw_captcha = False
-    while time.time() < deadline:
-        u = bl.who_am_i(driver)
-        if u:
-            ck = _cookie(driver)
+    try:
+        if not bl.submit_login(driver, username, password):
             _close(sid)
-            return {"status": "ok", "account": _user_brief(u), "roblosecurity": ck}
-        # 2FA — единственная остановка, где реально нужен покупатель (код/апрув с телефона).
-        ch, media = bl.detect_challenge(driver)
-        if ch == "2fa_code":
-            with LOCK:
-                SESSIONS[sid]["status"] = "2fa"; SESSIONS[sid]["mediaType"] = media
-            return {"status": "2fa", "sid": sid, "mediaType": media}
-        if ch == "2fa_push":
-            with LOCK:
-                SESSIONS[sid]["status"] = "2fa_push"
-            return {"status": "2fa_push", "sid": sid}
-        # Path C: капчу покупателю НЕ отдаём. Виджет Arkose уже рендерит фронт Roblox в ЭТОМ
-        # браузере (origin = roblox.com), и для чистого IP FunCaptcha проходит прозрачно (sup=1) —
-        # вход завершается сам. Кооперативная отдача токена с чужого домена тут невозможна в
-        # принципе: Roblox делает Arkose API Source Validation и бракует токен, решённый не под
-        # roblox.com (проверено живьём). Поэтому просто ждём, пока браузер сам добьёт вход.
-        cap = _read_captcha(driver)
-        if cap and cap.get("blob"):
-            saw_captcha = True
-        time.sleep(2)
-    # Таймаут. Если капча была, а вход не завершился — прозрачно не прошло: грязный IP/нужен прокси.
-    if saw_captcha:
+            return {"status": "error", "error": "Не нашёл форму логина."}
+        deadline = time.time() + wait
+        saw_captcha = False
+        while time.time() < deadline:
+            u = bl.who_am_i(driver)
+            if u:
+                ck = _cookie(driver)
+                _close(sid)
+                return {"status": "ok", "account": _user_brief(u), "roblosecurity": ck}
+            # 2FA — единственная остановка, где реально нужен покупатель (код/апрув с телефона).
+            ch, media = bl.detect_challenge(driver)
+            if ch == "2fa_code":
+                with LOCK:
+                    SESSIONS[sid]["status"] = "2fa"; SESSIONS[sid]["mediaType"] = media
+                return {"status": "2fa", "sid": sid, "mediaType": media}
+            if ch == "2fa_push":
+                with LOCK:
+                    SESSIONS[sid]["status"] = "2fa_push"
+                return {"status": "2fa_push", "sid": sid}
+            # Path C: капчу покупателю НЕ отдаём. Виджет Arkose уже рендерит фронт Roblox в ЭТОМ
+            # браузере (origin = roblox.com), и для чистого IP FunCaptcha проходит прозрачно (sup=1) —
+            # вход завершается сам. Кооперативная отдача токена с чужого домена тут невозможна в
+            # принципе: Roblox делает Arkose API Source Validation и бракует токен, решённый не под
+            # roblox.com (проверено живьём). Поэтому просто ждём, пока браузер сам добьёт вход.
+            cap = _read_captcha(driver)
+            if cap and cap.get("blob"):
+                saw_captcha = True
+            time.sleep(2)
+        # Таймаут. Если капча была, а вход не завершился — прозрачно не прошло: грязный IP/нужен прокси.
+        if saw_captcha:
+            _close(sid)
+            return {"status": "error",
+                    "error": "Капча Roblox не прошла автоматически (нужен чистый IP/резидентный прокси для login_service)."}
+        with LOCK:
+            SESSIONS[sid]["status"] = "pending"
+        return {"status": "pending", "sid": sid}
+    except Exception as e:  # noqa: BLE001 — любой сбой браузера: закрываем сессию, чтобы Chrome не тёк
         _close(sid)
-        return {"status": "error",
-                "error": "Капча Roblox не прошла автоматически (нужен чистый IP/резидентный прокси для login_service)."}
-    with LOCK:
-        SESSIONS[sid]["status"] = "pending"
-    return {"status": "pending", "sid": sid}
+        return {"status": "error", "error": "Браузер: " + str(e)[:160]}
 
 
 # JS: довнести токен капчи в ту же сессию (continue + повтор login), вернуть статусы.
