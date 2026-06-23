@@ -127,20 +127,39 @@ def refresh_login(refresh_token):
 
 # ---------- Xbox auth chain ----------
 
+def _post_json_full(url, obj):
+    h = {"Content-Type": "application/json", "Accept": "application/json", "x-xbl-contract-version": "1"}
+    req = Request(url, data=json.dumps(obj).encode(), headers=h, method="POST")
+    try:
+        r = urlopen(req, timeout=30)
+        return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
+    except HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
+    except URLError as e:
+        return 0, str(e), {}
+
+
 def xbox_user_token(access_token):
-    # client_id 0000000048093EE3 (MBI_SSL) → RpsTicket СЫРОЙ (без d=); d= нужен только для Azure-AD/XboxLive.signin.
-    # Пробуем оба формата.
-    last = ""
-    for rps in (access_token, "d=" + access_token):
-        st, body = _post_json(USER_AUTH, {
+    print("    access_token: длина %d, начало %r" % (len(access_token), access_token[:8]))
+    last = None
+    for label, rps in (("d=", "d=" + access_token), ("сырой", access_token)):
+        st, body, hdrs = _post_json_full(USER_AUTH, {
             "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT",
             "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": rps}})
         if st == 200:
             d = json.loads(body)
-            print("    RpsTicket-формат: %s" % ("сырой" if rps == access_token else "d="))
+            print("    RpsTicket=%s OK" % label)
             return d["Token"], d["DisplayClaims"]["xui"][0]["uhs"]
-        last = "%s: %s" % (st, body[:200])
-    raise SystemExit("user.auth.xboxlive ошибка (оба формата RpsTicket): %s" % last)
+        last = (st, label, body, hdrs)
+    st, label, body, hdrs = last
+    print("\n    --- ДИАГНОСТИКА user.auth (%s) ---" % label)
+    print("    HTTP:", st)
+    print("    тело:", (body[:400] if body else "(пусто)"))
+    for hk in ("WWW-Authenticate", "X-XErr", "X-Err", "ms-cv", "X-Content-Type-Options"):
+        if hdrs.get(hk):
+            print("    %s: %s" % (hk, str(hdrs.get(hk))[:200]))
+    print("    (пришли мне этот блок целиком — по XErr пойму причину)")
+    raise SystemExit("user.auth.xboxlive: %s" % st)
 
 
 def xsts_token(user_token, relying_party):
