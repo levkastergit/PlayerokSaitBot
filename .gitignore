@@ -34,3 +34,6 @@ supercell_auto_otp_plugin/cache/
 worker/msstore-worker/automation/robux-capture-*/
 worker/msstore-worker/automation/robux-app-capture-*/
 worker/msstore-worker/automation/.capture-profile/
+# Токены минта XSTS (refresh-токен MSA + готовый XSTS-заголовок) — НЕ коммитим.
+worker/msstore-worker/automation/xsts_refresh.txt
+worker/msstore-worker/automation/xsts_header.txt

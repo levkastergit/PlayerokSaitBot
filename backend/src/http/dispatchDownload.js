@@ -32,6 +32,11 @@ const FILES = {
     title: 'capture_robux_purchase.py',
     desc: 'ЗАПАСНОЙ: захват покупки через БРАУЗЕР (roblox.com), без прокси. Только если покупаешь не в приложении, а на сайте.',
   },
+  'mint_xsts.py': {
+    type: 'text/x-python; charset=utf-8',
+    title: 'mint_xsts.py',
+    desc: 'Прототип B: минт коммерческого токена XSTS (вход в MSA по device-code) + БЕЗОПАСНАЯ проверка на каталоге (без оплаты). Покажет, какой relying-party принимает токен для покупки.',
+  },
 }
 
 function fileSizeKb(name) {
