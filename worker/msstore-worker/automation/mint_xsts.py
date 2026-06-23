@@ -128,14 +128,19 @@ def refresh_login(refresh_token):
 # ---------- Xbox auth chain ----------
 
 def xbox_user_token(access_token):
-    st, body = _post_json(USER_AUTH, {
-        "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT",
-        "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": "d=" + access_token}})
-    if st != 200:
-        raise SystemExit("user.auth.xboxlive ошибка %s: %s" % (st, body[:300]))
-    d = json.loads(body)
-    uhs = d["DisplayClaims"]["xui"][0]["uhs"]
-    return d["Token"], uhs
+    # client_id 0000000048093EE3 (MBI_SSL) → RpsTicket СЫРОЙ (без d=); d= нужен только для Azure-AD/XboxLive.signin.
+    # Пробуем оба формата.
+    last = ""
+    for rps in (access_token, "d=" + access_token):
+        st, body = _post_json(USER_AUTH, {
+            "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT",
+            "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": rps}})
+        if st == 200:
+            d = json.loads(body)
+            print("    RpsTicket-формат: %s" % ("сырой" if rps == access_token else "d="))
+            return d["Token"], d["DisplayClaims"]["xui"][0]["uhs"]
+        last = "%s: %s" % (st, body[:200])
+    raise SystemExit("user.auth.xboxlive ошибка (оба формата RpsTicket): %s" % last)
 
 
 def xsts_token(user_token, relying_party):
