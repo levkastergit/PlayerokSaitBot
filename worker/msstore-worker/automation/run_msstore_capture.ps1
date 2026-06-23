@@ -15,6 +15,7 @@
   БЕЗОПАСНО по анткиту: перехватывается только СЕТЬ, процесс Roblox не трогаем.
   Если на оплате белый экран — хост пиннит cert; это нормальный результат, жми Ctrl+C.
 #>
+param([string]$OverrideUserId = "")
 $ErrorActionPreference = "Stop"
 $port = 8080
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -88,6 +89,12 @@ try {
   Write-Host "      2) если на оплате БЕЛЫЙ ЭКРАН — это ожидаемо (хост пиннит cert), просто закрой окно"
   Write-Host "      3) когда покупка прошла ИЛИ застряла — вернись сюда и нажми Ctrl+C"
   Write-Host ""
+  if ($OverrideUserId) {
+    $env:OVERRIDE_PUBLISHER_USERID = $OverrideUserId
+    Write-Host "  [ТЕСТ A] publisherUserId будет ПОДМЕНЁН на: $OverrideUserId" -ForegroundColor Magenta
+    Write-Host "  (покупай залогиненным аккаунтом X — Robux должны уйти на аккаунт $OverrideUserId)" -ForegroundColor Magenta
+    Write-Host ""
+  }
   & $mitm --listen-host 127.0.0.1 --listen-port $port -s "$addon"
 }
 finally {

