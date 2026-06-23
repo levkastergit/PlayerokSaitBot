@@ -47,6 +47,8 @@ COPY worker/msstore-worker/automation/capture_robux_purchase.py ./public/downloa
 COPY worker/msstore-worker/automation/capture_msstore_app.py ./public/downloads/capture_msstore_app.py
 COPY worker/msstore-worker/automation/run_msstore_capture.ps1 ./public/downloads/run_msstore_capture.ps1
 COPY worker/msstore-worker/automation/mint_xsts.py ./public/downloads/mint_xsts.py
+COPY worker/msstore-worker/automation/diag_buynow.ps1 ./public/downloads/diag_buynow.ps1
+COPY worker/msstore-worker/automation/test_a_robux.ps1 ./public/downloads/test_a_robux.ps1
 
 ENV PORT=3000
 EXPOSE 3000

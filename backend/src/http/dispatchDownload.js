@@ -37,6 +37,16 @@ const FILES = {
     title: 'mint_xsts.py',
     desc: 'Прототип B: минт коммерческого токена XSTS (вход в MSA по device-code) + БЕЗОПАСНАЯ проверка на каталоге (без оплаты). Покажет, какой relying-party принимает токен для покупки.',
   },
+  'diag_buynow.ps1': {
+    type: 'text/plain; charset=utf-8',
+    title: 'diag_buynow.ps1',
+    desc: 'НОВЫЙ. Диагностика «белого окна» при покупке 80 Robux. Ничего не покупает и не меняет — только читает состояние: ищет перехват TLS (mitmproxy/прокси), проверяет WebView2 Runtime, системный прокси, часы и доступность хостов оплаты. Запуск: powershell -ExecutionPolicy Bypass -File diag_buynow.ps1',
+  },
+  'test_a_robux.ps1': {
+    type: 'text/plain; charset=utf-8',
+    title: 'test_a_robux.ps1',
+    desc: 'НОВЫЙ — ТЕСТ A. Проверяет, уйдут ли Robux на ПРОИЗВОЛЬНЫЙ userId (не залогиненный в приложении). Обёртка над капчуром: при реальной покупке 80 Robux подменяет получателя на твой userId. Нужны рядом run_msstore_capture.ps1 и capture_msstore_app.py. Инструкция — ниже на этой странице.',
+  },
 }
 
 function fileSizeKb(name) {
@@ -169,6 +179,32 @@ function renderPage() {
         <li>Вернись в консоль и нажми <code>Ctrl+C</code> — скрипт <b>сам отправит</b> замаскированный отчёт и всё откатит. Напиши мне «сделал».</li>
       </ol>
       <p class="note"><span class="ok">Безопасно по анткиту:</span> перехватывается только <b>сеть</b> (временный локальный прокси + доверенный CA), процесс Roblox <b>не трогается</b> — Hyperion стережёт память процесса, а не сеть. По выходу лаунчер сам убирает прокси, loopback-exempt и доверие к CA. Cookies/токены остаются в локальном <code>capture-full.jsonl</code> — на сервер уходит только замаскированный отчёт.</p>
+    </div>
+
+    <div class="steps">
+      <h2>ТЕСТ A — уйдут ли Robux на произвольный userId (<code>test_a_robux.ps1</code>)</h2>
+      <p class="desc">Проверяем главный вопрос модели: можно ли лить Robux на <b>любой</b> аккаунт с одного funded-MS-аккаунта. Скрипт при реальной покупке 80 Robux подменяет получателя (<code>publisherUserId</code>) на твой userId.</p>
+      <ol>
+        <li>Скачай <b>три</b> файла в одну папку: <code>test_a_robux.ps1</code>, <code>run_msstore_capture.ps1</code>, <code>capture_msstore_app.py</code>. Нужен Python 3.</li>
+        <li><b>Залогинь приложение Roblox (MS Store) под ДРУГИМ аккаунтом</b> — не тем, что укажешь получателем. Это ключ теста: иначе подмена ничего не докажет.</li>
+        <li>Запиши <b>баланс обоих</b> аккаунтов ДО покупки (профиль Roblox или экран Robux).</li>
+        <li>Запусти <b>от Администратора</b> (получатель — твой userId, который <b>не</b> залогинен в приложении):<br><code>powershell -ExecutionPolicy Bypass -File test_a_robux.ps1 -RecipientUserId 5304760791</code></li>
+        <li>Когда увидишь «ПЕРЕХВАТ ИДЁТ» — в приложении купи <b>80 Robux</b> (оплата Microsoft-балансом). Белый экран на оплате — норм, закрой. Затем <code>Ctrl+C</code> в консоли.</li>
+        <li>Подожди ~10–15 c, переоткрой магазин и сверь балансы:
+          <br><span class="ok">+80 у получателя</span> (не залогиненного) → <b>ТЕСТ A ПРОЙДЕН</b>: льём на любой userId.
+          <br>+80 у залогиненного аккаунта → получатель жёстко привязан к логину в приложении.</li>
+      </ol>
+      <p class="note">Скрипт сам ничего не покупает — ты делаешь одну реальную покупку $0.99. Отчёт уходит на сервер автоматически по <code>Ctrl+C</code>. Напиши мне результат сверки балансов.</p>
+    </div>
+
+    <div class="steps">
+      <h2>Белый экран при покупке? — диагностика (<code>diag_buynow.ps1</code>)</h2>
+      <p class="desc">Если при «купить 80 Robux» появляется пустое белое окно, прогони диагностику на том же ПК. Она ничего не покупает и не меняет — только ищет причину.</p>
+      <ol>
+        <li>Скачай <code>diag_buynow.ps1</code> и запусти:<br><code>powershell -ExecutionPolicy Bypass -File diag_buynow.ps1</code></li>
+        <li>Смотри секцию <b>2. TLS CERTS</b>: если издатель серта = <code>mitmproxy</code> или нештатный — WebView2 не доверяет ему, отсюда белый экран. Закрой капчур/прокси и повтори покупку.</li>
+        <li>Если перехвата нет, а окно белое — <code>wsreset.exe</code> и чистка кэша WebView2. Пришли мне вывод секции 2 и вердикт.</li>
+      </ol>
     </div>
   </div>
 </body>
