@@ -22,13 +22,14 @@ import json
 import os
 import re
 from datetime import datetime
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 ENDPOINT = os.environ.get("CAPTURE_ENDPOINT", "https://wesqaliqo.com/download/capture")
 TOKEN = os.environ.get("CAPTURE_TOKEN", "rbxcap-2f9a4c7e")
 
 HOST_HINTS = ("roblox.com", "rbxcdn.com", "microsoft.com", "live.com", "xboxlive.com",
-              "mp.microsoft", "md.microsoft", "xbox.com", "msftauth", "windows.net")
+              "mp.microsoft", "md.microsoft", "xbox.com", "msftauth", "windows.net",
+              "dynamics.com", "xboxservices.com", "store-web")
 PATH_HINTS = ("pay", "purchas", "order", "checkout", "robux", "credit", "billing",
               "transaction", "redeem", "token", "catalog", "premium", "upgrades",
               "collections", "beneficiar", "sku", "product", "wallet", "fund",
@@ -53,7 +54,15 @@ def mask_str(v):
 def mask_headers(h):
     out = {}
     for k, v in h.items():
-        out[k] = mask_str(v) if (SENSITIVE_RE.search(k) or looks_secret(v)) else v
+        kl = k.lower()
+        if kl in ("authorization", "www-authenticate", "proxy-authorization"):
+            # раскрываем СХЕМУ токена (Bearer/XBL3.0/WLID1.0/MSAToken…), остальное маскируем
+            s = str(v)
+            out[k] = (s[:14] + "<MASKED:%d>" % max(0, len(s) - 14)) if len(s) > 14 else s
+        elif SENSITIVE_RE.search(k) or looks_secret(v):
+            out[k] = mask_str(v)
+        else:
+            out[k] = v
     return out
 
 
@@ -164,7 +173,9 @@ class RobuxAppCapture:
             req = Request(ENDPOINT, data=data,
                           headers={"X-Capture-Token": TOKEN, "Content-Type": "text/markdown",
                                    "User-Agent": "robux-app-capture/1"}, method="POST")
-            resp = urlopen(req, timeout=30).read().decode("utf-8", "replace")
+            # ВАЖНО: обходим системный прокси (на Ctrl+C сам mitmproxy уже умирает) — шлём напрямую
+            opener = build_opener(ProxyHandler({}))
+            resp = opener.open(req, timeout=30).read().decode("utf-8", "replace")
             ctx.log.info("[robux] ✅ отчёт отправлен на сервер: %s" % resp[:160])
         except Exception as e:
             ctx.log.warn("[robux] отправка не удалась (%s). Отчёт локально: %s" % (e, rp))
@@ -172,6 +183,21 @@ class RobuxAppCapture:
     def _report(self):
         L = ["# Капчур покупки Robux в приложении MS Store (значения секретов замаскированы)\n",
              "Всего запросов: %d, интересных (roblox/microsoft/xbox/оплата): %d\n" % (self.seq, len(self.records))]
+        # Сводка балансов по аккаунтам (economy currency) — сразу видны дельты по каждому userId
+        bal = []
+        for r in self.records:
+            if "economy.roblox.com" in r["url"] and "/currency" in r["url"]:
+                m = re.search(r"/users/(\d+)/currency", r["url"])
+                uid = m.group(1) if m else "?"
+                try:
+                    val = json.loads(r["resp_body"]).get("robux")
+                except Exception:
+                    val = (r.get("resp_body") or "")[:40]
+                bal.append("- seq %s: userId=%s -> robux=%s" % (r["seq"], uid, val))
+        if bal:
+            L.append("## Балансы Robux (economy currency) по порядку")
+            L.extend(bal)
+            L.append("")
         for r in self.records:
             L.append("### [%d] %s %s" % (r["seq"], r["method"], mask_url(r["url"])))
             L.append("- status: `%s`" % r["status"])
