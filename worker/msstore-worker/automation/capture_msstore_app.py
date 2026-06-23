@@ -97,7 +97,7 @@ def mask_body(b, ct=""):
             else:
                 out.append(pr)
         return "&".join(out)
-    return re.sub(r"[A-Za-z0-9_\-+/=\.|]{40,}", lambda m: mask_str(m.group(0)), b)[:4000]
+    return re.sub(r"[A-Za-z0-9_\-+/=\.|]{40,}", lambda m: mask_str(m.group(0)), b)[:80000]
 
 
 def mask_url(u):
