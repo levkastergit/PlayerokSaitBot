@@ -1,4 +1,5 @@
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
+const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 
 const JOB_ID = 'autolist'
 // Порог «медленного» прохода по одному пользователю — выше пишем предупреждение в лог.
@@ -57,6 +58,7 @@ function setupAutolistBackgroundJob({
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
+    if (isOutboundCircuitOpen()) return
     if (autolistInFlight) return
     let tickError = null
     let tickStarted = false

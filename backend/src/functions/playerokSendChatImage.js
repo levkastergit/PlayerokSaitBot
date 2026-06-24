@@ -4,7 +4,9 @@ const fs = require('fs')
 const https = require('https')
 const crypto = require('crypto')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 const CREATE_CHAT_MESSAGE_QUERY = `mutation createChatMessage($input: CreateChatMessageInput!, $file: Upload, $showForbiddenImage: Boolean!) {
   createChatMessage(input: $input, file: $file) {
@@ -95,21 +97,23 @@ function createSendChatImage() {
             },
           }
 
-          const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
+          const extra = playerokHttpsExtraOptions('chats')
+          const req = https.request({ ...options, ...extra }, (resp) => {
             let data = ''
             resp.setEncoding('utf8')
             resp.on('data', (chunk) => {
               data += chunk
             })
             resp.on('end', () => {
+              reportIpResult(playerokEgressKey(extra), resp.statusCode)
               if (resp.statusCode !== 200) {
                 const preview = String(data || '').slice(0, 600)
-                return reject(
-                  new Error(
-                    `Playerok sendChatImage: status ${resp.statusCode}` +
-                      (preview ? `; ${preview}` : '')
-                  )
+                const err = new Error(
+                  `Playerok sendChatImage: status ${resp.statusCode}` +
+                    (preview ? `; ${preview}` : '')
                 )
+                err.statusCode = resp.statusCode
+                return reject(err)
               }
               let json
               try {
@@ -125,6 +129,7 @@ function createSendChatImage() {
           })
 
           req.on('error', reject)
+          attachPlayerokTimeout(req, 'Playerok sendChatImage')
           req.write(body)
           req.end()
         })

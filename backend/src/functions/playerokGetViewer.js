@@ -2,8 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
   if (!VIEWER_QUERY) throw new Error('VIEWER_QUERY is required')
@@ -40,13 +41,15 @@ function createGetViewer({ VIEWER_QUERY, PLAYEROK_USER_AGENT }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('sync') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('sync')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const responseBody = String(data || '')
             const preview = responseBody.replace(/\s+/g, ' ').slice(0, 400)

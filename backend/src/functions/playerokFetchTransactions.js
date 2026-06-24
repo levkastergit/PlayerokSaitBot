@@ -3,7 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
   if (!TRANSACTIONS_PERSISTED_HASH) throw new Error('TRANSACTIONS_PERSISTED_HASH is required')
@@ -37,6 +39,7 @@ function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
         }),
       })
 
+      const extra = playerokHttpsExtraOptions('finance')
       const req = https.request(
         {
           hostname: 'playerok.com',
@@ -57,15 +60,18 @@ function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
               userAgent ||
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
           },
-          ...playerokHttpsExtraOptions('finance'),
+          ...extra,
         },
         (resp) => {
           let data = ''
           resp.setEncoding('utf8')
           resp.on('data', (chunk) => { data += chunk })
           resp.on('end', () => {
+            reportIpResult(playerokEgressKey(extra), resp.statusCode)
             if (resp.statusCode !== 200) {
-              return reject(new Error(`Playerok transactions: status ${resp.statusCode}`))
+              const err = new Error(`Playerok transactions: status ${resp.statusCode}`)
+              err.statusCode = resp.statusCode
+              return reject(err)
             }
             let json
             try {
@@ -92,6 +98,7 @@ function createFetchTransactions({ TRANSACTIONS_PERSISTED_HASH }) {
       )
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok transactions')
       req.end()
         })
     )

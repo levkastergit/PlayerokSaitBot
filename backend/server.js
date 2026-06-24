@@ -12,6 +12,17 @@ const { URLSearchParams } = require('url')
 const { execFile, spawnSync } = require('child_process')
 
 const PORT = parseInt(process.env.PORT, 10) || 3000
+
+// Глобальная страховка: одиночный необработанный промис/исключение в любом обработчике
+// или фоновой задаче НЕ должен ронять весь процесс (иначе все висящие запросы превращаются
+// в 502/504 до перезапуска контейнера). Логируем и продолжаем работать.
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason && reason.stack ? reason.stack : reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException:', err && err.stack ? err.stack : err)
+})
+
 let playerokDdosCookie = String(process.env.PLAYEROK_DDOS_COOKIE || '').trim()
 
 function getPlayerokDdosCookie() {
@@ -846,14 +857,24 @@ const fetchCompletedItemsFromPlayerok = createFetchCompletedItemsFromPlayerok({
   LOTS_CACHE_TTL_MS,
 })
 
-const server = http.createServer(async (req, res) => {
+const handleHttpRequest = async (req, res) => {
   const origin = req.headers.origin
   // Для fetch с `credentials: 'include'` нельзя отдавать `*` в `Access-Control-Allow-Origin`.
   // Поэтому при наличии Origin — эхоим его и включаем `Access-Control-Allow-Credentials`,
   // credentials включаются для любого Origin.
+  // Опциональный белый список источников (env CORS_ALLOWED_ORIGINS, через запятую).
+  // Если задан — отражаем Origin и включаем credentials ТОЛЬКО для разрешённых доменов
+  // (закрывает отражение любого Origin с credentials). Если НЕ задан — прежнее поведение
+  // (отражаем любой Origin), чтобы не сломать доступ к панели.
   if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Access-Control-Allow-Credentials', 'true')
+    const corsAllowList = String(process.env.CORS_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (corsAllowList.length === 0 || corsAllowList.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
+    }
   } else {
     res.setHeader('Access-Control-Allow-Origin', '*')
   }
@@ -869,6 +890,14 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname
   const query = Object.fromEntries(parsedUrl.searchParams)
   const nowTs = Math.floor(Date.now() / 1000)
+
+  // Лёгкий health-эндпоинт (до сессионной проверки) — для docker healthcheck и nginx
+  // depends_on: condition: service_healthy. Не ходит в Playerok/БД, отвечает мгновенно.
+  if (pathname === '/healthz') {
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    return res.end('ok')
+  }
 
   // Публичный раздел «Загрузка» (скрипты для скачивания) — без сессии, до фронтенд-статики.
   {
@@ -1297,10 +1326,33 @@ const server = http.createServer(async (req, res) => {
 
   sendJson(res, 404, { error: 'Not found' })
   })
+}
+
+// Обёртка над обработчиком: ловит любой throw/reject, чтобы (а) не было необработанного
+// отказа промиса (который иначе залогируется глобально, но клиент повиснет) и (б) клиент
+// получил быстрый 500, а не висел до nginx/requestTimeout.
+const server = http.createServer((req, res) => {
+  handleHttpRequest(req, res).catch((err) => {
+    console.error('[server] необработанная ошибка запроса:', err && err.stack ? err.stack : err)
+    try {
+      if (!res.headersSent && !res.writableEnded) sendJson(res, 500, { error: 'internal' })
+    } catch (_) {}
+  })
 })
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}/`)
+// Таймауты на ВХОДЯЩИЕ соединения. Без них зависший обработчик (за общим гейтом, на
+// timeout-less сокете или на медленном body) держит соединение, пока nginx сам не отдаст
+// 504. Делаем приложение «быстро падающим»: ниже nginx-таймаута. Все значения — env-настройка.
+server.requestTimeout = Number(process.env.SERVER_REQUEST_TIMEOUT_MS) || 45000
+server.headersTimeout = Number(process.env.SERVER_HEADERS_TIMEOUT_MS) || 20000
+server.keepAliveTimeout = Number(process.env.SERVER_KEEPALIVE_TIMEOUT_MS) || 65000
+
+// Привязка к loopback по умолчанию: наружу порт 3000 не выставляется (nginx с network_mode:host
+// и фоновые self-call'ы ходят через 127.0.0.1). Для бридж-сети контейнера задайте BIND_HOST=0.0.0.0.
+const BIND_HOST = process.env.BIND_HOST || '127.0.0.1'
+
+server.listen(PORT, BIND_HOST, () => {
+  console.log(`Server running at http://${BIND_HOST}:${PORT}/`)
 
   const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
@@ -1349,7 +1401,9 @@ server.listen(PORT, () => {
     chatDbSyncService,
     chatDbRepo,
     isAllActionsStopped,
-    intervalMs: 500,
+    // 500мс на 1-CPU + общий последовательный гейт перегружали очередь и провоцировали
+    // 429/504. 1500мс достаточно «живо» для чата и втрое разгружает гейт. Настраивается env.
+    intervalMs: Number(process.env.CHATS_SYNC_INTERVAL_MS) || 1500,
   })
 
   // Наблюдатель статусов сделок: триггерит автосообщения этапов «Отправка/Подтверждение

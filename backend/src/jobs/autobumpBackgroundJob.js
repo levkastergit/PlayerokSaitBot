@@ -1,4 +1,5 @@
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
 
 const JOB_ID = 'autobump'
@@ -33,6 +34,8 @@ function setupAutobumpBackgroundJob({
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
+    // Все исходящие IP на cooldown → запросы почти гарантированно словят 429: пропускаем тик.
+    if (isOutboundCircuitOpen()) return
     if (Date.now() < autobumpViewerBackoffUntil) {
       return
     }

@@ -3,7 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH }) {
   if (!TRANSACTION_PROVIDERS_PERSISTED_HASH) {
@@ -48,13 +50,17 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('finance') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('finance')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => { data += chunk })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
-            return reject(new Error(`Playerok transactionProviders: status ${resp.statusCode}`))
+            const err = new Error(`Playerok transactionProviders: status ${resp.statusCode}`)
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
           let json
           try {
@@ -71,6 +77,7 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok transactionProviders')
       req.end()
         })
     )

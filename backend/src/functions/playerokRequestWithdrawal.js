@@ -2,7 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createRequestWithdrawal() {
   return function requestWithdrawal(token, userAgent, payload) {
@@ -42,6 +44,7 @@ function createRequestWithdrawal() {
       }
 
       const body = JSON.stringify(bodyJson)
+      const extra = playerokHttpsExtraOptions('finance')
       const req = https.request(
         {
           hostname: 'playerok.com',
@@ -64,15 +67,18 @@ function createRequestWithdrawal() {
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
             'Content-Length': Buffer.byteLength(body, 'utf8'),
           },
-          ...playerokHttpsExtraOptions('finance'),
+          ...extra,
         },
         (resp) => {
           let data = ''
           resp.setEncoding('utf8')
           resp.on('data', (chunk) => { data += chunk })
           resp.on('end', () => {
+            reportIpResult(playerokEgressKey(extra), resp.statusCode)
             if (resp.statusCode !== 200) {
-              return reject(new Error(`Playerok requestWithdrawal: status ${resp.statusCode}`))
+              const err = new Error(`Playerok requestWithdrawal: status ${resp.statusCode}`)
+              err.statusCode = resp.statusCode
+              return reject(err)
             }
             let json
             try {
@@ -89,6 +95,7 @@ function createRequestWithdrawal() {
       )
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok requestWithdrawal')
       req.write(body)
       req.end()
         })

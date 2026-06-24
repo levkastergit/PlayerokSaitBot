@@ -3,7 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createRequestChatById({ CHAT_PERSISTED_HASH }) {
   if (!CHAT_PERSISTED_HASH) throw new Error('CHAT_PERSISTED_HASH is required')
@@ -43,20 +45,22 @@ function createRequestChatById({ CHAT_PERSISTED_HASH }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('chats')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const preview = String(data || '').slice(0, 500)
-            return reject(
-              new Error(
-                `Playerok chat: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')
-              )
+            const err = new Error(
+              `Playerok chat: status ${resp.statusCode}` + (preview ? `; ${preview}` : '')
             )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json
@@ -75,6 +79,7 @@ function createRequestChatById({ CHAT_PERSISTED_HASH }) {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok chat')
       req.end()
         })
     )

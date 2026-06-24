@@ -2,7 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   if (!AUTOBUMP_PRIORITY_STATUS_ID) {
@@ -79,21 +81,23 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('lots')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const preview = String(data || '').slice(0, 600)
-            return reject(
-              new Error(
-                `Playerok publishItem: status ${resp.statusCode}` +
-                (preview ? `; ${preview}` : '')
-              )
+            const err = new Error(
+              `Playerok publishItem: status ${resp.statusCode}` +
+              (preview ? `; ${preview}` : '')
             )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
           let json
           try {
@@ -116,6 +120,7 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
         })
       })
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok publishItem')
       req.write(body)
       req.end()
         })

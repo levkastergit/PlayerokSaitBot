@@ -5,6 +5,8 @@ function sleep(ms) {
 }
 
 function isPlayerokRateLimitError(err) {
+  // Детерминированно — по числовому статусу, если он проброшен request-функцией.
+  if (err && err.statusCode === 429) return true
   const msg = err && err.message ? String(err.message) : String(err || '')
   return (
     msg.includes('Слишком много попыток') ||
@@ -16,6 +18,8 @@ function isPlayerokRateLimitError(err) {
 
 /** Кратковременные сбои Playerok / прокси: имеет смысл повторить publishItem */
 function isPlayerokTransientServerError(err) {
+  const sc = err && err.statusCode
+  if (sc === 500 || sc === 502 || sc === 503 || sc === 504) return true
   const msg = err && err.message ? String(err.message) : String(err || '')
   return (
     /\bstatus 50[023]\b/.test(msg) ||

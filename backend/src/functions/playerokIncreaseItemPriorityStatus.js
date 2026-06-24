@@ -2,7 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createIncreaseItemPriorityStatus({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   if (!AUTOBUMP_PRIORITY_STATUS_ID) {
@@ -81,21 +83,23 @@ function createIncreaseItemPriorityStatus({ AUTOBUMP_PRIORITY_STATUS_ID }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('lots')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const bodyPreview = String(data || '').slice(0, 800)
-            return reject(
-              new Error(
-                `Playerok bump: status ${resp.statusCode}` +
-                  (bodyPreview ? `; body: ${bodyPreview}` : '')
-              )
+            const err = new Error(
+              `Playerok bump: status ${resp.statusCode}` +
+                (bodyPreview ? `; body: ${bodyPreview}` : '')
             )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json
@@ -119,6 +123,7 @@ function createIncreaseItemPriorityStatus({ AUTOBUMP_PRIORITY_STATUS_ID }) {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok increaseItemPriorityStatus')
       req.write(body)
       req.end()
         })

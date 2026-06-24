@@ -1,4 +1,5 @@
 const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
+const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 
 const JOB_ID = 'chats-warmup'
 
@@ -24,6 +25,7 @@ function setupChatsWarmupBackgroundJob({
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
+    if (isOutboundCircuitOpen()) return
     if (inFlight) return
     let tickError = null
     let tickStarted = false

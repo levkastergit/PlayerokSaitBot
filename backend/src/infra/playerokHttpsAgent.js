@@ -41,6 +41,18 @@ function getPlayerokHttpsAgent(channel) {
   return getCachedAgent(url, localAddress)
 }
 
+/**
+ * Стабильный идентификатор «канала выхода» для учёта 429/cooldown по IP.
+ * Принимает УЖЕ вычисленные extra-опции, чтобы НЕ дёргать ротацию повторно (повторный
+ * resolveOutboundLocalAddress сместил бы round-robin курсор и отчёт ушёл бы не на тот IP).
+ * Приоритет: привязанный localAddress (ротация/пин) → URL прокси → null (OS-дефолт: пула
+ * нет, ротации нет — отчитываться некому, reportIpResult сам делает no-op на null).
+ */
+function playerokEgressKey(extra) {
+  if (extra && extra.localAddress) return extra.localAddress
+  return resolvePlayerokProxyUrl() || null
+}
+
 /** Фрагмент опций для https.request: { agent }, { localAddress } или оба по необходимости */
 function playerokHttpsExtraOptions(channel) {
   assertPlayerokChannelEnabled(channel)
@@ -57,5 +69,6 @@ module.exports = {
   resolvePlayerokProxyUrl,
   getPlayerokHttpsAgent,
   playerokHttpsExtraOptions,
+  playerokEgressKey,
   clearPlayerokHttpsAgentCache,
 }

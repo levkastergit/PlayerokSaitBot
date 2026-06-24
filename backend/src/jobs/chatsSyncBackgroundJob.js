@@ -1,6 +1,7 @@
 const { recordChatSyncStepLog } = require('../debug/chatSyncStepLog')
 const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 
 const JOB_ID = 'chats-sync'
 
@@ -42,6 +43,7 @@ function setupChatsSyncBackgroundJob({
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
+    if (isOutboundCircuitOpen()) return
     const rows = getAllStoredTokens.all()
     if (!Array.isArray(rows) || rows.length === 0) return
     if (tickInFlight) return

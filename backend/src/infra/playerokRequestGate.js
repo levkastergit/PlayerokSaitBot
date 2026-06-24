@@ -64,6 +64,38 @@ function shouldSkipPlayerokGate() {
 let gateChain = Promise.resolve()
 let lastStartTime = 0
 
+// Лёгкий троттлинг интерактивного (skipGate) пути. Это НЕ строгая очередь (интерактив
+// должен отвечать быстро), но с минимальным интервалом между стартами и лимитом
+// параллельности — иначе веер запросов (например, загрузка списка чатов с десятками
+// dealById/itemById) уходит залпом и ловит 429. Серийный гейт (фон) — отдельно.
+const SKIP_MAX_CONCURRENCY = (() => {
+  const v = Number(process.env.PLAYEROK_SKIP_MAX_CONCURRENCY)
+  return Number.isFinite(v) && v > 0 ? v : 3
+})()
+let skipInFlight = 0
+let skipLastStart = 0
+const skipWaiters = []
+
+async function withSkipThrottle(fn) {
+  while (skipInFlight >= SKIP_MAX_CONCURRENCY) {
+    await new Promise((resolve) => skipWaiters.push(resolve))
+  }
+  skipInFlight += 1
+  try {
+    // Синхронный участок без await: соседние вызовы корректно сериализуют расчёт паузы
+    // (нет гонок по skipLastStart на однопоточном event loop).
+    const now = Date.now()
+    const wait = Math.max(0, MIN_GAP_MS - (now - skipLastStart))
+    skipLastStart = now + wait
+    if (wait > 0) await sleep(wait)
+    return await withGateTimeout(fn)
+  } finally {
+    skipInFlight -= 1
+    const next = skipWaiters.shift()
+    if (next) next()
+  }
+}
+
 // Снимок пула ротации кэшируем на 3с: listRotationPool читает os.networkInterfaces() —
 // не дёргаем на каждом входе в гейт на 1-CPU боксе.
 let __poolSnapAt = 0
@@ -130,7 +162,7 @@ function circuitAllowsRequest() {
 function withPlayerokGate(fn) {
   if (shouldSkipPlayerokGate()) {
     if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
-    return withGateTimeout(fn)
+    return withSkipThrottle(fn)
   }
   if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
   const run = gateChain.then(async () => {

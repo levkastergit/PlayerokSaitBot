@@ -2,7 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createUpdateDealStatus() {
   return function updateDealStatus(token, userAgent, dealId, newStatus) {
@@ -52,21 +54,23 @@ function createUpdateDealStatus() {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('deals')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const preview = String(data || '').slice(0, 800)
-            return reject(
-              new Error(
-                `Playerok updateDeal: status ${resp.statusCode}` +
-                  (preview ? `; ${preview}` : '')
-              )
+            const err = new Error(
+              `Playerok updateDeal: status ${resp.statusCode}` +
+                (preview ? `; ${preview}` : '')
             )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json
@@ -90,6 +94,7 @@ function createUpdateDealStatus() {
       })
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok updateDeal')
       req.write(body)
       req.end()
         })

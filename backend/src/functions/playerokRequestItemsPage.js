@@ -3,8 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
@@ -61,23 +62,31 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
         },
       }
 
-      const req = https.request({ ...options, ...playerokHttpsExtraOptions('lots') }, (resp) => {
+      const extra = playerokHttpsExtraOptions('lots')
+      const req = https.request({ ...options, ...extra }, (resp) => {
         let data = ''
         resp.setEncoding('utf8')
         resp.on('data', (chunk) => {
           data += chunk
         })
         resp.on('end', () => {
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
-            let errMsg = `Playerok responded with status ${resp.statusCode}`
+            // Сохраняем числовой статус И в тексте, И в err.statusCode: иначе подмена
+            // сообщения GraphQL-текстом теряет код 429 и withRetry не распознаёт лимит.
+            let detail = ''
             try {
               const errJson = JSON.parse(data)
-              if (errJson?.errors?.[0]?.message) errMsg = errJson.errors[0].message
-              else if (errJson?.message) errMsg = errJson.message
+              if (errJson?.errors?.[0]?.message) detail = errJson.errors[0].message
+              else if (errJson?.message) detail = errJson.message
             } catch (_) {
-              if (data && data.length < 500) errMsg += `: ${data}`
+              if (data && data.length < 500) detail = data
             }
-            return reject(new Error(errMsg))
+            const err = new Error(
+              `Playerok items: status ${resp.statusCode}` + (detail ? `; ${detail}` : '')
+            )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json

@@ -3,7 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
   if (!VERIFIED_CARDS_PERSISTED_HASH) throw new Error('VERIFIED_CARDS_PERSISTED_HASH is required')
@@ -28,6 +30,7 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
         }),
       })
 
+      const extra = playerokHttpsExtraOptions('finance')
       const req = https.request(
         {
           hostname: 'playerok.com',
@@ -48,14 +51,19 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
               userAgent ||
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
           },
-          ...playerokHttpsExtraOptions('finance'),
+          ...extra,
         },
         (resp) => {
           let data = ''
           resp.setEncoding('utf8')
           resp.on('data', (chunk) => { data += chunk })
           resp.on('end', () => {
-            if (resp.statusCode !== 200) return reject(new Error(`Playerok verifiedCards: status ${resp.statusCode}`))
+            reportIpResult(playerokEgressKey(extra), resp.statusCode)
+            if (resp.statusCode !== 200) {
+              const err = new Error(`Playerok verifiedCards: status ${resp.statusCode}`)
+              err.statusCode = resp.statusCode
+              return reject(err)
+            }
             let json
             try {
               json = JSON.parse(data)
@@ -80,6 +88,7 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
       )
 
       req.on('error', reject)
+      attachPlayerokTimeout(req, 'Playerok verifiedCards')
       req.end()
         })
     )

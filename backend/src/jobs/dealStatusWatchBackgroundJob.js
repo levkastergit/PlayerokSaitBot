@@ -17,6 +17,7 @@
 
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
+const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 const {
   autolistGetSupercellFlowMap,
   autolistGetTopupFlowMap,
@@ -119,6 +120,7 @@ function setupDealStatusWatchBackgroundJob({
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
+    if (isOutboundCircuitOpen()) return
     const rows = typeof getAllStoredTokens?.all === 'function' ? getAllStoredTokens.all() : null
     if (!Array.isArray(rows) || rows.length === 0) return
     if (tickInFlight) return

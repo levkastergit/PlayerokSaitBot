@@ -18,6 +18,13 @@ services:
       - /opt/sait:/opt/sait
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
+    healthcheck:
+      # node есть в образе — не зависим от curl/wget. /healthz отвечает без БД/Playerok.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   nginx:
     network_mode: host
@@ -25,7 +32,8 @@ services:
       context: .
       dockerfile: nginx/Dockerfile
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     env_file:
       - ./.env
     volumes:

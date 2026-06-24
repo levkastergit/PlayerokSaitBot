@@ -2,7 +2,9 @@
 
 const https = require('https')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 function postChatDealBootstrap(token, userAgent, chatId, idType) {
   const referer = 'https://playerok.com/chats'
@@ -44,13 +46,15 @@ function postChatDealBootstrap(token, userAgent, chatId, idType) {
       },
     }
 
-    const req = https.request({ ...options, ...playerokHttpsExtraOptions('chats') }, (resp) => {
+    const extra = playerokHttpsExtraOptions('chats')
+    const req = https.request({ ...options, ...extra }, (resp) => {
       let data = ''
       resp.setEncoding('utf8')
       resp.on('data', (chunk) => {
         data += chunk
       })
       resp.on('end', () => {
+        reportIpResult(playerokEgressKey(extra), resp.statusCode)
         if (resp.statusCode !== 200) {
           resolve(null)
           return
@@ -72,6 +76,7 @@ function postChatDealBootstrap(token, userAgent, chatId, idType) {
     })
 
     req.on('error', () => resolve(null))
+    attachPlayerokTimeout(req, 'Playerok chatDealBootstrap')
     req.write(body)
     req.end()
   })

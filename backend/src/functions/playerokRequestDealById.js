@@ -3,7 +3,9 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
+const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
+const { reportIpResult } = require('../infra/playerokOutboundRotation')
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
@@ -11,7 +13,9 @@ const DEFAULT_UA =
 function parseDealJsonBody(data, statusCode, label) {
   if (statusCode !== 200) {
     const preview = String(data || '').slice(0, 600)
-    throw new Error(`Playerok deal ${label}: status ${statusCode}` + (preview ? `; ${preview}` : ''))
+    const err = new Error(`Playerok deal ${label}: status ${statusCode}` + (preview ? `; ${preview}` : ''))
+    err.statusCode = statusCode
+    throw err
   }
   let json
   try {
@@ -63,13 +67,15 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'user-agent': ua,
           },
         }
-        const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
+        const extra = playerokHttpsExtraOptions('deals')
+        const req = https.request({ ...options, ...extra }, (resp) => {
           let data = ''
           resp.setEncoding('utf8')
           resp.on('data', (chunk) => {
             data += chunk
           })
           resp.on('end', () => {
+            reportIpResult(playerokEgressKey(extra), resp.statusCode)
             try {
               resolve(parseDealJsonBody(data, resp.statusCode, 'GET'))
             } catch (err) {
@@ -78,6 +84,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
           })
         })
         req.on('error', reject)
+        attachPlayerokTimeout(req, 'Playerok deal GET')
         req.end()
       })
 
@@ -108,13 +115,15 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
             'Content-Length': Buffer.byteLength(body, 'utf8'),
           },
         }
-        const req = https.request({ ...options, ...playerokHttpsExtraOptions('deals') }, (resp) => {
+        const extra = playerokHttpsExtraOptions('deals')
+        const req = https.request({ ...options, ...extra }, (resp) => {
           let data = ''
           resp.setEncoding('utf8')
           resp.on('data', (chunk) => {
             data += chunk
           })
           resp.on('end', () => {
+            reportIpResult(playerokEgressKey(extra), resp.statusCode)
             try {
               resolve(parseDealJsonBody(data, resp.statusCode, 'POST'))
             } catch (err) {
@@ -123,6 +132,7 @@ function createRequestDealById({ DEAL_PERSISTED_HASH }) {
           })
         })
         req.on('error', reject)
+        attachPlayerokTimeout(req, 'Playerok deal POST')
         req.write(body)
         req.end()
       })
