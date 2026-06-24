@@ -920,7 +920,22 @@ const handleHttpRequest = async (req, res) => {
   let currentUserId = 1
   if (pathname.startsWith('/api/')) {
     const remote = req.socket.remoteAddress || ''
-    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+    // КРИТИЧНО: nginx работает с network_mode:host и проксирует на 127.0.0.1:3000, поэтому
+    // ВСЕ внешние запросы приходят к app с remoteAddress=127.0.0.1. Считать их «локальными»
+    // только по IP нельзя — иначе весь /api/* (включая /api/token и /api/docker/*) открыт
+    // анонимно как владелец. Доверяем локальности ТОЛЬКО если это петлевой адрес И НЕТ
+    // прокси-заголовков (их nginx ставит на каждый проксируемый запрос; фоновые self-call'ы
+    // postLocal идут напрямую на 127.0.0.1 без них). Внешний клиент не может убрать эти
+    // заголовки — nginx добавляет их всегда.
+    const hasProxyHeaders = Boolean(
+      req.headers['x-forwarded-for'] ||
+        req.headers['x-real-ip'] ||
+        req.headers['x-forwarded-proto'] ||
+        req.headers['x-forwarded-host']
+    )
+    const isLoopback =
+      remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+    const isLocal = isLoopback && !hasProxyHeaders
     const sessionId = getSessionIdFromRequest(req)
     if (sessionId && isSessionValid(sessionId)) {
       const uid = getSessionUserId(sessionId)
