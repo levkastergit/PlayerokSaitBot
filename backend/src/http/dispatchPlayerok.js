@@ -64,11 +64,13 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/active-lots') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleActiveLots({
+    // Интерактивное чтение — через throttled skip-полосу (а не серийный гейт), иначе
+    // запрос встаёт в FIFO-очередь за фоновым autolist-тиком и висит до его конца.
+    const result = await runPlayerokInteractive(() => handleActiveLots({
       payload,
       currentUserId,
       deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -279,7 +281,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/item-priority-statuses') {
     const payload = await readUnlimited()
     if (payload == null) return true
-    const result = await handleItemPriorityStatuses({
+    const result = await runPlayerokInteractive(() => handleItemPriorityStatuses({
       payload,
       currentUserId,
       deps: {
@@ -287,14 +289,14 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         requestItemById: deps.requestItemById,
         fetchItemPriorityStatuses: deps.fetchItemPriorityStatuses,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/completed-lots') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleCompletedLots({
+    const result = await runPlayerokInteractive(() => handleCompletedLots({
       payload,
       currentUserId,
       nowTs,
@@ -304,14 +306,14 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         autolistPruneItemStateMap: deps.autolistPruneItemStateMap,
         autolistGetItemState: deps.autolistGetItemState,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/in-progress-deals') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleInProgressDeals({
+    const result = await runPlayerokInteractive(() => handleInProgressDeals({
       payload,
       currentUserId,
       deps: {
@@ -320,14 +322,14 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok,
         fetchCompletedItemsFromPlayerok: deps.fetchCompletedItemsFromPlayerok,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/completed-deals') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleCompletedDeals({
+    const result = await runPlayerokInteractive(() => handleCompletedDeals({
       payload,
       currentUserId,
       deps: {
@@ -336,7 +338,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         fetchActiveItemsFromPlayerok: deps.fetchActiveItemsFromPlayerok,
         fetchCompletedItemsFromPlayerok: deps.fetchCompletedItemsFromPlayerok,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
@@ -572,32 +574,32 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
   if (req.method === 'POST' && pathname === '/api/playerok/balance-overview') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleBalanceOverview({
+    const result = await runPlayerokInteractive(() => handleBalanceOverview({
       payload,
       currentUserId,
       deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, getViewer: deps.getViewer },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/transaction-providers') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleTransactionProviders({
+    const result = await runPlayerokInteractive(() => handleTransactionProviders({
       payload,
       currentUserId,
       deps: {
         getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
         fetchTransactionProviders: deps.fetchTransactionProviders,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/transactions') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleTransactions({
+    const result = await runPlayerokInteractive(() => handleTransactions({
       payload,
       currentUserId,
       deps: {
@@ -605,18 +607,18 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         fetchTransactions: deps.fetchTransactions,
         getViewer: deps.getViewer,
       },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
   if (req.method === 'POST' && pathname === '/api/playerok/verified-cards') {
     const payload = await readLimited()
     if (payload == null) return true
-    const result = await handleVerifiedCards({
+    const result = await runPlayerokInteractive(() => handleVerifiedCards({
       payload,
       currentUserId,
       deps: { getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored, fetchVerifiedCards: deps.fetchVerifiedCards },
-    })
+    }))
     return sendJson(res, result.statusCode, result.data) || true
   }
 
