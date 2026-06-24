@@ -37,3 +37,10 @@ worker/msstore-worker/automation/.capture-profile/
 # Токены минта XSTS (refresh-токен MSA + готовый XSTS-заголовок) — НЕ коммитим.
 worker/msstore-worker/automation/xsts_refresh.txt
 worker/msstore-worker/automation/xsts_header.txt
+# Живая .ROBLOSECURITY-кука покупателя + любые креды — НЕ коммитим.
+worker/msstore-worker/automation/cookie.txt
+worker/msstore-worker/automation/creds.txt
+# Пустой стаб + билд-артефакты C#-проекта wamgrant — НЕ коммитим.
+worker/msstore-worker/automation/python
+worker/msstore-worker/automation/wamgrant/bin/
+worker/msstore-worker/automation/wamgrant/obj/

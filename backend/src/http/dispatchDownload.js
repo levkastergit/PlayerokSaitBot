@@ -47,6 +47,26 @@ const FILES = {
     title: 'test_a_robux.ps1',
     desc: 'НОВЫЙ — ТЕСТ A. Проверяет, уйдут ли Robux на ПРОИЗВОЛЬНЫЙ userId (не залогиненный в приложении). Обёртка над капчуром: при реальной покупке 80 Robux подменяет получателя на твой userId. Нужны рядом run_msstore_capture.ps1 и capture_msstore_app.py. Инструкция — ниже на этой странице.',
   },
+  'inject_cookie.ps1': {
+    type: 'text/plain; charset=utf-8',
+    title: 'inject_cookie.ps1',
+    desc: 'НОВЫЙ — B2. Запускать на РЕАЛЬНОЙ Windows-машине (где приложение Roblox открывается, НЕ на VM). Включает remote-debugging у WebView2 приложения и через CDP вставляет .ROBLOSECURITY покупателя (получатель). Без аргументов — тест debug-порта; -Cookie "<.ROBLOSECURITY>" — инжекция; -Cleanup — откат. Фундамент драйвера авто-покупки.',
+  },
+  'buyer_login.py': {
+    type: 'text/x-python; charset=utf-8',
+    title: 'buyer_login.py',
+    desc: 'НОВЫЙ — B2. Вход в Roblox-аккаунт покупателя через реальный Chrome (Selenium, HEADED): сам решает PoW и прозрачную Arkose-капчу на чистом IP, отдаёт .ROBLOSECURITY. Капча/2FA — решаются в видимом окне. Нужен Python 3 + Chrome + selenium. Запуск: python buyer_login.py --username U --password P --wait',
+  },
+  'b2_login_inject.ps1': {
+    type: 'text/plain; charset=utf-8',
+    title: 'b2_login_inject.ps1',
+    desc: 'НОВЫЙ — B2 оркестратор. Логинит покупателя (buyer_login.py) -> получает .ROBLOSECURITY -> инжектит в WebView приложения (inject_cookie.ps1). Положи рядом buyer_login.py и inject_cookie.ps1. Запуск: powershell -ExecutionPolicy Bypass -File b2_login_inject.ps1 -Username U -Password P',
+  },
+  'headless_probe.py': {
+    type: 'text/x-python; charset=utf-8',
+    title: 'headless_probe.py',
+    desc: 'НОВЫЙ — ФАЗА 1 (де-риск, ДЕНЕГ НЕ ТРАТИТ). Поднимает Edge/Chrome с UA приложения + CDP, ставит куку .ROBLOSECURITY и открывает страницу покупки Robux. Проверяет: полетит ли createOrder на gold.xboxservices в ОБЫЧНОМ браузере (createOrder=401 = отлично). Нужен Python 3 + pip install websocket-client. Запуск: python headless_probe.py --cookie-file cookie.txt, потом в окне нажми пак 80 Robux.',
+  },
 }
 
 function fileSizeKb(name) {

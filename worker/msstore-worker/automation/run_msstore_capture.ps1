@@ -15,7 +15,7 @@
   БЕЗОПАСНО по анткиту: перехватывается только СЕТЬ, процесс Roblox не трогаем.
   Если на оплате белый экран — хост пиннит cert; это нормальный результат, жми Ctrl+C.
 #>
-param([string]$OverrideUserId = "")
+param([string]$OverrideUserId = "", [ValidateSet("", "block", "fake")][string]$DropKeys = "")
 $ErrorActionPreference = "Stop"
 $port = 8080
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -93,6 +93,13 @@ try {
     $env:OVERRIDE_PUBLISHER_USERID = $OverrideUserId
     Write-Host "  [ТЕСТ A] publisherUserId будет ПОДМЕНЁН на: $OverrideUserId" -ForegroundColor Magenta
     Write-Host "  (покупай залогиненным аккаунтом X — Robux должны уйти на аккаунт $OverrideUserId)" -ForegroundColor Magenta
+    Write-Host ""
+  }
+  if ($DropKeys) {
+    $env:DROP_KEYS = $DropKeys
+    Write-Host "  [ЭКСПЕРИМЕНТ] beneficiaries/me/keys будет НЕЙТРАЛИЗОВАН (DROP_KEYS=$DropKeys)" -ForegroundColor Magenta
+    Write-Host "  Проверяем: спишутся ли деньги и упадут ли Robux БЕЗ keys/serviceTicket." -ForegroundColor Magenta
+    Write-Host "  Итог смотри в capture-report.md -> секция 'АНАЛИЗ keys'." -ForegroundColor Magenta
     Write-Host ""
   }
   & $mitm --listen-host 127.0.0.1 --listen-port $port -s "$addon"
