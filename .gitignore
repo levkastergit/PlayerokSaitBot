@@ -44,3 +44,9 @@ worker/msstore-worker/automation/creds.txt
 worker/msstore-worker/automation/python
 worker/msstore-worker/automation/wamgrant/bin/
 worker/msstore-worker/automation/wamgrant/obj/
+
+# Реплей-тела с реальными значениями (piid/email) — НЕ коммитим.
+worker/msstore-worker/automation/_real_*.json
+# Стрей-дубликат папки test/ (сырые захваты с куки/токенами) — НЕ коммитим.
+Новая папка/
+test/
