@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleCompletedLots({ payload, currentUserId, nowTs, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -37,7 +39,7 @@ async function handleCompletedLots({ payload, currentUserId, nowTs, deps }) {
     if ((err && err.code === 'PLAYEROK_CIRCUIT_OPEN') || Number(err && err.statusCode) === 503) {
       return { statusCode: 503, data: { error: message, circuitOpen: true, soft: true } }
     }
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось загрузить завершённые лоты с Playerok')
   }
 }
 

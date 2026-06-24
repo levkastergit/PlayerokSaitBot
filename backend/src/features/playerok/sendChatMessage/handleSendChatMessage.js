@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleSendChatMessage({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, sendChatMessageToPlayerok } = deps
 
@@ -18,9 +20,7 @@ async function handleSendChatMessage({ payload, currentUserId, deps }) {
     const message = await sendChatMessageToPlayerok(token, userAgent, dealId, chatId, text)
     return { statusCode: 200, data: { ok: true, message } }
   } catch (err) {
-    const message =
-      err && err.message ? String(err.message) : 'Не удалось отправить сообщение в чат Playerok'
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось отправить сообщение в чат Playerok')
   }
 }
 

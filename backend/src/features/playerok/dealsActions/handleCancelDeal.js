@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleCancelDeal({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, updateDealStatus } = deps
 
@@ -13,10 +15,7 @@ async function handleCancelDeal({ payload, currentUserId, deps }) {
     const deal = await updateDealStatus(token, userAgent, dealId, 'ROLLED_BACK')
     return { statusCode: 200, data: { ok: true, deal } }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: { error: err && err.message ? String(err.message) : 'Не удалось отменить сделку на Playerok' },
-    }
+    return playerokErrorResponse(err, 'Не удалось отменить сделку на Playerok')
   }
 }
 

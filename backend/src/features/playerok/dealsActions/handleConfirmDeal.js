@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleConfirmDeal({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, updateDealStatus } = deps
 
@@ -13,12 +15,7 @@ async function handleConfirmDeal({ payload, currentUserId, deps }) {
     const deal = await updateDealStatus(token, userAgent, dealId, 'SENT')
     return { statusCode: 200, data: { ok: true, deal } }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: {
-        error: err && err.message ? String(err.message) : 'Не удалось подтвердить выполнение сделки на Playerok',
-      },
-    }
+    return playerokErrorResponse(err, 'Не удалось подтвердить выполнение сделки на Playerok')
   }
 }
 

@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
 
 async function handleBump({
   payload,
@@ -83,13 +84,9 @@ async function handleBump({
       }
     }
   } catch (fetchErr) {
-    return {
-      statusCode: 500,
-      data: {
-        error: fetchErr && fetchErr.message ? String(fetchErr.message) : 'Не удалось получить статусы поднятия',
-        reqId,
-      },
-    }
+    const resp = playerokErrorResponse(fetchErr, 'Не удалось получить статусы поднятия')
+    resp.data.reqId = reqId
+    return resp
   }
 
   try {
@@ -199,7 +196,9 @@ async function handleBump({
       }
     }
 
-    return { statusCode: 500, data: { error: msg, reqId } }
+    const resp = playerokErrorResponse(err, msg)
+    resp.data.reqId = reqId
+    return resp
   }
 }
 

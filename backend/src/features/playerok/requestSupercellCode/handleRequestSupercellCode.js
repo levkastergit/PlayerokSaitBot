@@ -3,6 +3,7 @@ const {
   logSupercellDebug,
   getSupercellGameByCategory,
 } = require('../../../functions/supercellHelpers')
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
 
 async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
   const {
@@ -71,12 +72,7 @@ async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
     })
     return { statusCode: 200, data: result }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: {
-        error: err && err.message ? String(err.message) : 'Не удалось запросить код Supercell',
-      },
-    }
+    return playerokErrorResponse(err, 'Не удалось запросить код Supercell')
   }
 }
 

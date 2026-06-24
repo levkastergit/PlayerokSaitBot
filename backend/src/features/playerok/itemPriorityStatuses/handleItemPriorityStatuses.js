@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleItemPriorityStatuses({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, requestItemById, fetchItemPriorityStatuses } = deps
 
@@ -45,10 +47,7 @@ async function handleItemPriorityStatuses({ payload, currentUserId, deps }) {
 
     return { statusCode: 200, data: { list: mapped } }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: { error: err && err.message ? String(err.message) : 'Failed to load priority statuses' },
-    }
+    return playerokErrorResponse(err, 'Failed to load priority statuses')
   }
 }
 

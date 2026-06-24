@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleRequestWithdrawal({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, requestWithdrawal } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -20,7 +22,7 @@ async function handleRequestWithdrawal({ payload, currentUserId, deps }) {
     })
     return { statusCode: 200, data: { ok: true, transaction } }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось создать вывод средств' } }
+    return playerokErrorResponse(err, 'Не удалось создать вывод средств')
   }
 }
 

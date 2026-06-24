@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleBalanceOverview({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, getViewer } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -21,7 +23,7 @@ async function handleBalanceOverview({ payload, currentUserId, deps }) {
       },
     }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось загрузить данные баланса' } }
+    return playerokErrorResponse(err, 'Не удалось загрузить данные баланса')
   }
 }
 

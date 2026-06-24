@@ -29,6 +29,13 @@ const {
 } = require('./autolistState')
 const { handleOrderedStageAutomessage } = require('./handleChatAutomessage')
 
+// In-flight лок автодоставки по сделке/чату: autolist-tick (15с) и chats-sync идут разными
+// несинхронизированными путями и могут обработать один оплаченный чат одновременно — без
+// лока оба отправят сообщения покупателю. Лок отсекает гонку в рамках процесса; персистентная
+// идемпотентность по deal_id (claimNextUnusedCode → reused) защищает от повторной отправки кода
+// между тиками и переживает перезапуск сервера.
+const autodeliveryInFlight = new Set()
+
 async function handlePaidChat({
   currentUserId,
   tokenHash,
@@ -722,7 +729,18 @@ async function handlePaidChat({
   // Автовыдача: код из привязанной таблицы; автозавершение — только если код ушёл в чат.
   // При возврате сделки автовыдачу полностью пропускаем.
   let autodeliveryCodeSent = false
-  if (s.autodelivery?.enabled && lastChat?.id && !dealRefunded) {
+  const __deliveryKey =
+    s.autodelivery?.enabled && lastChat?.id && !dealRefunded
+      ? `${currentUserId}:${dealId || lastChat.id}`
+      : null
+  if (__deliveryKey && autodeliveryInFlight.has(__deliveryKey)) {
+    logAutolistTick('автодоставка: уже выполняется по этой сделке (параллельный путь) — пропуск', {
+      dealId: dealId || null,
+      chatId: lastChat?.id || null,
+    })
+  } else if (s.autodelivery?.enabled && lastChat?.id && !dealRefunded) {
+    if (__deliveryKey) autodeliveryInFlight.add(__deliveryKey)
+    try {
     const messageOnPurchase = (s.autodelivery.messageOnPurchase && String(s.autodelivery.messageOnPurchase).trim()) || ''
 
     if (messageOnPurchase) {
@@ -757,7 +775,18 @@ async function handlePaidChat({
         nowTs,
       })
       const codeToSend = claimed?.code ? String(claimed.code).trim() : ''
-      if (!codeToSend) {
+      if (claimed?.reused) {
+        // Код для этой сделки уже выдавался ранее (идемпотентность claimNextUnusedCode по
+        // deal_id) — повторно НЕ отправляем, иначе покупатель получит один код дважды.
+        // Автозавершение ниже отработает штатно (идемпотентно по статусу сделки).
+        autodeliveryCodeSent = true
+        logAutolistTick('автодоставка: код для сделки уже выдан — повторная отправка пропущена', {
+          productKey: String(effectiveKey || ''),
+          dealId: dealId || null,
+          codeId: claimed.id,
+          subtabId,
+        })
+      } else if (!codeToSend) {
         warnAutolistTick('автодоставка: нет свободных кодов в таблице', {
           productKey: String(effectiveKey || ''),
           dealId: dealId || null,
@@ -812,6 +841,9 @@ async function handlePaidChat({
           })
         }
       }
+    }
+    } finally {
+      if (__deliveryKey) autodeliveryInFlight.delete(__deliveryKey)
     }
   }
 

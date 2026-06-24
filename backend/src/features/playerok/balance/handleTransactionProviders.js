@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleTransactionProviders({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, fetchTransactionProviders } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -10,7 +12,7 @@ async function handleTransactionProviders({ payload, currentUserId, deps }) {
     const data = await fetchTransactionProviders(token, userAgent, direction)
     return { statusCode: 200, data: { ok: true, list: data.list || [] } }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось загрузить провайдеров' } }
+    return playerokErrorResponse(err, 'Не удалось загрузить провайдеров')
   }
 }
 

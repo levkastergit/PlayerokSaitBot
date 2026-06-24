@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleInProgressDeals({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -228,8 +230,7 @@ async function handleInProgressDeals({ payload, currentUserId, deps }) {
 
     return { statusCode: 200, data: { list } }
   } catch (err) {
-    const message = err && err.message ? String(err.message) : 'Не удалось загрузить сделки в выполнении с Playerok'
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось загрузить сделки в выполнении с Playerok')
   }
 }
 

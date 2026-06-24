@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleCompletedDeals({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, fetchCompletedDealsFromPlayerok, fetchActiveItemsFromPlayerok, fetchCompletedItemsFromPlayerok } = deps
 
@@ -55,8 +57,7 @@ async function handleCompletedDeals({ payload, currentUserId, deps }) {
 
     return { statusCode: 200, data: { list } }
   } catch (err) {
-    const message = err && err.message ? String(err.message) : 'Не удалось загрузить завершённые сделки с Playerok'
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось загрузить завершённые сделки с Playerok')
   }
 }
 

@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleUnhideChat({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, deleteHiddenChat } = deps
 
@@ -12,10 +14,7 @@ async function handleUnhideChat({ payload, currentUserId, deps }) {
     deleteHiddenChat.run(String(chatId), currentUserId)
     return { statusCode: 200, data: { ok: true, chatId: String(chatId) } }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: { error: 'Failed to unhide chat', details: err && err.message ? String(err.message) : String(err) },
-    }
+    return playerokErrorResponse(err, 'Failed to unhide chat')
   }
 }
 

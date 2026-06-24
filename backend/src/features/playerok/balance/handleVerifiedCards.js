@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleVerifiedCards({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, fetchVerifiedCards } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -13,7 +15,7 @@ async function handleVerifiedCards({ payload, currentUserId, deps }) {
     })
     return { statusCode: 200, data: { ok: true, ...data } }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось загрузить карты' } }
+    return playerokErrorResponse(err, 'Не удалось загрузить карты')
   }
 }
 

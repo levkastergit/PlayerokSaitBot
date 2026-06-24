@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleRemoveTransaction({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, removeTransaction } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -12,7 +14,7 @@ async function handleRemoveTransaction({ payload, currentUserId, deps }) {
     const transaction = await removeTransaction(token, userAgent, transactionId)
     return { statusCode: 200, data: { ok: true, transaction } }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось отменить транзакцию' } }
+    return playerokErrorResponse(err, 'Не удалось отменить транзакцию')
   }
 }
 

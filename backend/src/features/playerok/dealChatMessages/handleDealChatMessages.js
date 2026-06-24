@@ -1,3 +1,4 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
 const { logSupercellDebug } = require('../../../functions/supercellHelpers')
 const { runApprouteFromDealChat } = require('../../approute/runApprouteFromDealChat')
 const {
@@ -574,8 +575,7 @@ async function handleDealChatMessages({ payload, currentUserId, deps }) {
       },
     }
   } catch (err) {
-    const message = err && err.message ? String(err.message) : 'Не удалось загрузить сообщения чата с Playerok'
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось загрузить сообщения чата с Playerok')
   }
 }
 

@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleRelistItem({ payload, currentUserId, deps }) {
   const {
     getTokenFromBodyOrStored,
@@ -93,15 +95,12 @@ async function handleRelistItem({ payload, currentUserId, deps }) {
 
     if (!relisted) {
       const err = publishError || new Error('Не удалось выставить товар')
-      return { statusCode: 500, data: { error: String(err.message || err) } }
+      return playerokErrorResponse(err, 'Не удалось выставить товар')
     }
 
     return { statusCode: 200, data: { ok: true, itemId: relisted.id } }
   } catch (err) {
-    return {
-      statusCode: 500,
-      data: { error: err && err.message ? String(err.message) : 'Failed to relist item' },
-    }
+    return playerokErrorResponse(err, 'Failed to relist item')
   }
 }
 

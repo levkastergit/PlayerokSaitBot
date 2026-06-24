@@ -1,3 +1,5 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+
 async function handleTransactions({ payload, currentUserId, deps }) {
   const { getTokenFromBodyOrStored, fetchTransactions, getViewer } = deps
   const { token } = getTokenFromBodyOrStored(currentUserId, payload)
@@ -19,7 +21,7 @@ async function handleTransactions({ payload, currentUserId, deps }) {
     })
     return { statusCode: 200, data: { ok: true, ...data } }
   } catch (err) {
-    return { statusCode: 500, data: { error: err?.message || 'Не удалось загрузить транзакции' } }
+    return playerokErrorResponse(err, 'Не удалось загрузить транзакции')
   }
 }
 

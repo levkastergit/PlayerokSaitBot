@@ -1,3 +1,4 @@
+const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
 const {
   isSuperSellMarketplaceLabel,
   pickSupercellCategoryFromDeal,
@@ -1458,8 +1459,7 @@ async function handleChats({ payload, currentUserId, deps }) {
     }
     return { statusCode: 200, data: response }
   } catch (err) {
-    const message = err && err.message ? String(err.message) : 'Не удалось загрузить чаты с Playerok'
-    return { statusCode: 500, data: { error: message } }
+    return playerokErrorResponse(err, 'Не удалось загрузить чаты с Playerok')
   }
 }
 
