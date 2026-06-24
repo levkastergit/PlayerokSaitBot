@@ -9,7 +9,7 @@
 # Keep buyer_login.py and inject_cookie.ps1 in the SAME folder.
 # Deps: Python 3 + Chrome + selenium (the script pip-installs selenium).
 #
-#   powershell -ExecutionPolicy Bypass -File b2_login_inject.ps1 -Username "Levkasternix" -Password "kasatik1331"
+#   powershell -ExecutionPolicy Bypass -File b2_login_inject.ps1 -Username "<roblox-login>" -Password "<roblox-password>"
 #
 # A Chrome window opens for login. If a captcha/2FA appears, solve it in that window; the script waits.
 # ASCII-only on purpose (Windows PowerShell 5.1 mangles UTF-8 .ps1 without BOM).

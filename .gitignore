@@ -27,8 +27,11 @@ backend/data/*.db-wal
 # Claude Code local settings — содержит права/креды сервера, не коммитим.
 .claude/settings.json
 
-# Runtime-кэш Supercell OTP (pickle + индекс бинов).
+# Runtime-кэш Supercell OTP (pickle + индекс бинов). Паттерн НЕ привязан к корню —
+# ловит и backend/supercell_auto_otp_plugin/cache/ (раньше .pkl туда утекали в публичный репо).
 supercell_auto_otp_plugin/cache/
+**/supercell_auto_otp_plugin/cache/
+*.pkl
 
 # Вывод капчур-скрипта покупки Robux — содержит cookies/токены, НЕ коммитим.
 worker/msstore-worker/automation/robux-capture-*/

@@ -880,6 +880,12 @@ const handleHttpRequest = async (req, res) => {
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  // Базовые security-заголовки (defense-in-depth; nginx их сейчас не ставит). Referrer-Policy
+  // важен для публичных /roblox/2fa|/captcha страниц (не утекать token в Referer на сторонние
+  // скрипты Arkose). nosniff/SAMEORIGIN — против MIME-снифинга и кликджекинга.
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN')
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204

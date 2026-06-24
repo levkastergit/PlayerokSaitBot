@@ -1,5 +1,15 @@
+const crypto = require('crypto')
 const { sendJson } = require('./sendJson')
 const { readJsonBody } = require('./readJsonBody')
+
+// Сравнение секрета за постоянное время (без утечки по таймингу) + быстрый отказ при
+// разной длине. Возвращает false на пустых/неравных по длине.
+function timingSafeEqualStr(a, b) {
+  const ba = Buffer.from(String(a || ''), 'utf8')
+  const bb = Buffer.from(String(b || ''), 'utf8')
+  if (ba.length === 0 || ba.length !== bb.length) return false
+  return crypto.timingSafeEqual(ba, bb)
+}
 const {
   handleRobloxAccountsList,
   handleRobloxAccountAdd,
@@ -108,7 +118,9 @@ async function dispatchRoblox({ req, res, pathname, currentUserId, deps }) {
   if (isPublic && pathname.startsWith('/roblox/worker/')) {
     const expected = String(process.env.ROBLOX_WORKER_TOKEN || '').trim()
     const provided = String(req.headers['x-worker-token'] || '').trim()
-    if (!expected || !provided || provided !== expected) {
+    // Эндпоинт отдаёт расшифрованные .ROBLOSECURITY/MS-креды покупателей и НЕ под сессией —
+    // защита только этим токеном. Требуем длинный токен и сравниваем constant-time.
+    if (expected.length < 16 || !timingSafeEqualStr(provided, expected)) {
       return sendJson(res, 401, { ok: false, error: 'worker unauthorized' }) || true
     }
     if (req.method === 'POST' && pathname === '/roblox/worker/poll') {
