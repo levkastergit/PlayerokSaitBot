@@ -43,10 +43,12 @@ function createPostLocal({ PORT, http }) {
       )
 
       req.on('error', reject)
-      // Таймаут на локальный self-call: без него зависший gated-обработчик (за общим
-      // последовательным гейтом) держит тик фоновой задачи бесконечно — флаг inFlight
-      // не снимается, задача перестаёт тикать навсегда. Чуть больше gate-бэкстопа.
-      const timeoutMs = Number(process.env.POSTLOCAL_TIMEOUT_MS) || 35000
+      // Таймаут на локальный self-call: без него зависший gated-обработчик держит тик
+      // фоновой задачи бесконечно (флаг inFlight не снимается). НО autolist-tick на
+      // загруженном аккаунте легитимно идёт десятки секунд через серийный гейт — слишком
+      // короткий таймаут рубил бы нормальный тик и провоцировал наложение server-side.
+      // 120с — потолок против зависаний, заведомо выше типичного длинного тика.
+      const timeoutMs = Number(process.env.POSTLOCAL_TIMEOUT_MS) || 120000
       req.setTimeout(timeoutMs, () => {
         req.destroy(new Error(`postLocal ${pathname}: таймаут ${timeoutMs}ms`))
       })
