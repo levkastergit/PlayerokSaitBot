@@ -534,6 +534,13 @@ function App() {
           ) : null}
         </div>
         <div className="app-header-right">
+          <span
+            className="app-version"
+            title="Версия сборки (растёт с каждым деплоем)"
+            style={{ opacity: 0.55, fontSize: '12px', marginRight: '12px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}
+          >
+            v{import.meta.env.VITE_APP_VERSION || 'dev'}
+          </span>
           <label className="theme-toggle">
             <input
               type="checkbox"

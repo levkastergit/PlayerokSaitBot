@@ -126,7 +126,13 @@ function isIpv4BoundLocally(addr) {
   return false
 }
 
+let __ipv4Snap = null
+let __ipv4SnapAt = 0
 function listAvailableOutboundIpv4() {
+  // os.networkInterfaces() синхронный и недешёвый; isOutboundCircuitOpen дёргает его на
+  // каждом тике задач (chats-sync ~1.5с). Кэшируем снимок на ~2с — IP так часто не меняются.
+  const __now = Date.now()
+  if (__ipv4Snap && __now - __ipv4SnapAt < 2000) return __ipv4Snap
   const seen = new Set()
   const addresses = []
   for (const list of Object.values(os.networkInterfaces())) {
@@ -141,6 +147,8 @@ function listAvailableOutboundIpv4() {
     }
   }
   addresses.sort((a, b) => a.address.localeCompare(b.address, undefined, { numeric: true }))
+  __ipv4Snap = addresses
+  __ipv4SnapAt = __now
   return addresses
 }
 

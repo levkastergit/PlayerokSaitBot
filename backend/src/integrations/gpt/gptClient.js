@@ -21,6 +21,9 @@
 const DEFAULT_BASE = 'https://api.987ai.vip'
 const GPT_POLL_MAX_MS = Math.max(5000, Number(process.env.GPT_TASK_POLL_MAX_MS) || 120000)
 const GPT_POLL_INTERVAL_MS = Math.max(500, Number(process.env.GPT_TASK_POLL_INTERVAL_MS) || 3000)
+// Таймаут одного http-запроса к GPT-API и к Google Docs, чтобы зависший fetch не вешал
+// активацию/скачивание токена.
+const GPT_FETCH_TIMEOUT_MS = Math.max(3000, Number(process.env.GPT_FETCH_TIMEOUT_MS) || 25000)
 
 // JWT Access Token: три base64url-сегмента, начинается с eyJ.
 const JWT_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/
@@ -67,12 +70,16 @@ async function fetchGoogleDocText(docId) {
   try {
     res = await fetch(url, {
       redirect: 'follow',
+      signal: AbortSignal.timeout(GPT_FETCH_TIMEOUT_MS),
       headers: {
         Accept: 'text/plain,*/*',
         'User-Agent': 'Mozilla/5.0 (compatible; PlayerokBot/1.0)',
       },
     })
   } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      return { ok: false, error: `Google Docs: таймаут ${GPT_FETCH_TIMEOUT_MS}ms` }
+    }
     return { ok: false, error: e?.message || String(e) }
   }
 
@@ -155,7 +162,15 @@ async function gptFetch(method, path, body) {
     init.headers['Content-Type'] = 'application/json'
     init.body = JSON.stringify(body)
   }
-  const res = await fetch(url, init)
+  let res
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(GPT_FETCH_TIMEOUT_MS) })
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error(`GPT: таймаут запроса ${GPT_FETCH_TIMEOUT_MS}ms (${method} ${String(path || '')})`)
+    }
+    throw e
+  }
   let json = null
   try {
     json = await res.json()
@@ -226,7 +241,13 @@ async function redeemGptAndConfirm({ cardKey, accessToken } = {}) {
   const started = Date.now()
   let last = null
   while (Date.now() - started < GPT_POLL_MAX_MS) {
-    last = await pollGptTask(created.taskId)
+    try {
+      last = await pollGptTask(created.taskId)
+    } catch (pollErr) {
+      // Транзиентный сбой опроса (таймаут/сеть) не убивает активацию — ждём и повторяем.
+      await delay(GPT_POLL_INTERVAL_MS)
+      continue
+    }
     if (last.status === 'completed') {
       return { completed: true, failed: false, taskId: created.taskId, message: last.result || last.error }
     }

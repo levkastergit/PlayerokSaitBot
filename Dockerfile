@@ -10,6 +10,9 @@ COPY frontend/package*.json ./
 RUN npm ci
 
 COPY frontend/ ./
+# Версия сборки впекается во фронт (виден в хедере). Передаётся: --build-arg APP_VERSION=...
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=$APP_VERSION
 RUN npm run build
 
 ###
@@ -51,7 +54,9 @@ COPY worker/msstore-worker/automation/diag_buynow.ps1 ./public/downloads/diag_bu
 COPY worker/msstore-worker/automation/test_a_robux.ps1 ./public/downloads/test_a_robux.ps1
 COPY worker/msstore-worker/automation/headless_probe.py ./public/downloads/headless_probe.py
 
+ARG APP_VERSION=dev
 ENV PORT=3000
+ENV APP_VERSION=$APP_VERSION
 EXPOSE 3000
 
 CMD ["node", "server.js"]

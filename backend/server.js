@@ -667,7 +667,7 @@ const { createFetchDealsFromPlayerok } = require('./src/functions/playerokFetchD
 
 const fetchDealsFromPlayerok = createFetchDealsFromPlayerok({
   SALES_HISTORY_LIMIT,
-  getViewer,
+  getViewer: getViewerCached,
   requestDealsPage,
 })
 
@@ -675,7 +675,7 @@ const fetchDealsFromPlayerok = createFetchDealsFromPlayerok({
 const { createFetchInProgressDealsFromPlayerok } = require('./src/functions/playerokFetchInProgressDealsFromPlayerok')
 
 const fetchInProgressDealsFromPlayerok = createFetchInProgressDealsFromPlayerok({
-  getViewer,
+  getViewer: getViewerCached,
   requestDealsPage,
 })
 
@@ -683,7 +683,7 @@ const fetchInProgressDealsFromPlayerok = createFetchInProgressDealsFromPlayerok(
 const { createFetchCompletedDealsFromPlayerok } = require('./src/functions/playerokFetchCompletedDealsFromPlayerok')
 
 const fetchCompletedDealsFromPlayerok = createFetchCompletedDealsFromPlayerok({
-  getViewer,
+  getViewer: getViewerCached,
   requestDealsPage,
 })
 
@@ -841,7 +841,7 @@ const fetchAllDealsFromPlayerok = createFetchAllDealsFromPlayerok({
 const { createFetchActiveItemsFromPlayerok } = require('./src/functions/playerokFetchActiveItemsFromPlayerok')
 
 const fetchActiveItemsFromPlayerok = createFetchActiveItemsFromPlayerok({
-  getViewer,
+  getViewer: getViewerCached,
   requestItemsPage,
   lotsCache,
   LOTS_CACHE_TTL_MS,
@@ -851,7 +851,7 @@ const fetchActiveItemsFromPlayerok = createFetchActiveItemsFromPlayerok({
 const { createFetchCompletedItemsFromPlayerok } = require('./src/functions/playerokFetchCompletedItemsFromPlayerok')
 
 const fetchCompletedItemsFromPlayerok = createFetchCompletedItemsFromPlayerok({
-  getViewer,
+  getViewer: getViewerCached,
   requestItemsPage,
   lotsCache,
   LOTS_CACHE_TTL_MS,
@@ -895,8 +895,8 @@ const handleHttpRequest = async (req, res) => {
   // depends_on: condition: service_healthy. Не ходит в Playerok/БД, отвечает мгновенно.
   if (pathname === '/healthz') {
     res.statusCode = 200
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-    return res.end('ok')
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    return res.end(JSON.stringify({ ok: true, version: process.env.APP_VERSION || 'dev' }))
   }
 
   // Публичный раздел «Загрузка» (скрипты для скачивания) — без сессии, до фронтенд-статики.
@@ -1352,7 +1352,7 @@ server.keepAliveTimeout = Number(process.env.SERVER_KEEPALIVE_TIMEOUT_MS) || 650
 const BIND_HOST = process.env.BIND_HOST || '127.0.0.1'
 
 server.listen(PORT, BIND_HOST, () => {
-  console.log(`Server running at http://${BIND_HOST}:${PORT}/`)
+  console.log(`Server running at http://${BIND_HOST}:${PORT}/ (version ${process.env.APP_VERSION || 'dev'})`)
 
   const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
@@ -1392,6 +1392,10 @@ server.listen(PORT, BIND_HOST, () => {
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
     isAllActionsStopped,
+    // Прогрев гонял ПОЛНЫЙ cold-веер handleChats ×6 страниц каждые 60с — это >потолка
+    // серийного гейта (~210 req/мин) → постоянный таймаут postLocal 120с и конкуренция
+    // с автолистом за гейт. 1 страница покрывает видимые чаты; глубже UI догрузит лениво.
+    maxPagesPerUser: Number(process.env.CHATS_WARMUP_MAX_PAGES) || 1,
   })
 
   setupChatsSyncBackgroundJob({

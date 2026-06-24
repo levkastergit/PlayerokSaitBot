@@ -3,7 +3,7 @@
 const https = require('https')
 const { URLSearchParams } = require('url')
 const { withPlayerokGate } = require('../infra/playerokRequestGate')
-const { playerokHttpsExtraOptions } = require('../infra/playerokHttpsAgent')
+const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
 const { normalizeKeyPart, buildProductKey } = require('./keyUtils')
@@ -72,7 +72,7 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
         })
         resp.on('end', () => {
           // Отчёт ротации: 429 на этом IP → эскалация блока, 200 → снятие.
-          reportIpResult(extra.localAddress, resp.statusCode)
+          reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             let errMsg = `Playerok deals: status ${resp.statusCode}`
             try {

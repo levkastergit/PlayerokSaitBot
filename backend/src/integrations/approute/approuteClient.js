@@ -4,6 +4,9 @@ const { logApprouteAutodelivery } = require('../../debug/approuteAutodeliveryLog
 const DEFAULT_BASE = 'https://approute.ru/api/v1'
 const APPROUTE_POLL_MAX_MS = Math.max(5000, Number(process.env.APPROUTE_ORDER_POLL_MAX_MS) || 120000)
 const APPROUTE_POLL_INTERVAL_MS = Math.max(500, Number(process.env.APPROUTE_ORDER_POLL_INTERVAL_MS) || 3000)
+// Таймаут ОДНОГО http-запроса к AppRoute (в т.ч. внутри poll-цикла). Без него зависший
+// fetch вешает всю выдачу до конца poll-бюджета и дольше. Больше типичного ответа API.
+const APPROUTE_FETCH_TIMEOUT_MS = Math.max(3000, Number(process.env.APPROUTE_FETCH_TIMEOUT_MS) || 25000)
 const APPROUTE_IN_PROGRESS_STATUSES = new Set([
   'IN_PROGRESS',
   'PENDING',
@@ -83,7 +86,15 @@ async function approuteFetch(apiKey, method, path, body) {
     init.body = JSON.stringify(body)
   }
 
-  const res = await fetch(url, init)
+  let res
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(APPROUTE_FETCH_TIMEOUT_MS) })
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error(`AppRoute: таймаут запроса ${APPROUTE_FETCH_TIMEOUT_MS}ms (${method} ${String(path || '')})`)
+    }
+    throw e
+  }
   let json = null
   try {
     json = await res.json()

@@ -10,6 +10,9 @@
 const DEFAULT_BASE = 'https://dlsapi.6661231.xyz/api/v1'
 const CLODE_POLL_MAX_MS = Math.max(5000, Number(process.env.CLODE_TASK_POLL_MAX_MS) || 120000)
 const CLODE_POLL_INTERVAL_MS = Math.max(500, Number(process.env.CLODE_TASK_POLL_INTERVAL_MS) || 3000)
+// Таймаут одного http-запроса к Clode (в т.ч. внутри poll-цикла), чтобы зависший fetch
+// не вешал всю активацию.
+const CLODE_FETCH_TIMEOUT_MS = Math.max(3000, Number(process.env.CLODE_FETCH_TIMEOUT_MS) || 25000)
 
 // Коды ошибок, означающие вину покупателя (некорректный ID) — повод переспросить ID.
 const CLODE_USER_FAULT_CODES = new Set(['INVALID_USER_ID', 'MISSING_USER_ID'])
@@ -78,7 +81,15 @@ async function clodeFetch(apiKey, method, path, body) {
     init.body = JSON.stringify(body)
   }
 
-  const res = await fetch(url, init)
+  let res
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(CLODE_FETCH_TIMEOUT_MS) })
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error(`Clode: таймаут запроса ${CLODE_FETCH_TIMEOUT_MS}ms (${method} ${String(path || '')})`)
+    }
+    throw e
+  }
   let json = null
   try {
     json = await res.json()
@@ -139,7 +150,14 @@ async function redeemClaudeAndConfirm(apiKey, input) {
   const started = Date.now()
   let last = null
   while (Date.now() - started < CLODE_POLL_MAX_MS) {
-    last = await pollClaudeTask(apiKey, created.taskId)
+    try {
+      last = await pollClaudeTask(apiKey, created.taskId)
+    } catch (pollErr) {
+      // Транзиентный сбой опроса (таймаут/сеть) НЕ должен убивать активацию —
+      // ждём интервал и пробуем снова в пределах бюджета.
+      await delay(CLODE_POLL_INTERVAL_MS)
+      continue
+    }
     if (last.status === 'success') {
       return { completed: true, failed: false, taskId: created.taskId, taskBody: last.data, message: last.message }
     }
