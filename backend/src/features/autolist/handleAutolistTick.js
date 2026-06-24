@@ -743,6 +743,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetSupercellFlowMap,
         processSingleSupercellFlow,
+        shouldStop: shouldStopScan,
       })
     }
 
@@ -755,6 +756,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetTopupFlowMap,
         processSingleTopupFlow,
+        shouldStop: shouldStopScan,
       })
     }
 
@@ -767,7 +769,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetClodeFlowMap,
         processSingleClodeFlow,
-        shouldStop: circuitOpen,
+        shouldStop: shouldStopScan,
       })
     }
 
@@ -780,6 +782,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         nowTs,
         autolistGetGptFlowMap,
         processSingleGptFlow,
+        shouldStop: shouldStopScan,
       })
     }
 
