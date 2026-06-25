@@ -615,11 +615,12 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const skipSmartEmail =
         payload?.skipSmartEmail === true || payload?.messagesOnly === true
 
-      // МОМЕНТАЛЬНОСТЬ: почту НЕ резолвим синхронно в request-path — это блокировало открытие
-      // чата на сетевом запросе к Playerok за serial-gate автолиста. Из БД/кеша берём мгновенно
-      // (выше). При промахе запускаем разрешение в ФОНЕ: setTimeout теряет ALS skipGate-контекст,
-      // поэтому фоновая дозагрузка идёт СЕРИЙНЫМ gate (sync-класс) и НЕ усиливает operator-полосу
-      // (важно против 429-шторма). Почта появится на следующем поллинге и сохранится в БД (v92).
+      // ПОЧТА: на полном пути (не messagesOnly — это второй, НЕ UI-блокирующий запрос фронта)
+      // резолвим почту на БЫСТРОЙ полосе (skipGate, circuit обойдён v95) и ВОЗВРАЩАЕМ её прямо
+      // в этом ответе, если успели за ~6с → фронт показывает почту сразу (без ожидания поллинга).
+      // Результат ВСЕГДА персистится в БД в фоне (даже если ответ не дождался) → на следующем
+      // поллинге почта точно будет, и навсегда. Это chat-open частота (раз на открытие, не на
+      // поллинг) → не усиливает 429-шторм; skipGate-троттлинг сохраняется.
       if (!buyerSupercellEmail && !messagesOnly) {
         const dealIdForEmail =
           requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
@@ -638,54 +639,56 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             const bgCategoryHint = primaryDeal?.category || thread?.category || categoryHint || undefined
             const bgViewer = viewerUsername || null
             const bgBuyer = resolvedBuyerName || undefined
-            setTimeout(() => {
-              // Резолв почты — на БЫСТРОЙ operator-полосе (skipGate), иначе фон застрянет за
-              // autolist на серийном gate (180-300с) и почта появится только через минуты.
-              // Это chat-open частота (раз на открытие чата, под !messagesOnly — НЕ на каждый
-              // поллинг), поэтому не усиливает 429-шторм. Бэкенд-ретрай(3) безопасен на этой
-              // низкочастотной операции (не front-polled). На промахе пишем негативный кэш (30с).
-              runPlayerokInteractive(async () => {
-                let email = null
-                let persistDealId = dealIdForEmail || null
-                // 1) Лёгкий путь: почта из полей сделки (1 запрос), если категория Supercell.
-                if (isSupercell && dealIdForEmail && typeof requestDealById === 'function') {
-                  for (let attempt = 1; attempt <= 3 && !email; attempt += 1) {
-                    email = await resolveBuyerSupercellEmailFromDeal({
-                      requestDealById,
-                      token,
-                      userAgent: payload?.userAgent,
-                      dealId: dealIdForEmail,
-                      categoryHint: bgCategoryHint,
-                    })
-                    if (!email && attempt < 3) {
-                      await new Promise((r) => setTimeout(r, 600 * attempt))
-                    }
+            const resolvePromise = runPlayerokInteractive(async () => {
+              let email = null
+              let persistDealId = dealIdForEmail || null
+              // 1) Лёгкий путь: почта из полей сделки (1 запрос), если категория Supercell.
+              if (isSupercell && dealIdForEmail && typeof requestDealById === 'function') {
+                for (let attempt = 1; attempt <= 3 && !email; attempt += 1) {
+                  email = await resolveBuyerSupercellEmailFromDeal({
+                    requestDealById,
+                    token,
+                    userAgent: payload?.userAgent,
+                    dealId: dealIdForEmail,
+                    categoryHint: bgCategoryHint,
+                  })
+                  if (!email && attempt < 3) {
+                    await new Promise((r) => setTimeout(r, 500 * attempt))
                   }
                 }
-                // 2) Тяжёлый путь (разбор сообщений), если лёгкий не дал и не skipSmartEmail.
-                if (!email && !skipSmartEmail && typeof fetchDealChatMessagesFromPlayerok === 'function') {
-                  let vu = bgViewer
-                  if (!vu) {
-                    try { vu = await resolveViewerUsername(getViewer, token, payload?.userAgent) } catch (_) {}
+              }
+              // 2) Тяжёлый путь (разбор сообщений), если лёгкий не дал и не skipSmartEmail.
+              if (!email && !skipSmartEmail && typeof fetchDealChatMessagesFromPlayerok === 'function') {
+                let vu = bgViewer
+                if (!vu) {
+                  try { vu = await resolveViewerUsername(getViewer, token, payload?.userAgent) } catch (_) {}
+                }
+                const smart = await fetchDealChatMessagesFromPlayerok(
+                  token, payload?.userAgent, dealIdForEmail, effectiveChatId,
+                  {
+                    viewerUsername: vu || null,
+                    buyerUsername: bgBuyer,
+                    categoryHint: bgCategoryHint,
+                    maxPages: 40,
                   }
-                  const smart = await fetchDealChatMessagesFromPlayerok(
-                    token, payload?.userAgent, dealIdForEmail, effectiveChatId,
-                    {
-                      viewerUsername: vu || null,
-                      buyerUsername: bgBuyer,
-                      categoryHint: bgCategoryHint,
-                      maxPages: 40,
-                    }
-                  )
-                  email = smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : null
-                  if (smart?.effectiveDealId) persistDealId = smart.effectiveDealId
-                }
-                setCachedSmartEmail(cacheKey, email || null)
-                if (email && persistDealId) {
-                  try { chatDbRepo.setDealSupercellEmail(currentUserId, persistDealId, email) } catch (_) {}
-                }
-              }).catch(() => {})
-            }, 0)
+                )
+                email = smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : null
+                if (smart?.effectiveDealId) persistDealId = smart.effectiveDealId
+              }
+              setCachedSmartEmail(cacheKey, email || null)
+              if (email && persistDealId) {
+                try { chatDbRepo.setDealSupercellEmail(currentUserId, persistDealId, email) } catch (_) {}
+              }
+              return email
+            })
+            // Персист/кэш произойдёт внутри resolvePromise независимо от гонки ниже.
+            resolvePromise.catch(() => {})
+            // Вернуть почту в ЭТОМ ответе, если резолв успел за 6с; иначе null (фон допишет в БД).
+            const fastEmail = await Promise.race([
+              resolvePromise.catch(() => null),
+              new Promise((r) => setTimeout(() => r(null), 6000)),
+            ])
+            if (fastEmail) buyerSupercellEmail = fastEmail
           }
         }
       }
