@@ -8,6 +8,7 @@ const {
   collectDeepScanEmailCandidates,
   isEmailValid,
 } = require('./supercellHelpers')
+const { withRetry, isPlayerokRateLimitError } = require('../infra/retry/withRetry')
 
 function asFieldRowArray(raw) {
   if (raw == null) return []
@@ -65,7 +66,13 @@ async function resolveBuyerSupercellEmailFromDeal({
   const id = dealId != null ? String(dealId).trim() : ''
   if (!id || typeof requestDealById !== 'function' || !token) return null
   try {
-    const fullDeal = await requestDealById(token, userAgent, id)
+    // Идемпотентный read: ретраим на 429 (backoff + ротация IP), иначе при всплеске
+    // лимита почта покупателя не находится и автозапрос кода падает.
+    const fullDeal = await withRetry(() => requestDealById(token, userAgent, id), {
+      retries: 3,
+      shouldRetry: isPlayerokRateLimitError,
+      label: 'resolveBuyerEmail:requestDealById',
+    })
     if (!fullDeal || typeof fullDeal !== 'object') return null
 
     const itemCategory =

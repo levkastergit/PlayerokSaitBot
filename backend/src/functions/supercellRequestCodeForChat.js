@@ -6,6 +6,7 @@ const {
 } = require('./supercellHelpers')
 
 const { runSupercellRequestCode } = require('./supercellBridge')
+const { withRetry, isPlayerokRateLimitError } = require('../infra/retry/withRetry')
 
 function createRequestSupercellCodeForChat({ sendChatMessageToPlayerok }) {
   if (typeof sendChatMessageToPlayerok !== 'function') {
@@ -40,12 +41,12 @@ function createRequestSupercellCodeForChat({ sendChatMessageToPlayerok }) {
       game.gameName,
       requestCodeMessageTemplate
     )
-    const message = await sendChatMessageToPlayerok(
-      token,
-      userAgent,
-      dealId,
-      chatId,
-      chatMessage
+    // ВАЖНО: сам запрос кода (runSupercellRequestCode) уже выполнен и НЕ ретраится (иначе
+    // покупатель получит два кода). Ретраим на 429 только ОТПРАВКУ сообщения в чат Playerok —
+    // чтобы уведомление о запросе кода надёжно дошло даже при всплеске лимита.
+    const message = await withRetry(
+      () => sendChatMessageToPlayerok(token, userAgent, dealId, chatId, chatMessage),
+      { retries: 3, shouldRetry: isPlayerokRateLimitError, label: 'supercellRequestCode:sendMessage' }
     )
 
     return {

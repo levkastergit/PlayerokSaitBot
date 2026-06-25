@@ -4,6 +4,7 @@ const {
   getSupercellGameByCategory,
 } = require('../../../functions/supercellHelpers')
 const { playerokErrorResponse } = require('../../../infra/playerokErrorResponse')
+const { withRetry, isPlayerokRateLimitError } = require('../../../infra/retry/withRetry')
 
 async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
   const {
@@ -36,7 +37,11 @@ async function handleRequestSupercellCode({ payload, currentUserId, deps }) {
 
   if (!getSupercellGameByCategory(category) && dealId && typeof requestDealById === 'function') {
     try {
-      const fullDeal = await requestDealById(token, userAgent, dealId)
+      const fullDeal = await withRetry(() => requestDealById(token, userAgent, dealId), {
+        retries: 3,
+        shouldRetry: isPlayerokRateLimitError,
+        label: 'requestSupercellCode:resolveCategory',
+      })
       const picked = pickSupercellCategoryFromDeal(fullDeal)
       if (picked && getSupercellGameByCategory(picked)) category = picked
     } catch (_) {
