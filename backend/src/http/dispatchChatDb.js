@@ -494,9 +494,11 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       // дозагрузка приходит вторым, фоновым запросом с фронта (без skipSmartEmail).
       const messagesOnly =
         payload?.messagesOnly === true || payload?.skipSmartEmail === true
-      // Блокирующе синхронизируем только когда показать совсем нечего (нет кэша сообщений).
-      // Иначе — отдаём кэш сразу, а отставание подтянется фоном.
-      const blockingSyncAllowed = !messagesOnly || !hasLocalMessages
+      // МОМЕНТАЛЬНОСТЬ: блокирующе синхронизируем ТОЛЬКО когда показать совсем нечего (нет
+      // ни одного локального сообщения — первое открытие чата). Если кэш есть — отдаём его
+      // сразу даже на полном пути, а отставание подтянется фоновым синком (+приоритет
+      // выбранного чата). Так открытие чата не ждёт Playerok за serial-gate автолиста.
+      const blockingSyncAllowed = !hasLocalMessages
 
       // Сообщения из БД отдаём сразу; если thread опережает messages — синхронизируем блокирующе.
       if ((needsMessagesSync || needsMetaSync) && chatDbSyncService?.syncOneChangedChat) {
@@ -612,12 +614,12 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const skipSmartEmail =
         payload?.skipSmartEmail === true || payload?.messagesOnly === true
 
-      // Почта Supercell чаще в полях сделки, а не в тексте чата — один запрос deal, без загрузки истории.
-      if (
-        !buyerSupercellEmail &&
-        getSupercellGameByCategory(categoryHint) &&
-        typeof requestDealById === 'function'
-      ) {
+      // МОМЕНТАЛЬНОСТЬ: почту НЕ резолвим синхронно в request-path — это блокировало открытие
+      // чата на сетевом запросе к Playerok за serial-gate автолиста. Из БД/кеша берём мгновенно
+      // (выше). При промахе запускаем разрешение в ФОНЕ: setTimeout теряет ALS skipGate-контекст,
+      // поэтому фоновая дозагрузка идёт СЕРИЙНЫМ gate (sync-класс) и НЕ усиливает operator-полосу
+      // (важно против 429-шторма). Почта появится на следующем поллинге и сохранится в БД (v92).
+      if (!buyerSupercellEmail && !messagesOnly) {
         const dealIdForEmail =
           requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
         const cacheKey = buildSmartEmailCacheKey({
@@ -628,83 +630,57 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         const cached = getCachedSmartEmail(cacheKey)
         if (cached) {
           buyerSupercellEmail = cached.email || null
-        } else if (!messagesOnly) {
-          // На быстром пути (messagesOnly) сетевой запрос сделки за почтой не делаем —
-          // почта подтянется вторым, фоновым запросом фронта. Кэш читаем всегда.
+        } else {
           const { token } = getTokenFromBodyOrStored(currentUserId, payload)
-          if (token && dealIdForEmail) {
-            buyerSupercellEmail = await resolveBuyerSupercellEmailFromDeal({
-              requestDealById,
-              token,
-              userAgent: payload?.userAgent,
-              dealId: dealIdForEmail,
-              categoryHint,
-            })
-            // Кэшируем/сохраняем ТОЛЬКО успех. На промахе НЕ ставим негативный кэш, чтобы
-            // более тщательный путь ниже (с разбором сообщений) всё же отработал — иначе
-            // негативный кэш этого лёгкого пути подавлял бы полную дозагрузку.
-            if (buyerSupercellEmail) {
-              setCachedSmartEmail(cacheKey, buyerSupercellEmail)
-              try {
-                chatDbRepo.setDealSupercellEmail(currentUserId, dealIdForEmail, buyerSupercellEmail)
-              } catch (_) {}
-            }
-          }
-        }
-      }
-
-      // Полная загрузка чата с Playerok — только если явно не skipSmartEmail (тяжёлый путь).
-      if (!skipSmartEmail && !buyerSupercellEmail && typeof fetchDealChatMessagesFromPlayerok === 'function') {
-        const { token } = getTokenFromBodyOrStored(currentUserId, payload)
-        if (token) {
-          const dealIdForSmartResolve =
-            requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
-          const cacheKey = buildSmartEmailCacheKey({
-            userId: currentUserId,
-            chatId: effectiveChatId,
-            dealId: dealIdForSmartResolve || '',
-          })
-          const cached = getCachedSmartEmail(cacheKey)
-          if (cached) {
-            buyerSupercellEmail = cached.email || null
-          } else {
-            try {
-              if (!viewerUsername) {
-                viewerUsername = await resolveViewerUsername(getViewer, token, payload?.userAgent)
-              }
-              const smart = await fetchDealChatMessagesFromPlayerok(
-                token,
-                payload?.userAgent,
-                dealIdForSmartResolve,
-                effectiveChatId,
-                {
-                  viewerUsername: viewerUsername || null,
-                  buyerUsername: resolvedBuyerName || undefined,
-                  categoryHint: primaryDeal?.category || thread?.category || undefined,
-                  maxPages: 40,
+          if (token) {
+            const isSupercell = Boolean(getSupercellGameByCategory(categoryHint))
+            const bgCategoryHint = primaryDeal?.category || thread?.category || categoryHint || undefined
+            const bgViewer = viewerUsername || null
+            const bgBuyer = resolvedBuyerName || undefined
+            setTimeout(() => {
+              ;(async () => {
+                let email = null
+                let persistDealId = dealIdForEmail || null
+                // 1) Лёгкий путь: почта из полей сделки (1 запрос), если категория Supercell.
+                if (isSupercell && dealIdForEmail && typeof requestDealById === 'function') {
+                  email = await resolveBuyerSupercellEmailFromDeal({
+                    requestDealById,
+                    token,
+                    userAgent: payload?.userAgent,
+                    dealId: dealIdForEmail,
+                    categoryHint: bgCategoryHint,
+                  })
                 }
-              )
-              const smartEmail =
-                smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : ''
-              buyerSupercellEmail = smartEmail || null
-              setCachedSmartEmail(cacheKey, buyerSupercellEmail || null)
-              if (buyerSupercellEmail) {
-                try {
-                  chatDbRepo.setDealSupercellEmail(
-                    currentUserId,
-                    dealIdForSmartResolve,
-                    buyerSupercellEmail
+                // 2) Тяжёлый путь (разбор сообщений), если лёгкий не дал и не skipSmartEmail.
+                if (!email && !skipSmartEmail && typeof fetchDealChatMessagesFromPlayerok === 'function') {
+                  let vu = bgViewer
+                  if (!vu) {
+                    try { vu = await resolveViewerUsername(getViewer, token, payload?.userAgent) } catch (_) {}
+                  }
+                  const smart = await fetchDealChatMessagesFromPlayerok(
+                    token, payload?.userAgent, dealIdForEmail, effectiveChatId,
+                    {
+                      viewerUsername: vu || null,
+                      buyerUsername: bgBuyer,
+                      categoryHint: bgCategoryHint,
+                      maxPages: 40,
+                    }
                   )
-                } catch (_) {}
-              }
-            } catch (_) {
-              setCachedSmartEmail(cacheKey, null)
-            }
+                  email = smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : null
+                  if (smart?.effectiveDealId) persistDealId = smart.effectiveDealId
+                }
+                setCachedSmartEmail(cacheKey, email || null)
+                if (email && persistDealId) {
+                  try { chatDbRepo.setDealSupercellEmail(currentUserId, persistDealId, email) } catch (_) {}
+                }
+              })().catch(() => {})
+            }, 0)
           }
         }
       }
 
-      // Отзыв покупателя по основной сделке чата.
+      // Отзыв покупателя: из БД МГНОВЕННО (cachedOnly), сетевую сверку — в ФОН (не блокируем
+      // открытие чата). Свежий отзыв подтянется на следующем поллинге.
       let review = null
       {
         const dealIdForReview =
@@ -718,13 +694,38 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             userAgent: payload?.userAgent,
             userId: currentUserId,
             dealId: dealIdForReview,
-            cachedOnly: messagesOnly,
+            cachedOnly: true,
           })
+          if (!messagesOnly && token && typeof requestDealById === 'function') {
+            setTimeout(() => {
+              resolveDealReview({
+                chatDbRepo,
+                requestDealById,
+                token,
+                userAgent: payload?.userAgent,
+                userId: currentUserId,
+                dealId: dealIdForReview,
+                cachedOnly: false,
+              }).catch(() => {})
+            }, 0)
+          }
         }
       }
 
-      // Финансы по сделкам (цена/себестоимость/расходы на поднятия) — по dealId.
-      const dealFinancialsMap = await getDealFinancialsMap(currentUserId, deps)
+      // Финансы по сделкам — из ПРОГРЕТОГО кеша мгновенно. Холодный кеш греем в ФОНЕ:
+      // computeProfitAnalyticsList синхронный и тяжёлый (вся история продаж) — держать его
+      // на request-path значит блокировать и ответ, и event loop. Появятся на следующем поллинге.
+      let dealFinancialsMap = null
+      {
+        const cachedFin = dealFinancialsCache.get(currentUserId)
+        if (cachedFin && Date.now() - cachedFin.at < DEAL_FINANCIALS_TTL_MS) {
+          dealFinancialsMap = cachedFin.byDeal
+        } else {
+          setTimeout(() => {
+            getDealFinancialsMap(currentUserId, deps).catch(() => {})
+          }, 0)
+        }
+      }
 
       return sendJson(res, 200, {
         ok: true,
@@ -757,7 +758,14 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const payload = await readJsonBody(req, { fallback: {} })
       const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       const userAgent = payload?.userAgent
-      const senderUsername = (await resolveViewerUsername(getViewer, token, userAgent)) || 'Levkaster'
+      // Моментальная отправка: ник берём из кеша; getViewer НЕ ждём на критическом пути
+      // (прогреваем кеш в фоне). На отправку в Playerok ник не влияет — он только для
+      // оптимистичного локального pending-сообщения.
+      let senderUsername = getCachedViewerUsername(token)
+      if (!senderUsername) {
+        senderUsername = 'Levkaster'
+        if (token) void resolveViewerUsername(getViewer, token, userAgent)
+      }
       const chatId = payload?.chatId != null ? String(payload.chatId).trim() : null
       let dealId = payload?.dealId != null ? String(payload.dealId).trim() : null
       const text = payload?.text != null ? String(payload.text) : ''
