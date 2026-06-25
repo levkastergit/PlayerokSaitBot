@@ -18,6 +18,18 @@ const parsedGap = rawGap != null && rawGap !== '' ? Number(rawGap) : NaN
 const MIN_GAP_MS =
   Number.isFinite(parsedGap) && parsedGap >= 0 ? parsedGap : 280
 
+// Серийный (ФОНОВЫЙ) gate пейсим МЕДЛЕННЕЕ операторского skipGate. autolist/sync/dealWatch
+// генерят высокочастотный трафик и забивают 429-лимит Playerok (по аккаунту/токену, не только
+// по IP — поэтому ротация IP не спасает). Больший интервал держит фоновую частоту запросов
+// НИЖЕ лимита → меньше 429 → circuit-breaker не закрывается → оператор и резолв почты работают.
+// Операторский skipGate остаётся быстрым (MIN_GAP_MS). Тюнится без пересборки через env.
+const rawSerialGap = process.env.PLAYEROK_SERIAL_REQUEST_GAP_MS
+const parsedSerialGap = rawSerialGap != null && rawSerialGap !== '' ? Number(rawSerialGap) : NaN
+const SERIAL_GAP_MS =
+  Number.isFinite(parsedSerialGap) && parsedSerialGap >= 0
+    ? parsedSerialGap
+    : Math.max(MIN_GAP_MS, 600)
+
 // Бэкстоп на случай, если конкретная request-функция не навесила собственный
 // сокет-таймаут: гарантирует, что цепочка gateChain всегда продвинется и
 // очередь не зависнет навсегда (иначе — каскад 504 по всему сайту). Чуть больше
@@ -172,7 +184,7 @@ function withPlayerokGate(fn) {
   if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
   const run = gateChain.then(async () => {
     const now = Date.now()
-    const wait = Math.max(0, MIN_GAP_MS - (now - lastStartTime))
+    const wait = Math.max(0, SERIAL_GAP_MS - (now - lastStartTime))
     if (wait > 0) await sleep(wait)
     lastStartTime = Date.now()
     return withGateTimeout(fn)
