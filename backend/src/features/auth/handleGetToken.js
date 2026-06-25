@@ -6,11 +6,14 @@ async function handleGetToken({ currentUserId, deps }) {
     }
 
     const stored = loadStoredTokenPlain(currentUserId) || { token: '', updatedAt: null }
-    const token = stored.token && String(stored.token).trim() ? stored.token : null
+    const hasToken = Boolean(stored.token && String(stored.token).trim())
     return {
       statusCode: 200,
       data: {
-        token,
+        // Сырой токен Playerok НАРУЖУ НЕ отдаём (защита от кражи через XSS/логи). Бэкенд сам
+        // использует stored-токен по сессии (см. санитайз body-token в dispatchPlayerok).
+        // Фронту достаточно факта наличия токена.
+        hasToken,
         updated_at: stored.updatedAt != null ? stored.updatedAt : null,
       },
     }

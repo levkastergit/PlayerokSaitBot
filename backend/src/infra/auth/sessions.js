@@ -81,6 +81,24 @@ function destroySession(sessionId) {
   }
 }
 
+// Уничтожить ВСЕ сессии пользователя (кроме exceptSessionId). Вызывается при смене пароля —
+// чтобы старые/чужие сессии перестали действовать сразу.
+function destroyUserSessions(userId, exceptSessionId) {
+  const uid = Number(userId)
+  if (!Number.isFinite(uid)) return
+  if (stmts && db) {
+    if (exceptSessionId) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(uid, exceptSessionId)
+    } else {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(uid)
+    }
+  } else {
+    for (const [sid, s] of memorySessions) {
+      if (Number(s.userId) === uid && sid !== exceptSessionId) memorySessions.delete(sid)
+    }
+  }
+}
+
 module.exports = {
   initSessions,
   getSessionIdFromRequest,
@@ -88,4 +106,5 @@ module.exports = {
   getSessionUserId,
   createSession,
   destroySession,
+  destroyUserSessions,
 }

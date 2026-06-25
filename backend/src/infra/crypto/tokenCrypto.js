@@ -6,6 +6,17 @@ const TOKEN_SECRET_RAW =
   (process.env.TOKEN_SECRET == null ? '' : String(process.env.TOKEN_SECRET)) ||
   (process.env.HEAD_CODE == null ? '' : String(process.env.HEAD_CODE))
 
+// Ключ шифрования токенов выводится как sha256(secret) — это корректно ТОЛЬКО для
+// высокоэнтропийного секрета (≥32 случайных символа). KDF (scrypt) тут не применяем
+// намеренно: токен расшифровывается на КАЖДОМ запросе, scrypt добавил бы ~100мс latency,
+// а смена схемы сломала бы все уже сохранённые токены. Поэтому требуем сильный секрет.
+if (TOKEN_SECRET_RAW && TOKEN_SECRET_RAW.length < 32) {
+  console.warn(
+    '[crypto] ВНИМАНИЕ: TOKEN_SECRET короче 32 символов — это слабо для ключа шифрования. ' +
+      'Задайте случайное значение >=32 символов (напр. `openssl rand -hex 32`).'
+  )
+}
+
 function parseScryptHash(encoded) {
   const raw = String(encoded || '').trim()
   // format: scrypt$<saltB64>$<keyB64>
@@ -31,8 +42,10 @@ function hashPassword(password) {
 function verifyPassword(password, encodedHash) {
   const parsed = parseScryptHash(encodedHash)
   if (!parsed) {
-    // Обратная совместимость: если хэш не в формате scrypt$, считаем, что это просто plaintext.
-    return String(password || '') === String(encodedHash || '')
+    // УБРАН небезопасный plaintext-фоллбэк (раньше любой не-scrypt хэш сравнивался как
+    // открытый текст — пароли в БД, не в формате scrypt$, проходили по равенству строк).
+    // Принимаем ТОЛЬКО валидный scrypt$-хэш. Легаси-пароли (если есть) → сменить через регистрацию.
+    return false
   }
   const derived = crypto.scryptSync(String(password || ''), parsed.salt, parsed.key.length)
   return crypto.timingSafeEqual(derived, parsed.key)

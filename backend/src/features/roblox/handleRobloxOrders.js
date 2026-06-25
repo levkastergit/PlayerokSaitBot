@@ -15,6 +15,34 @@ const ATTEMPT_TTL_MS = 5 * 60 * 1000
 const orderCreds = new Map() // orderId -> { username, password, at }
 const ORDER_CREDS_TTL_MS = 30 * 60 * 1000
 
+// Rate-limit публичных 2FA-страниц (без сессии): не дать брутить 6-значный код и спамить
+// пере-логин (resend дёргает loginService.start кредами покупателя). Ключ — token заказа.
+const twofaRate = new Map() // token -> { codeAttempts, windowStart, lastResendAt }
+const TWOFA_MAX_CODE_ATTEMPTS = 8
+const TWOFA_CODE_WINDOW_MS = 5 * 60 * 1000
+const TWOFA_RESEND_COOLDOWN_MS = 20 * 1000
+
+function twofaCheckRate(token, kind) {
+  const now = Date.now()
+  let s = twofaRate.get(token)
+  if (!s || now - s.windowStart > TWOFA_CODE_WINDOW_MS) {
+    s = { codeAttempts: 0, windowStart: now, lastResendAt: 0 }
+    twofaRate.set(token, s)
+  }
+  if (kind === 'resend') {
+    if (now - s.lastResendAt < TWOFA_RESEND_COOLDOWN_MS) {
+      return { ok: false, error: 'Слишком часто. Подождите ~20 сек перед повторным запросом.' }
+    }
+    s.lastResendAt = now
+    return { ok: true }
+  }
+  s.codeAttempts += 1
+  if (s.codeAttempts > TWOFA_MAX_CODE_ATTEMPTS) {
+    return { ok: false, error: 'Слишком много попыток ввода кода. Попросите у продавца новую ссылку.' }
+  }
+  return { ok: true }
+}
+
 function pruneSessions() {
   const now = Date.now()
   for (const [k, v] of loginSessions) {
@@ -22,6 +50,9 @@ function pruneSessions() {
   }
   for (const [k, v] of orderCreds) {
     if (now - Number(v.at || 0) > ORDER_CREDS_TTL_MS) orderCreds.delete(k)
+  }
+  for (const [k, v] of twofaRate) {
+    if (now - Number(v.windowStart || 0) > TWOFA_CODE_WINDOW_MS) twofaRate.delete(k)
   }
 }
 
@@ -45,10 +76,9 @@ function loginLinkFor(order, deps) {
 
 function withLink(order, deps) {
   if (!order) return order
-  // Отдаём сохранённый пароль (из памяти) обратно владельцу заказа — чтобы карточка показала его
-  // звёздочками с «глазиком» и не переспрашивала. Только своему авторизованному продавцу.
-  const c = orderCreds.get(Number(order.id))
-  const out = { ...order, loginLink: loginLinkFor(order, deps), buyerPasswordStored: (c && c.password) || null }
+  // НЕ возвращаем пароль покупателя в API/клиент (раньше отдавали buyerPasswordStored для показа
+  // «звёздочками с глазиком»). Пароль остаётся ТОЛЬКО в памяти сервера для повторного входа.
+  const out = { ...order, loginLink: loginLinkFor(order, deps) }
   // Срок действия 2FA-подтверждения — чтобы карточка заказа показала таймер/«истекло».
   if (order.status === 'awaiting_2fa' && order.twofaToken) {
     const sess = loginSessions.get(order.twofaToken)
@@ -395,7 +425,18 @@ async function handleTwofaSubmit({ token, code, resend, deps }) {
   }
   if (resend) {
     if (!sess.password) return { statusCode: 200, html: renderTwofaPage(token, { expired: true, canResend: false }) }
+    const rl = twofaCheckRate(token, 'resend')
+    if (!rl.ok) {
+      return { statusCode: 429, html: renderTwofaPage(token, { error: rl.error, canResend: true, expiresInSec: 20 }) }
+    }
     return reloginForToken({ token, order, sess, deps })
+  }
+  // Лимитируем только реальный ВВОД кода (пустой code = push-поллинг, его не штрафуем).
+  if (code) {
+    const rl = twofaCheckRate(token, 'code')
+    if (!rl.ok) {
+      return { statusCode: 429, html: renderTwofaPage(token, { error: rl.error, canResend: !!sess.password }) }
+    }
   }
   const res = code
     ? await loginService.submit2fa(sess.sid, String(code).trim())

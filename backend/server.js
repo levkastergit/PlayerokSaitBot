@@ -10,6 +10,7 @@ const path = require('path')
 const fs = require('fs')
 const { URLSearchParams } = require('url')
 const { execFile, spawnSync } = require('child_process')
+const { isTrustedInternalRequest } = require('./src/infra/internalAuth')
 
 const PORT = parseInt(process.env.PORT, 10) || 3000
 
@@ -231,6 +232,7 @@ const {
   getSessionUserId,
   createSession,
   destroySession,
+  destroyUserSessions,
 } = require('./src/infra/auth/sessions')
 
 const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist')
@@ -925,29 +927,19 @@ const handleHttpRequest = async (req, res) => {
   // Сессия для /api/*: с не-localhost без cookie — 401. С localhost фоновые вызовы без сессии всё ещё проходят (userId по умолчанию 1 или из куки).
   let currentUserId = 1
   if (pathname.startsWith('/api/')) {
-    const remote = req.socket.remoteAddress || ''
-    // КРИТИЧНО: nginx работает с network_mode:host и проксирует на 127.0.0.1:3000, поэтому
-    // ВСЕ внешние запросы приходят к app с remoteAddress=127.0.0.1. Считать их «локальными»
-    // только по IP нельзя — иначе весь /api/* (включая /api/token и /api/docker/*) открыт
-    // анонимно как владелец. Доверяем локальности ТОЛЬКО если это петлевой адрес И НЕТ
-    // прокси-заголовков (их nginx ставит на каждый проксируемый запрос; фоновые self-call'ы
-    // postLocal идут напрямую на 127.0.0.1 без них). Внешний клиент не может убрать эти
-    // заголовки — nginx добавляет их всегда.
-    const hasProxyHeaders = Boolean(
-      req.headers['x-forwarded-for'] ||
-        req.headers['x-real-ip'] ||
-        req.headers['x-forwarded-proto'] ||
-        req.headers['x-forwarded-host']
-    )
-    const isLoopback =
-      remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
-    const isLocal = isLoopback && !hasProxyHeaders
+    // КРИТИЧНО (auth-bypass fix): nginx (network_mode:host) проксирует на 127.0.0.1:3000,
+    // поэтому ВСЕ внешние запросы приходят с remoteAddress=127.0.0.1. По source-IP «локальность»
+    // определять нельзя. Доверяем «внутренней» (без сессии) ТОЛЬКО self-call'у с правильным
+    // X-Internal-Secret (его ставит postLocal; внешний клиент через nginx подделать не может —
+    // секрет лежит только в памяти процесса). Всё остальное под /api/* требует валидную сессию.
+    const isInternal = isTrustedInternalRequest(req)
+    req.__trustedInternal = isInternal
     const sessionId = getSessionIdFromRequest(req)
     if (sessionId && isSessionValid(sessionId)) {
       const uid = getSessionUserId(sessionId)
       if (uid) currentUserId = uid
     }
-    if (!isLocal) {
+    if (!isInternal) {
       if (!sessionId || !isSessionValid(sessionId) || !getSessionUserId(sessionId)) {
         return sendJson(res, 401, { error: 'Unauthorized' })
       }
@@ -969,6 +961,7 @@ const handleHttpRequest = async (req, res) => {
         isSessionValid,
         getSessionUserId,
         destroySession,
+        destroyUserSessions,
         loadStoredTokenPlain,
         encryptToken,
         upsertStoredToken,
@@ -1198,6 +1191,18 @@ const handleHttpRequest = async (req, res) => {
       nowTs,
       deps: {
         getTokenFromBodyOrStored,
+        // IDOR-защита: внешнему запросу разрешаем body-userId только если это сам себя
+        // или ПОДТВЕРЖДЁННЫЙ партнёр (директор→воркер, connect_status=2). Иначе игнор.
+        isAuthorizedPartnerUserId: (directorId, targetId) => {
+          try {
+            const rows = getPartnersForOwner.all(Number(directorId)) || []
+            return rows.some(
+              (r) => Number(r.partner_user_id) === Number(targetId) && Number(r.connect_status) === 2
+            )
+          } catch {
+            return false
+          }
+        },
         requestItemById,
         fetchItemPriorityStatuses,
         increaseItemPriorityStatus,

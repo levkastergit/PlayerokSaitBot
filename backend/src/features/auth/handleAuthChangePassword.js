@@ -6,6 +6,7 @@ async function handleAuthChangePassword({ req, payload, deps }) {
     getSessionIdFromRequest,
     isSessionValid,
     getSessionUserId,
+    destroyUserSessions,
   } = deps
 
   const sessionId = getSessionIdFromRequest(req)
@@ -43,6 +44,13 @@ async function handleAuthChangePassword({ req, payload, deps }) {
 
   const nextHash = hashPassword(newPassword)
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(nextHash, uid)
+
+  // Смена пароля инвалидирует ВСЕ другие сессии этого пользователя (текущую оставляем).
+  if (typeof destroyUserSessions === 'function') {
+    try {
+      destroyUserSessions(uid, sessionId)
+    } catch (_) {}
+  }
 
   return { statusCode: 200, data: { ok: true } }
 }

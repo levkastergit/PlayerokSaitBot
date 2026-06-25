@@ -1,5 +1,7 @@
 'use strict'
 
+const { getInternalSecret } = require('../infra/internalAuth')
+
 function createPostLocal({ PORT, http }) {
   if (typeof PORT !== 'number') throw new Error('PORT must be a number')
   if (!http || typeof http.request !== 'function') {
@@ -19,6 +21,9 @@ function createPostLocal({ PORT, http }) {
           headers: {
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(data),
+            // Метка доверенного внутреннего self-call: только с ней сервер доверяет
+            // userId/token из тела (фоновые задачи работают за конкретного пользователя).
+            'X-Internal-Secret': getInternalSecret(),
           },
         },
         (res) => {

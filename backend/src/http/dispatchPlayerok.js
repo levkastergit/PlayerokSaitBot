@@ -42,9 +42,27 @@ async function readPayloadMaybeLimited(req, { maxBytes = null } = {}) {
 
 async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps }) {
   const actionsStopped = typeof deps.isAllActionsStopped === 'function' && deps.isAllActionsStopped()
+
+  // IDOR-санитайз тела для ВНЕШНИХ запросов (не доверенный self-call): НИКОГДА не доверяем
+  // body-токену (всегда stored-токен по сессии) и body-userId (кроме своего или ПОДТВЕРЖДЁННОГО
+  // партнёра). Доверенный self-call (X-Internal-Secret, фоновые задачи) проходит как есть.
+  const sanitizeAuth = (payload) => {
+    if (!payload || typeof payload !== 'object' || req.__trustedInternal) return payload
+    if (Object.prototype.hasOwnProperty.call(payload, 'token')) delete payload.token
+    if (payload.userId != null) {
+      const bodyUid = Number(payload.userId)
+      const allowed =
+        bodyUid === Number(currentUserId) ||
+        (typeof deps.isAuthorizedPartnerUserId === 'function' &&
+          deps.isAuthorizedPartnerUserId(currentUserId, bodyUid))
+      if (!allowed) delete payload.userId
+    }
+    return payload
+  }
+
   const readLimited = async () => {
     try {
-      return await readPayloadMaybeLimited(req, { maxBytes: 1e6 })
+      return sanitizeAuth(await readPayloadMaybeLimited(req, { maxBytes: 1e6 }))
     } catch (err) {
       if (err && err.statusCode === 413) return null
       sendJson(res, 400, { error: 'Invalid JSON body' })
@@ -54,7 +72,7 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
 
   const readUnlimited = async () => {
     try {
-      return await readPayloadMaybeLimited(req, { maxBytes: null })
+      return sanitizeAuth(await readPayloadMaybeLimited(req, { maxBytes: null }))
     } catch (_) {
       sendJson(res, 400, { error: 'Invalid JSON body' })
       return null

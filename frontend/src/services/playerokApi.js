@@ -159,7 +159,11 @@ export async function loadStoredToken() {
       throw new Error(err.error || `Ошибка загрузки токена: ${response.status}`)
     }
     const data = await response.json().catch(() => ({}))
-    return (data && typeof data.token === 'string' ? data.token : '') || ''
+    // Бэкенд больше НЕ отдаёт сырой токен (безопасность). Возвращаем сентинел «configured»,
+    // если токен настроен — фронт использует его только как признак «токен есть»; реальные
+    // запросы бэкенд выполняет stored-токеном по сессии (body-токен он игнорирует).
+    if (data && typeof data.token === 'string' && data.token) return data.token // legacy-бэкенд
+    return data && data.hasToken ? 'configured' : ''
   } catch (_err) {
     return ''
   }
