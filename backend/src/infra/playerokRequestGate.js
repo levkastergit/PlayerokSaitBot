@@ -161,7 +161,12 @@ function circuitAllowsRequest() {
  */
 function withPlayerokGate(fn) {
   if (shouldSkipPlayerokGate()) {
-    if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
+    // Операторский (интерактивный) трафик НЕ гейтим circuit-breaker'ом: он низкочастотный
+    // и user-facing (открытие чата, резолв почты, действия в UI). Брейкер нужен против
+    // ХАММЕРА — это про высокочастотный ФОН (autolist/sync на серийном gate). Иначе фоновый
+    // 429-шторм (все IP в cooldown) закрывает брейкер и блокирует оператора, хотя пара его
+    // запросов по надёжному IP проходит (доказано пробой/бэкафиллом). Троттлинг skipGate
+    // (3 конкурентных + MIN_GAP) сохраняется — флуда не будет.
     return withSkipThrottle(fn)
   }
   if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
