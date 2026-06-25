@@ -6,6 +6,7 @@ const {
 } = require('../debug/chatSyncStepLog')
 const { getSupercellGameByCategory } = require('../functions/supercellHelpers')
 const { resolveBuyerSupercellEmailFromDeal } = require('../functions/resolveBuyerSupercellEmailFromDeal')
+const { runPlayerokInteractive } = require('../infra/playerokRequestGate')
 const {
   handleTestPurchaseStart,
   handleTestPurchaseChat,
@@ -638,18 +639,28 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             const bgViewer = viewerUsername || null
             const bgBuyer = resolvedBuyerName || undefined
             setTimeout(() => {
-              ;(async () => {
+              // Резолв почты — на БЫСТРОЙ operator-полосе (skipGate), иначе фон застрянет за
+              // autolist на серийном gate (180-300с) и почта появится только через минуты.
+              // Это chat-open частота (раз на открытие чата, под !messagesOnly — НЕ на каждый
+              // поллинг), поэтому не усиливает 429-шторм. Бэкенд-ретрай(3) безопасен на этой
+              // низкочастотной операции (не front-polled). На промахе пишем негативный кэш (30с).
+              runPlayerokInteractive(async () => {
                 let email = null
                 let persistDealId = dealIdForEmail || null
                 // 1) Лёгкий путь: почта из полей сделки (1 запрос), если категория Supercell.
                 if (isSupercell && dealIdForEmail && typeof requestDealById === 'function') {
-                  email = await resolveBuyerSupercellEmailFromDeal({
-                    requestDealById,
-                    token,
-                    userAgent: payload?.userAgent,
-                    dealId: dealIdForEmail,
-                    categoryHint: bgCategoryHint,
-                  })
+                  for (let attempt = 1; attempt <= 3 && !email; attempt += 1) {
+                    email = await resolveBuyerSupercellEmailFromDeal({
+                      requestDealById,
+                      token,
+                      userAgent: payload?.userAgent,
+                      dealId: dealIdForEmail,
+                      categoryHint: bgCategoryHint,
+                    })
+                    if (!email && attempt < 3) {
+                      await new Promise((r) => setTimeout(r, 600 * attempt))
+                    }
+                  }
                 }
                 // 2) Тяжёлый путь (разбор сообщений), если лёгкий не дал и не skipSmartEmail.
                 if (!email && !skipSmartEmail && typeof fetchDealChatMessagesFromPlayerok === 'function') {
@@ -673,7 +684,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
                 if (email && persistDealId) {
                   try { chatDbRepo.setDealSupercellEmail(currentUserId, persistDealId, email) } catch (_) {}
                 }
-              })().catch(() => {})
+              }).catch(() => {})
             }, 0)
           }
         }
