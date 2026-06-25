@@ -13,7 +13,6 @@ const {
   logSupercellDebug,
   isEmailValid,
 } = require('./supercellHelpers')
-const { withRetry, isPlayerokRateLimitError } = require('../infra/retry/withRetry')
 
 function isDealEmailDebugEnabled() {
   const v = String(process.env.PLAYEROK_DEAL_EMAIL_DEBUG || '').trim().toLowerCase()
@@ -165,11 +164,7 @@ function createFetchDealChatMessagesFromPlayerok({
     let chatId = chatIdFromDeal || null
     if (!chatId && dealId) {
       try {
-        const fullDeal = await withRetry(() => requestDealById(token, userAgent, dealId), {
-          retries: 3,
-          shouldRetry: isPlayerokRateLimitError,
-          label: 'fetchDealChatMessages:resolveChatId',
-        })
+        const fullDeal = await requestDealById(token, userAgent, dealId)
         chatId = fullDeal?.chat?.id || fullDeal?.chatId || null
         logDealEmailDebug('resolveChatIdFromDeal', {
           dealId,
@@ -336,14 +331,11 @@ function createFetchDealChatMessagesFromPlayerok({
 
     if (effectiveDealId) {
       try {
-        // Главный fetch сделки для извлечения почты/полей. Ретрай на 429 — иначе под
-        // всплеском лимита приходит НЕПОЛНАЯ сделка (без obtainingFields) и почта теряется
-        // («Не указана»). Идемпотентный read → ретраить безопасно.
-        const fullDeal = await withRetry(() => requestDealById(token, userAgent, effectiveDealId), {
-          retries: 3,
-          shouldRetry: isPlayerokRateLimitError,
-          label: 'fetchDealChatMessages:requestDealById',
-        })
+        // БЕЗ ретрая: этот fetch на front-polled пути (deal-chat-messages опрашивается на
+        // каждый просмотр чата + фон). Ретрай тут умножает нагрузку на каждый поллинг и
+        // УСИЛИВАЕТ 429-шторм (регрессия v90). Устойчивость почты к 429 — через кэш/тик, не
+        // через ретрай на поллинге.
+        const fullDeal = await requestDealById(token, userAgent, effectiveDealId)
         logDealEmailDebug('requestDealById:ok', {
           effectiveDealId,
           fullDealIsNull: fullDeal == null,
