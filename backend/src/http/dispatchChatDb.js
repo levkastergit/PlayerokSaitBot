@@ -593,6 +593,21 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const resolvedBuyerName = primaryDeal?.buyer_name || thread?.buyer_name || null
       let buyerSupercellEmail = pickLatestBuyerSupercellEmail(rows, resolvedBuyerName)
 
+      // 429-устойчивость: ранее извлечённую почту Supercell храним в БД и читаем ПЕРВОЙ.
+      // Показ почты не должен зависеть от живого запроса сделки (он может падать на 429-всплеске).
+      // Однажды успешно извлекли — показываем всегда, без новых сетевых запросов.
+      if (!buyerSupercellEmail) {
+        const storedDealId =
+          requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
+        if (storedDealId) {
+          const storedRow = chatDbRepo.getDealById.get(currentUserId, storedDealId)
+          const storedEmail = storedRow?.buyer_supercell_email
+          if (storedEmail && String(storedEmail).trim()) {
+            buyerSupercellEmail = String(storedEmail).trim()
+          }
+        }
+      }
+
       const categoryHint = primaryDeal?.category || thread?.category || null
       const skipSmartEmail =
         payload?.skipSmartEmail === true || payload?.messagesOnly === true
@@ -625,7 +640,15 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
               dealId: dealIdForEmail,
               categoryHint,
             })
-            setCachedSmartEmail(cacheKey, buyerSupercellEmail || null)
+            // Кэшируем/сохраняем ТОЛЬКО успех. На промахе НЕ ставим негативный кэш, чтобы
+            // более тщательный путь ниже (с разбором сообщений) всё же отработал — иначе
+            // негативный кэш этого лёгкого пути подавлял бы полную дозагрузку.
+            if (buyerSupercellEmail) {
+              setCachedSmartEmail(cacheKey, buyerSupercellEmail)
+              try {
+                chatDbRepo.setDealSupercellEmail(currentUserId, dealIdForEmail, buyerSupercellEmail)
+              } catch (_) {}
+            }
           }
         }
       }
@@ -665,6 +688,15 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
                 smart?.buyerSupercellEmail != null ? String(smart.buyerSupercellEmail).trim() : ''
               buyerSupercellEmail = smartEmail || null
               setCachedSmartEmail(cacheKey, buyerSupercellEmail || null)
+              if (buyerSupercellEmail) {
+                try {
+                  chatDbRepo.setDealSupercellEmail(
+                    currentUserId,
+                    dealIdForSmartResolve,
+                    buyerSupercellEmail
+                  )
+                } catch (_) {}
+              }
             } catch (_) {
               setCachedSmartEmail(cacheKey, null)
             }

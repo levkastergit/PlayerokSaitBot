@@ -218,6 +218,25 @@ function setupChatDbRepo(db) {
     )
   }
 
+  const updateDealSupercellEmail = db.prepare(`
+    UPDATE chat_deals
+    SET buyer_supercell_email = ?,
+        buyer_supercell_email_checked_at = ?,
+        updated_at = ?
+    WHERE user_id = ? AND deal_id = ?
+  `)
+
+  // Сохраняем извлечённую почту Supercell в БД (устойчивость к 429: показ не зависит от
+  // живого запроса сделки). Пустым значением НЕ затираем — раз извлекли, храним.
+  function setDealSupercellEmail(userId, dealId, email) {
+    const uid = Number(userId)
+    const id = dealId != null ? String(dealId).trim() : ''
+    const value = email != null ? String(email).trim() : ''
+    if (!Number.isFinite(uid) || uid <= 0 || !id || !value) return
+    const now = Date.now()
+    updateDealSupercellEmail.run(value, now, now, uid, id)
+  }
+
   const getSyncState = db.prepare(`
     SELECT *
     FROM chat_sync_state
@@ -455,6 +474,7 @@ function setupChatDbRepo(db) {
     getDealProblemState,
     getDealById,
     setDealTestimonial,
+    setDealSupercellEmail,
     getSyncState,
     upsertSyncState,
     writeSyncState,

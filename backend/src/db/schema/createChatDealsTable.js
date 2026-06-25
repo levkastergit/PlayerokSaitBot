@@ -33,6 +33,10 @@ function createChatDealsTable(db) {
     ['testimonial_left', 'INTEGER'],
     ['testimonial_checked_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['testimonial_created_at', 'TEXT'],
+    // Почта Supercell ID, извлечённая из полей сделки. Храним, чтобы показ почты в чате
+    // не зависел от живого запроса сделки (устойчивость к 429): один раз извлекли — храним.
+    ['buyer_supercell_email', 'TEXT'],
+    ['buyer_supercell_email_checked_at', 'INTEGER NOT NULL DEFAULT 0'],
   ]
   for (const [name, type] of extraCols) {
     try {
