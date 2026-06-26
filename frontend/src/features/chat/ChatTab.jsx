@@ -1701,10 +1701,12 @@ export function ChatTab({
           deals,
           review || null
         )
-        // Вторая, фоновая фаза: если почта Supercell ещё не определена, дотягиваем её
-        // (и свежий отзыв) полным запросом без skipSmartEmail. Не блокирует показ истории
-        // и идёт только для открытого чата.
-        if (isSelected && !buyerSupercellEmail) {
+        // Вторая, фоновая фаза: если почта Supercell ИЛИ отзыв ещё не определены, дотягиваем
+        // их полным запросом без skipSmartEmail. Раньше гейт был только !buyerSupercellEmail —
+        // после бэкафилла почты у большинства Supercell-чатов почта известна, и полный запрос
+        // НЕ срабатывал → отзыв никогда не дозагружался. Теперь триггерим и при отсутствии отзыва.
+        // Не блокирует показ истории, идёт только для открытого чата.
+        if (isSelected && (!buyerSupercellEmail || review == null)) {
           void fetchChatDbMessages(token, {
             dealId: chat.dealId || null,
             chatId,
@@ -4101,7 +4103,9 @@ export function ChatTab({
                       Покупатель: {selectedChat.buyerName}
                     </div>
                   ) : null}
-                  {selectedChatDerivedStatus === 'CONFIRMED' && (() => {
+                  {(selectedChatDerivedStatus === 'CONFIRMED' ||
+                    selectedChatState?.review?.left ||
+                    selectedChat?.review?.left) && (() => {
                     const headerReview = selectedChatState?.review || selectedChat?.review || null
                     return (
                       <div className="chat-item-card__review">
@@ -4136,7 +4140,7 @@ export function ChatTab({
                       </div>
                     )
                   })()}
-                  {selectedChatCanUseSupercell && (
+                  {(selectedChatCanUseSupercell || selectedChatDetectedEmail) && (
                     <div
                       className={
                         'chat-item-card__email-box ' +
