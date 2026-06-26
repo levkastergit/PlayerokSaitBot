@@ -776,6 +776,7 @@ const processSingleSupercellFlow = createProcessSingleSupercellFlow({
   isPlayerokRateLimitError,
   createChatMessage,
   requestSupercellCodeForChat,
+  chatDbRepo,
 })
 
 const processSingleTopupFlow = createProcessSingleTopupFlow({

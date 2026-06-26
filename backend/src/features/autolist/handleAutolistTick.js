@@ -744,6 +744,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         autolistGetSupercellFlowMap,
         processSingleSupercellFlow,
         shouldStop: shouldStopScan,
+        currentUserId,
       })
     }
 

@@ -16,6 +16,7 @@ function createProcessSingleSupercellFlow({
   isPlayerokRateLimitError,
   createChatMessage,
   requestSupercellCodeForChat,
+  chatDbRepo = null,
 }) {
   const EMAIL_FETCH_RETRIES = 2
   const EMAIL_FETCH_DELAY_MS = 1200
@@ -32,7 +33,7 @@ function createProcessSingleSupercellFlow({
     ...extra,
   })
 
-  return async function processSingleSupercellFlow(chatId, token, userAgent, viewerUsername, nowTs) {
+  return async function processSingleSupercellFlow(chatId, token, userAgent, viewerUsername, nowTs, currentUserId = null) {
     const tokenHash = token
     const flowMap = autolistGetSupercellFlowMap(tokenHash)
     const state = flowMap[String(chatId)]
@@ -184,6 +185,14 @@ function createProcessSingleSupercellFlow({
           category,
           invalidEmailSent,
         }
+      }
+
+      // ПЕРСИСТ ПОЧТЫ: autolist добыл валидную почту — сохраняем её в БД СРАЗУ (до запроса кода),
+      // чтобы чат показал почту даже если запрос кода упадёт. Раньше autolist почту НЕ персистил,
+      // и у новой Supercell-сделки в чате почта не появлялась (чат читает БД). UPSERT в
+      // setDealSupercellEmail создаёт строку chat_deals, если её ещё нет (гонка с синком).
+      if (chatDbRepo && typeof chatDbRepo.setDealSupercellEmail === 'function' && currentUserId != null) {
+        try { chatDbRepo.setDealSupercellEmail(currentUserId, effectiveDealId, effectiveEmail) } catch (_) {}
       }
 
       logSupercellDebug('flow:requestingCode', {

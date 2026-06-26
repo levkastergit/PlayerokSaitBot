@@ -701,6 +701,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
           requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
         if (dealIdForReview) {
           const { token } = getTokenFromBodyOrStored(currentUserId, payload)
+          // Из БД мгновенно.
           review = await resolveDealReview({
             chatDbRepo,
             requestDealById,
@@ -710,8 +711,11 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             dealId: dealIdForReview,
             cachedOnly: true,
           })
+          // На полном пути — ЖИВАЯ сверка на skipGate (circuit обойдён v95), с жёстким таймаутом,
+          // и свежий отзыв возвращаем в ЭТОМ ответе (фон через setTimeout уходил на серийный gate
+          // и блокировался брейкером → отзывы не появлялись). resolveDealReview сам персистит в БД.
           if (!messagesOnly && token && typeof requestDealById === 'function') {
-            setTimeout(() => {
+            const freshReviewPromise = runPlayerokInteractive(() =>
               resolveDealReview({
                 chatDbRepo,
                 requestDealById,
@@ -720,8 +724,14 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
                 userId: currentUserId,
                 dealId: dealIdForReview,
                 cachedOnly: false,
-              }).catch(() => {})
-            }, 0)
+              })
+            )
+            freshReviewPromise.catch(() => {})
+            const freshReview = await Promise.race([
+              freshReviewPromise.catch(() => null),
+              new Promise((r) => setTimeout(() => r(null), 5000)),
+            ])
+            if (freshReview) review = freshReview
           }
         }
       }

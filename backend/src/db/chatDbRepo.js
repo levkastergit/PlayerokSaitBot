@@ -218,12 +218,19 @@ function setupChatDbRepo(db) {
     )
   }
 
-  const updateDealSupercellEmail = db.prepare(`
-    UPDATE chat_deals
-    SET buyer_supercell_email = ?,
-        buyer_supercell_email_checked_at = ?,
-        updated_at = ?
-    WHERE user_id = ? AND deal_id = ?
+  // UPSERT: для НОВОЙ сделки строки chat_deals может ещё не быть (гонка автоматики с синком) —
+  // раньше был чистый UPDATE и запись почты терялась (0 строк). Теперь создаём строку при
+  // отсутствии. last_seen_at/updated_at — NOT NULL, поэтому задаём их в INSERT;
+  // is_paid_marker_seen имеет DEFAULT 0. ON CONFLICT по уникальному (user_id, deal_id).
+  const upsertDealSupercellEmail = db.prepare(`
+    INSERT INTO chat_deals (
+      user_id, deal_id, buyer_supercell_email, buyer_supercell_email_checked_at, last_seen_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, deal_id) DO UPDATE SET
+      buyer_supercell_email = excluded.buyer_supercell_email,
+      buyer_supercell_email_checked_at = excluded.buyer_supercell_email_checked_at,
+      updated_at = excluded.updated_at
   `)
 
   // Сохраняем извлечённую почту Supercell в БД (устойчивость к 429: показ не зависит от
@@ -234,7 +241,7 @@ function setupChatDbRepo(db) {
     const value = email != null ? String(email).trim() : ''
     if (!Number.isFinite(uid) || uid <= 0 || !id || !value) return
     const now = Date.now()
-    updateDealSupercellEmail.run(value, now, now, uid, id)
+    upsertDealSupercellEmail.run(uid, id, value, now, now, now)
   }
 
   const getSyncState = db.prepare(`
