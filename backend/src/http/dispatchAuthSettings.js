@@ -24,6 +24,8 @@ const { handlePartnersConnect } = require('../features/partners/handlePartnersCo
 const { handleGetOutboundIps } = require('../features/playerokOutboundIp/handleGetOutboundIps')
 const { handleGetOutboundIpSettings } = require('../features/playerokOutboundIp/handleGetOutboundIpSettings')
 const { handleSetOutboundIpSettings } = require('../features/playerokOutboundIp/handleSetOutboundIpSettings')
+const { handleGetSpeedSettings } = require('../features/playerokOutboundIp/handleGetSpeedSettings')
+const { handleSetSpeedSettings } = require('../features/playerokOutboundIp/handleSetSpeedSettings')
 const { handleGetApprouteSettings } = require('../features/approute/handleGetApprouteSettings')
 const { handleSetApprouteSettings } = require('../features/approute/handleSetApprouteSettings')
 const { handleGetClodeSettings } = require('../features/clode/handleGetClodeSettings')
@@ -257,6 +259,25 @@ async function dispatchPrivateAuthAndSettings({ req, res, pathname, query, curre
       return true
     }
     const result = await handleSetOutboundIpSettings({ payload, currentUserId, deps })
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/playerok/speed-settings') {
+    const result = await handleGetSpeedSettings()
+    sendJson(res, result.statusCode, result.data)
+    return true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/speed-settings') {
+    let payload
+    try {
+      payload = await readJsonBody(req, { fallback: {} })
+    } catch (_) {
+      sendJson(res, 400, { error: 'Invalid JSON body' })
+      return true
+    }
+    const result = await handleSetSpeedSettings({ payload, currentUserId, deps })
     sendJson(res, result.statusCode, result.data)
     return true
   }

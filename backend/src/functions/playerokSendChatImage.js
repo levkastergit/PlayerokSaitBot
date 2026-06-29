@@ -7,6 +7,7 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 const CREATE_CHAT_MESSAGE_QUERY = `mutation createChatMessage($input: CreateChatMessageInput!, $file: Upload, $showForbiddenImage: Boolean!) {
   createChatMessage(input: $input, file: $file) {
@@ -24,7 +25,7 @@ const CREATE_CHAT_MESSAGE_QUERY = `mutation createChatMessage($input: CreateChat
  * (спецификация graphql-multipart-request). Текст пустой — отправляется только файл.
  */
 function createSendChatImage() {
-  return function sendChatImage(token, userAgent, chatId, { filePath, filename, mime } = {}) {
+  function __sendChatImageOnce(token, userAgent, chatId, { filePath, filename, mime } = {}) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -133,6 +134,13 @@ function createSendChatImage() {
           req.write(body)
           req.end()
         })
+    )
+  }
+
+  return function sendChatImage(token, userAgent, chatId, { filePath, filename, mime } = {}) {
+    return withPlayerokRotation(
+      () => __sendChatImageOnce(token, userAgent, chatId, { filePath, filename, mime }),
+      { policy: 'unsafe', label: 'sendChatImage' }
     )
   }
 }

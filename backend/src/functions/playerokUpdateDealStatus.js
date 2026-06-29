@@ -5,9 +5,17 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createUpdateDealStatus() {
   return function updateDealStatus(token, userAgent, dealId, newStatus) {
+    return withPlayerokRotation(
+      () => __updateDealStatusOnce(token, userAgent, dealId, newStatus),
+      { policy: 'idempotentMutation', label: 'updateDealStatus' }
+    )
+  }
+
+  function __updateDealStatusOnce(token, userAgent, dealId, newStatus) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {

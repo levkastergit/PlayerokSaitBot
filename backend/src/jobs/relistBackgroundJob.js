@@ -1,6 +1,8 @@
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 const { mergeJobSteps } = require('./mergeJobSteps')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 
 const JOB_ID = 'relist'
 
@@ -25,7 +27,7 @@ function setupRelistBackgroundJob({
 
   let inFlight = false
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_ID, getIntervalMs: () => getSpeed('relistTickMs'), minMs: 30000 }, async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
     if (inFlight) return
@@ -73,14 +75,14 @@ function setupRelistBackgroundJob({
         setJobDetails(JOB_ID, {
           updatedAt: Math.floor(tickStartedAt / 1000),
           totalMs: Date.now() - tickStartedAt,
-          intervalMs,
+          intervalMs: getSpeed('relistTickMs'),
           users: perUser.slice(0, 50),
           steps: mergeJobSteps(allUserSteps),
         })
         markTickEnd(JOB_ID, tickError)
       }
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupRelistBackgroundJob }

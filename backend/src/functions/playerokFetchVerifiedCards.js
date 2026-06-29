@@ -6,11 +6,12 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
   if (!VERIFIED_CARDS_PERSISTED_HASH) throw new Error('VERIFIED_CARDS_PERSISTED_HASH is required')
 
-  return function fetchVerifiedCards(token, userAgent, opts = {}) {
+  function __fetchVerifiedCardsOnce(token, userAgent, opts = {}) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -92,6 +93,10 @@ function createFetchVerifiedCards({ VERIFIED_CARDS_PERSISTED_HASH }) {
       req.end()
         })
     )
+  }
+
+  return function fetchVerifiedCards(token, userAgent, opts = {}) {
+    return withPlayerokRotation(() => __fetchVerifiedCardsOnce(token, userAgent, opts), { policy: 'read', label: 'fetchVerifiedCards' })
   }
 }
 

@@ -1,5 +1,7 @@
 const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 
 const JOB_ID = 'chats-warmup'
 
@@ -23,7 +25,7 @@ function setupChatsWarmupBackgroundJob({
 
   let inFlight = false
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_ID, getIntervalMs: () => getSpeed('chatsWarmupIntervalMs'), minMs: 10000 }, async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
     if (inFlight) return
@@ -75,7 +77,7 @@ function setupChatsWarmupBackgroundJob({
       inFlight = false
       if (tickStarted) markTickEnd(JOB_ID, tickError)
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupChatsWarmupBackgroundJob }

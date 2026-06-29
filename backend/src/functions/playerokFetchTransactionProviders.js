@@ -6,13 +6,14 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH }) {
   if (!TRANSACTION_PROVIDERS_PERSISTED_HASH) {
     throw new Error('TRANSACTION_PROVIDERS_PERSISTED_HASH is required')
   }
 
-  return function fetchTransactionProviders(token, userAgent, direction = 'OUT') {
+  function __fetchTransactionProvidersOnce(token, userAgent, direction = 'OUT') {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -80,6 +81,13 @@ function createFetchTransactionProviders({ TRANSACTION_PROVIDERS_PERSISTED_HASH 
       attachPlayerokTimeout(req, 'Playerok transactionProviders')
       req.end()
         })
+    )
+  }
+
+  return function fetchTransactionProviders(token, userAgent, direction = 'OUT') {
+    return withPlayerokRotation(
+      () => __fetchTransactionProvidersOnce(token, userAgent, direction),
+      { policy: 'read', label: 'fetchTransactionProviders' }
     )
   }
 }

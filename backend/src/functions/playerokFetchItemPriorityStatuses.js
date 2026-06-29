@@ -6,13 +6,14 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH }) {
   if (!ITEM_PRIORITY_STATUSES_PERSISTED_HASH) {
     throw new Error('ITEM_PRIORITY_STATUSES_PERSISTED_HASH is required')
   }
 
-  return function fetchItemPriorityStatuses(token, userAgent, itemId, price) {
+  function __fetchItemPriorityStatusesOnce(token, userAgent, itemId, price) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -95,6 +96,13 @@ function createFetchItemPriorityStatuses({ ITEM_PRIORITY_STATUSES_PERSISTED_HASH
       attachPlayerokTimeout(req, 'Playerok itemPriorityStatuses')
       req.end()
         })
+    )
+  }
+
+  return function fetchItemPriorityStatuses(token, userAgent, itemId, price) {
+    return withPlayerokRotation(
+      () => __fetchItemPriorityStatusesOnce(token, userAgent, itemId, price),
+      { policy: 'read', label: 'fetchItemPriorityStatuses' }
     )
   }
 }

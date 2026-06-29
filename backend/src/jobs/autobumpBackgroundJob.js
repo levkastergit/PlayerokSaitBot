@@ -1,6 +1,8 @@
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 
 const JOB_ID = 'autobump'
 
@@ -32,7 +34,7 @@ function setupAutobumpBackgroundJob({
   // успел бы запустить второй проход и испортить счётчики реестра задач.
   let autobumpInFlight = false
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_ID, getIntervalMs: () => getSpeed('autobumpTickMs'), minMs: 3000 }, async () => {
     if (isAllActionsStopped()) return
     // Все исходящие IP на cooldown → запросы почти гарантированно словят 429: пропускаем тик.
     if (isOutboundCircuitOpen()) return
@@ -253,7 +255,7 @@ function setupAutobumpBackgroundJob({
       autobumpInFlight = false
       markTickEnd(JOB_ID, tickError)
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupAutobumpBackgroundJob }

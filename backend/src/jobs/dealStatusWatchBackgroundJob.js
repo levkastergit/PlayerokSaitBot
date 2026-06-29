@@ -24,6 +24,8 @@ const {
   autolistGetClodeFlowMap,
   autolistGetGptFlowMap,
 } = require('../features/autolist/autolistState')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 
 const JOB_ID = 'deal-status-watch'
 
@@ -118,7 +120,7 @@ function setupDealStatusWatchBackgroundJob({
     return out
   }
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_ID, getIntervalMs: () => getSpeed('dealStatusWatchTickMs'), minMs: 1000 }, async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
     const rows = typeof getAllStoredTokens?.all === 'function' ? getAllStoredTokens.all() : null
@@ -256,7 +258,7 @@ function setupDealStatusWatchBackgroundJob({
       tickInFlight = false
       markTickEnd(JOB_ID, tickError)
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupDealStatusWatchBackgroundJob }

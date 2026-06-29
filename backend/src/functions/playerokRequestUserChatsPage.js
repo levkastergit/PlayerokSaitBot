@@ -6,12 +6,13 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PERSISTED_HASH }) {
   if (!AUTOLIST_MAX_CHATS_TO_SCAN) throw new Error('AUTOLIST_MAX_CHATS_TO_SCAN is required')
   if (!USER_CHATS_PERSISTED_HASH) throw new Error('USER_CHATS_PERSISTED_HASH is required')
 
-  return function requestUserChatsPage(token, userAgent, userId, opts) {
+  function __requestUserChatsPageOnce(token, userAgent, userId, opts) {
     const options = opts && typeof opts === 'object' ? opts : {}
     const firstRaw = options.first
     let first = Number.isFinite(firstRaw) ? Number(firstRaw) : null
@@ -69,12 +70,12 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
           reportIpResult(playerokEgressKey(extra), resp.statusCode)
           if (resp.statusCode !== 200) {
             const preview = String(data || '').slice(0, 500)
-            return reject(
-              new Error(
-                `Playerok userChats: status ${resp.statusCode}` +
-                  (preview ? `; ${preview}` : '')
-              )
+            const err = new Error(
+              `Playerok userChats: status ${resp.statusCode}` +
+                (preview ? `; ${preview}` : '')
             )
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json
@@ -98,6 +99,13 @@ function createRequestUserChatsPage({ AUTOLIST_MAX_CHATS_TO_SCAN, USER_CHATS_PER
       attachPlayerokTimeout(req, 'Playerok userChats')
       req.end()
         })
+    )
+  }
+
+  return function requestUserChatsPage(token, userAgent, userId, opts) {
+    return withPlayerokRotation(
+      () => __requestUserChatsPageOnce(token, userAgent, userId, opts),
+      { policy: 'read', label: 'requestUserChatsPage' }
     )
   }
 }

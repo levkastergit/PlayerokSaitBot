@@ -5,9 +5,10 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createRemoveTransaction() {
-  return function removeTransaction(token, userAgent, transactionId) {
+  function __removeTransactionOnce(token, userAgent, transactionId) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -85,6 +86,13 @@ function createRemoveTransaction() {
       req.write(body)
       req.end()
         })
+    )
+  }
+
+  return function removeTransaction(token, userAgent, transactionId) {
+    return withPlayerokRotation(
+      () => __removeTransactionOnce(token, userAgent, transactionId),
+      { policy: 'idempotentMutation', label: 'removeTransaction' }
     )
   }
 }

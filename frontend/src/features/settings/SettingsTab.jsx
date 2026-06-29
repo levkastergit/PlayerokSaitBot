@@ -22,6 +22,7 @@ import {
 } from '../../services/clodeApi'
 import { fetchSwizzyerSettings, saveSwizzyerSettings } from '../../services/swizzyerApi'
 import { fetchPartnerGptSettings, savePartnerGptApiKey } from '../../services/partnerGptApi'
+import { fetchSpeedSettings, saveSpeedSettings } from '../../services/speedSettingsApi'
 
 const SETTINGS_SUB_TABS = [
   { id: '', label: 'Основные' },
@@ -87,6 +88,13 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   const [partnerGptSaving, setPartnerGptSaving] = useState(false)
   const [partnerGptMessage, setPartnerGptMessage] = useState(null)
   const [partnerGptError, setPartnerGptError] = useState(null)
+  // Скорость и задержки: defs (метаданные) + редактируемые значения (строки; пусто = дефолт).
+  const [speedDefs, setSpeedDefs] = useState([])
+  const [speedInputs, setSpeedInputs] = useState({})
+  const [speedLoading, setSpeedLoading] = useState(true)
+  const [speedSaving, setSpeedSaving] = useState(false)
+  const [speedMessage, setSpeedMessage] = useState(null)
+  const [speedError, setSpeedError] = useState(null)
 
   useEffect(() => {
     setValue(token ?? '')
@@ -219,6 +227,57 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
     })
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setSpeedLoading(true)
+    setSpeedError(null)
+    fetchSpeedSettings().then((r) => {
+      if (cancelled) return
+      if (r.ok) {
+        setSpeedDefs(r.defs || [])
+        const inputs = {}
+        for (const [k, v] of Object.entries(r.values || {})) inputs[k] = String(v)
+        setSpeedInputs(inputs)
+      } else {
+        setSpeedError(r.error || null)
+      }
+      setSpeedLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSpeedInputChange = (key, value) => {
+    setSpeedInputs((prev) => ({ ...prev, [key]: value }))
+    setSpeedMessage(null)
+    setSpeedError(null)
+  }
+
+  const handleSaveSpeed = async (event) => {
+    event.preventDefault()
+    setSpeedSaving(true)
+    setSpeedMessage(null)
+    setSpeedError(null)
+    // Только непустые поля → отправляем (пусто = вернуть дефолт).
+    const values = {}
+    for (const [k, v] of Object.entries(speedInputs)) {
+      const s = String(v).trim()
+      if (s === '') continue
+      const n = Number(s)
+      if (Number.isFinite(n)) values[k] = n
+    }
+    const r = await saveSpeedSettings(values)
+    if (r.ok) {
+      if (Array.isArray(r.defs) && r.defs.length) setSpeedDefs(r.defs)
+      const inputs = {}
+      for (const [k, v] of Object.entries(r.values || {})) inputs[k] = String(v)
+      setSpeedInputs(inputs)
+      setSpeedMessage('Сохранено. Применяется в течение ~2 сек, без перезапуска.')
+    } else {
+      setSpeedError(r.error || 'Не удалось сохранить')
+    }
+    setSpeedSaving(false)
+  }
 
   const ipSelectOptions = useMemo(() => {
     const opts = [
@@ -948,6 +1007,60 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
                 </button>
               </form>
             </>
+          )}
+        </section>
+
+        <section className="card settings-card settings-card--speed">
+          <h2 className="card-title">Скорость и задержки</h2>
+          <p className="card-text settings-hint">
+            Тонкая настройка темпа работы без пересборки: паузы шлюза запросов, лимит параллельности,
+            интервалы фоновых задач (/execution), параметры повторов и блокировок IP. Меньше задержки =
+            быстрее, но выше риск 429. Снижать паузы безопасно, когда в пуле несколько IP (повтор после
+            ошибки уходит с другого IP). Пустое поле = значение по умолчанию (показано как подсказка).
+            Изменения применяются в течение ~2 секунд.
+          </p>
+          {speedLoading ? (
+            <p className="card-text">Загрузка…</p>
+          ) : speedDefs.length === 0 ? (
+            <p className="card-text settings-hint">Не удалось загрузить параметры.</p>
+          ) : (
+            <form className="settings-form" onSubmit={handleSaveSpeed}>
+              {[
+                { group: 'gate', title: 'Шлюз запросов и повторы' },
+                { group: 'jobs', title: 'Интервалы фоновых задач (/execution)' },
+              ].map(({ group, title }) => {
+                const groupDefs = speedDefs.filter((d) => d.group === group)
+                if (groupDefs.length === 0) return null
+                return (
+                  <div key={group} className="settings-speed-group">
+                    <p className="settings-label" style={{ marginTop: 14, fontWeight: 700 }}>{title}</p>
+                    {groupDefs.map((d) => (
+                      <div key={d.key} className="settings-speed-row" style={{ marginBottom: 10 }}>
+                        <label htmlFor={`speed-${d.key}`} className="settings-label">{d.labelRu}</label>
+                        {d.hintRu ? <p className="settings-hint">{d.hintRu}</p> : null}
+                        <input
+                          id={`speed-${d.key}`}
+                          className="input-theme"
+                          type="number"
+                          inputMode="numeric"
+                          min={d.min}
+                          max={d.max}
+                          step="1"
+                          placeholder={`по умолчанию ${d.default} (от ${d.min} до ${d.max})`}
+                          value={speedInputs[d.key] ?? ''}
+                          onChange={(e) => handleSpeedInputChange(d.key, e.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+              {speedError && <p className="settings-message settings-message--error">{speedError}</p>}
+              {speedMessage && <p className="settings-message settings-message--success">{speedMessage}</p>}
+              <button type="submit" className="btn-primary" disabled={speedSaving}>
+                {speedSaving ? 'Сохранение…' : 'Сохранить настройки скорости'}
+              </button>
+            </form>
           )}
         </section>
 

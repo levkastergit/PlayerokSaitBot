@@ -6,6 +6,7 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 const { normalizeKeyPart, buildProductKey } = require('./keyUtils')
 const { dealPurchaseUnixTs } = require('./dealPurchaseUnixTs')
 
@@ -13,7 +14,7 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
   if (!DEALS_PERSISTED_HASH) throw new Error('DEALS_PERSISTED_HASH is required')
 
-  return function requestDealsPage(
+  function __requestDealsPageOnce(
     token,
     userAgent,
     userId,
@@ -81,7 +82,9 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
             } catch (_) {
               if (data && data.length < 500) errMsg += `: ${data}`
             }
-            return reject(new Error(errMsg))
+            const err = new Error(errMsg)
+            err.statusCode = resp.statusCode
+            return reject(err)
           }
 
           let json
@@ -227,6 +230,21 @@ function createRequestDealsPage({ PAGE_SIZE, DEALS_PERSISTED_HASH }) {
       attachPlayerokTimeout(req, 'Playerok deals')
       req.end()
         })
+    )
+  }
+
+  return function requestDealsPage(
+    token,
+    userAgent,
+    userId,
+    afterCursor,
+    statusList,
+    direction = 'OUT'
+  ) {
+    return withPlayerokRotation(
+      () =>
+        __requestDealsPageOnce(token, userAgent, userId, afterCursor, statusList, direction),
+      { policy: 'read', label: 'requestDealsPage' }
     )
   }
 }

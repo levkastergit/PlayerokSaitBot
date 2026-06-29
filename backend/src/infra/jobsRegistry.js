@@ -58,6 +58,15 @@ function getJobDetails(id) {
   }
 }
 
+// Обновить отображаемый интервал задачи (когда он меняется живьём из /settings), сохранив
+// счётчики/метки. Нужно адаптивному циклу, чтобы «полоска выполнения» совпадала с реальным темпом.
+function setJobIntervalMs(id, intervalMs) {
+  const job = jobs.get(String(id || ''))
+  if (!job) return
+  const v = Number(intervalMs)
+  if (Number.isFinite(v) && v > 0) job.intervalMs = v
+}
+
 function markTickStart(id) {
   const job = jobs.get(String(id || ''))
   if (!job) return
@@ -121,6 +130,7 @@ module.exports = {
   markTickStart,
   markTickEnd,
   setJobDetails,
+  setJobIntervalMs,
   getJobDetails,
   getJobsSnapshot,
 }

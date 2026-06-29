@@ -364,12 +364,18 @@ const { setupPlayerokOutboundIpRepo } = require('./src/db/playerokOutboundIpRepo
 const {
   loadBindings: loadOutboundIpBindings,
   loadRotation: loadOutboundIpRotation,
+  loadSpeed: loadOutboundSpeed,
   saveBindings: saveOutboundIpBindings,
+  saveSpeed: saveOutboundSpeed,
   saveSettings: saveOutboundIpSettings,
 } = setupPlayerokOutboundIpRepo(db)
 const { setOutboundIpBindingsResolver, setOutboundRotationResolver } = require('./src/infra/playerokOutboundIp')
 setOutboundIpBindingsResolver(loadOutboundIpBindings)
 setOutboundRotationResolver(loadOutboundIpRotation)
+// Живые настройки скорости/задержек: шлюз и фоновые задачи читают их через резолвер
+// (значения из /settings; дефолт = env → встроенный). Тот же паттерн, что и у IP-ротации.
+const { setSpeedSettingsResolver } = require('./src/infra/playerokSpeedSettings')
+setSpeedSettingsResolver(loadOutboundSpeed)
 
 const { setupHistoryRepo } = require('./src/db/historyRepo')
 const { setupTableCodesRepo } = require('./src/db/tableCodesRepo')
@@ -1115,6 +1121,8 @@ const handleHttpRequest = async (req, res) => {
         saveOutboundIpBindings,
         loadOutboundIpRotation,
         saveOutboundIpSettings,
+        loadOutboundSpeed,
+        saveOutboundSpeed,
         loadApprouteApiKeyPlain,
         saveApprouteApiKey,
         getApprouteSettingsMeta,

@@ -6,11 +6,12 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createRequestChatById({ CHAT_PERSISTED_HASH }) {
   if (!CHAT_PERSISTED_HASH) throw new Error('CHAT_PERSISTED_HASH is required')
 
-  return function requestChatById(token, userAgent, chatId, opts = {}) {
+  function __requestChatByIdOnce(token, userAgent, chatId, opts = {}) {
     const referer =
       (opts && typeof opts.referer === 'string' && opts.referer.trim()) ||
       'https://playerok.com/chats'
@@ -82,6 +83,13 @@ function createRequestChatById({ CHAT_PERSISTED_HASH }) {
       attachPlayerokTimeout(req, 'Playerok chat')
       req.end()
         })
+    )
+  }
+
+  return function requestChatById(token, userAgent, chatId, opts = {}) {
+    return withPlayerokRotation(
+      () => __requestChatByIdOnce(token, userAgent, chatId, opts),
+      { policy: 'read', label: 'requestChatById' }
     )
   }
 }

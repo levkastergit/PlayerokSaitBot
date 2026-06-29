@@ -50,6 +50,13 @@ function runWithOutboundAttempt(fn) {
   return attemptStore.run({ triedByChannel: new Map(), lastIp: null }, fn)
 }
 
+/** Уже находимся внутри контекста попытки ротации (withRetry/withPlayerokRotation)?
+ *  Нужно общему хелперу, чтобы НЕ заводить вложенный ретрай-цикл (умножение попыток):
+ *  внешний владелец ротации сам сделает повтор с новым IP. */
+function hasOutboundAttemptContext() {
+  return Boolean(attemptStore.getStore())
+}
+
 function getTriedSet(channel) {
   const store = attemptStore.getStore()
   if (!store) return null
@@ -67,6 +74,18 @@ function minutesLabel(ms) {
   return m >= 60 ? `${Math.round(m / 60)} ч` : `${m} мин`
 }
 
+// Первая ступень блокировки — ЖИВАЯ (из настроек /settings): меньше = залоченный IP быстрее
+// возвращается в пул. Дальние ступени эскалации берём из LADDER_MS. Ленивый require, чтобы
+// не создавать цикл на загрузке модулей.
+function firstRungMs() {
+  try {
+    const { getSpeed } = require('./playerokSpeedSettings')
+    const v = Number(getSpeed('ipCooldownFirstRungMs'))
+    if (Number.isFinite(v) && v > 0) return v
+  } catch (_) {}
+  return LADDER_MS[0]
+}
+
 /** 429 по IP: эскалируем блок на следующую ступень (если IP сейчас не в блоке). */
 function reportIpRateLimited(ip) {
   if (!ip) return
@@ -75,7 +94,7 @@ function reportIpRateLimited(ip) {
   // Уже в активном блоке — этот 429 лишь подтверждает, ступень не повышаем.
   if (prev && prev.until > now) return
   const level = Math.min((prev ? prev.level : 0) + 1, LADDER_MS.length)
-  const dur = LADDER_MS[level - 1]
+  const dur = level === 1 ? firstRungMs() : LADDER_MS[level - 1]
   ipState.set(ip, { level, until: now + dur })
   console.log(`[outbound-ip] IP ${ip} получил 429 → блок #${level} на ${minutesLabel(dur)}`)
 }
@@ -148,10 +167,16 @@ function earliestCooldownUntil(pool) {
 // Глобальный single-flight; серийный гейт сам троттлит до ~1 пробы за интервал.
 let __lastProbeAt = 0
 function allowCircuitProbe(intervalMs) {
+  let liveIv = null
+  try {
+    const { getSpeed } = require('./playerokSpeedSettings')
+    const v = Number(getSpeed('circuitProbeIntervalMs'))
+    if (Number.isFinite(v) && v > 0) liveIv = v
+  } catch (_) {}
   const iv =
     Number.isFinite(intervalMs) && intervalMs >= 0
       ? intervalMs
-      : Number(process.env.PLAYEROK_CIRCUIT_PROBE_INTERVAL_MS) || 15000
+      : liveIv || Number(process.env.PLAYEROK_CIRCUIT_PROBE_INTERVAL_MS) || 15000
   const now = Date.now()
   if (now - __lastProbeAt >= iv) {
     __lastProbeAt = now
@@ -241,6 +266,7 @@ function getCooldownSnapshot() {
 
 module.exports = {
   runWithOutboundAttempt,
+  hasOutboundAttemptContext,
   pickRotationIp,
   reportOutboundResult,
   reportIpResult,

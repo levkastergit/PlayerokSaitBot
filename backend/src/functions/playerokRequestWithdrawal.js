@@ -5,9 +5,10 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createRequestWithdrawal() {
-  return function requestWithdrawal(token, userAgent, payload) {
+  function __requestWithdrawalOnce(token, userAgent, payload) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -99,6 +100,13 @@ function createRequestWithdrawal() {
       req.write(body)
       req.end()
         })
+    )
+  }
+
+  return function requestWithdrawal(token, userAgent, payload) {
+    return withPlayerokRotation(
+      () => __requestWithdrawalOnce(token, userAgent, payload),
+      { policy: 'unsafe', label: 'requestWithdrawal' }
     )
   }
 }

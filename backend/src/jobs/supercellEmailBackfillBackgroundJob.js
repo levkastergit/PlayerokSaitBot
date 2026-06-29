@@ -19,6 +19,8 @@
 const { registerJob, markTickStart, markTickEnd } = require('../infra/jobsRegistry')
 const { runWithPlayerokUser } = require('../infra/playerokRequestContext')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 const { getSupercellGameByCategory } = require('../functions/supercellHelpers')
 const { extractSupercellEmailFromDealObject } = require('../functions/resolveBuyerSupercellEmailFromDeal')
 const { extractTestimonialFromDeal } = require('../functions/dealReviewHelpers')
@@ -98,7 +100,7 @@ function setupSupercellEmailBackfillBackgroundJob({
     } catch (_) {}
   }
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_ID, getIntervalMs: () => getSpeed('supercellBackfillIntervalMs'), minMs: 5000 }, async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
     if (tickInFlight) return
@@ -150,7 +152,7 @@ function setupSupercellEmailBackfillBackgroundJob({
       tickInFlight = false
       markTickEnd(JOB_ID, tickError)
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupSupercellEmailBackfillBackgroundJob }

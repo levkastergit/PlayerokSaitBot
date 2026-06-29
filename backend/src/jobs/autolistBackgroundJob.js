@@ -1,6 +1,8 @@
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
 const { mergeJobSteps } = require('./mergeJobSteps')
+const { startAdaptiveLoop } = require('../infra/adaptiveLoop')
+const { getSpeed } = require('../infra/playerokSpeedSettings')
 
 // Быстрый цикл обработки чатов. Делится на ТРИ карточки на /execution (по одному
 // fetch чатов на проход — без дублей). «Перевыставление» вынесено в отдельный
@@ -39,7 +41,7 @@ function setupAutolistBackgroundJob({
   // Важно: не допускаем наложения вызовов, иначе легко ловим rate limit Playerok.
   let inFlight = false
 
-  setInterval(async () => {
+  startAdaptiveLoop({ jobId: JOB_IDS, getIntervalMs: () => getSpeed('autolistTickMs'), minMs: 2000 }, async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
     if (inFlight) return
@@ -98,12 +100,12 @@ function setupAutolistBackgroundJob({
         for (const id of JOB_IDS) {
           const wanted = new Set(GROUPS[id].stepIds)
           const groupSteps = merged.filter((s) => wanted.has(s.id))
-          setJobDetails(id, { updatedAt, totalMs, intervalMs, users: perUser.slice(0, 50), steps: groupSteps })
+          setJobDetails(id, { updatedAt, totalMs, intervalMs: getSpeed('autolistTickMs'), users: perUser.slice(0, 50), steps: groupSteps })
           markTickEnd(id, tickError)
         }
       }
     }
-  }, intervalMs)
+  })
 }
 
 module.exports = { setupAutolistBackgroundJob }

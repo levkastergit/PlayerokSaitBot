@@ -6,12 +6,13 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
   if (!PAGE_SIZE) throw new Error('PAGE_SIZE is required')
   if (!ITEMS_PERSISTED_HASH) throw new Error('ITEMS_PERSISTED_HASH is required')
 
-  return function requestItemsPage(
+  function __requestItemsPageOnce(
     token,
     userAgent,
     userId,
@@ -144,6 +145,19 @@ function createRequestItemsPage({ PAGE_SIZE, ITEMS_PERSISTED_HASH }) {
       attachPlayerokTimeout(req, 'Playerok items')
       req.end()
         })
+    )
+  }
+
+  return function requestItemsPage(
+    token,
+    userAgent,
+    userId,
+    afterCursor,
+    statusList = ['APPROVED']
+  ) {
+    return withPlayerokRotation(
+      () => __requestItemsPageOnce(token, userAgent, userId, afterCursor, statusList),
+      { policy: 'read', label: 'requestItemsPage' }
     )
   }
 }

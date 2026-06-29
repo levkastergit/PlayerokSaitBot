@@ -8,27 +8,26 @@ const {
   allowCircuitProbe,
   earliestCooldownUntil,
 } = require('./playerokOutboundRotation')
+const { getSpeed } = require('./playerokSpeedSettings')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-const rawGap = process.env.PLAYEROK_MIN_REQUEST_GAP_MS
-const parsedGap = rawGap != null && rawGap !== '' ? Number(rawGap) : NaN
-const MIN_GAP_MS =
-  Number.isFinite(parsedGap) && parsedGap >= 0 ? parsedGap : 280
-
-// Серийный (ФОНОВЫЙ) gate пейсим МЕДЛЕННЕЕ операторского skipGate. autolist/sync/dealWatch
-// генерят высокочастотный трафик и забивают 429-лимит Playerok (по аккаунту/токену, не только
-// по IP — поэтому ротация IP не спасает). Больший интервал держит фоновую частоту запросов
-// НИЖЕ лимита → меньше 429 → circuit-breaker не закрывается → оператор и резолв почты работают.
-// Операторский skipGate остаётся быстрым (MIN_GAP_MS). Тюнится без пересборки через env.
-const rawSerialGap = process.env.PLAYEROK_SERIAL_REQUEST_GAP_MS
-const parsedSerialGap = rawSerialGap != null && rawSerialGap !== '' ? Number(rawSerialGap) : NaN
-const SERIAL_GAP_MS =
-  Number.isFinite(parsedSerialGap) && parsedSerialGap >= 0
-    ? parsedSerialGap
-    : Math.max(MIN_GAP_MS, 600)
+// Паузы шлюза теперь ЖИВЫЕ: читаются из настроек /settings через playerokSpeedSettings
+// (дефолт = env → встроенный, TTL-кэш ~2с). minGap — темп операторской (skipGate) полосы;
+// serialGap — темп фоновой серийной очереди (autolist/sync/dealWatch), её пейсим медленнее,
+// т.к. фон высокочастотен и забивает 429-лимит по IP. Ротация + повтор с другого IP позволяют
+// держать serialGap ниже прежнего без шторма. Меняются из UI без пересборки.
+function minGapMs() {
+  return getSpeed('minGapMs')
+}
+function serialGapMs() {
+  return getSpeed('serialGapMs')
+}
+function skipMaxConcurrencyLive() {
+  return getSpeed('skipMaxConcurrency')
+}
 
 // Бэкстоп на случай, если конкретная request-функция не навесила собственный
 // сокет-таймаут: гарантирует, что цепочка gateChain всегда продвинется и
@@ -80,16 +79,14 @@ let lastStartTime = 0
 // должен отвечать быстро), но с минимальным интервалом между стартами и лимитом
 // параллельности — иначе веер запросов (например, загрузка списка чатов с десятками
 // dealById/itemById) уходит залпом и ловит 429. Серийный гейт (фон) — отдельно.
-const SKIP_MAX_CONCURRENCY = (() => {
-  const v = Number(process.env.PLAYEROK_SKIP_MAX_CONCURRENCY)
-  return Number.isFinite(v) && v > 0 ? v : 3
-})()
 let skipInFlight = 0
 let skipLastStart = 0
 const skipWaiters = []
 
 async function withSkipThrottle(fn) {
-  while (skipInFlight >= SKIP_MAX_CONCURRENCY) {
+  // Лимит параллельности — ЖИВОЙ (читаем на каждой итерации ожидания): повышение лимита в
+  // настройках сразу впускает ожидающих, понижение — придержит новые до освобождения слотов.
+  while (skipInFlight >= skipMaxConcurrencyLive()) {
     await new Promise((resolve) => skipWaiters.push(resolve))
   }
   skipInFlight += 1
@@ -97,7 +94,7 @@ async function withSkipThrottle(fn) {
     // Синхронный участок без await: соседние вызовы корректно сериализуют расчёт паузы
     // (нет гонок по skipLastStart на однопоточном event loop).
     const now = Date.now()
-    const wait = Math.max(0, MIN_GAP_MS - (now - skipLastStart))
+    const wait = Math.max(0, minGapMs() - (now - skipLastStart))
     skipLastStart = now + wait
     if (wait > 0) await sleep(wait)
     return await withGateTimeout(fn)
@@ -184,7 +181,7 @@ function withPlayerokGate(fn) {
   if (!circuitAllowsRequest()) return Promise.reject(circuitOpenError())
   const run = gateChain.then(async () => {
     const now = Date.now()
-    const wait = Math.max(0, SERIAL_GAP_MS - (now - lastStartTime))
+    const wait = Math.max(0, serialGapMs() - (now - lastStartTime))
     if (wait > 0) await sleep(wait)
     lastStartTime = Date.now()
     return withGateTimeout(fn)
@@ -197,7 +194,7 @@ function withPlayerokGate(fn) {
 }
 
 function getPlayerokMinRequestGapMs() {
-  return MIN_GAP_MS
+  return minGapMs()
 }
 
 module.exports = {

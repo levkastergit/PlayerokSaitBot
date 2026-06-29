@@ -5,13 +5,14 @@ const { withPlayerokGate } = require('../infra/playerokRequestGate')
 const { playerokHttpsExtraOptions, playerokEgressKey } = require('../infra/playerokHttpsAgent')
 const { attachPlayerokTimeout } = require('../infra/playerokRequestTimeout')
 const { reportIpResult } = require('../infra/playerokOutboundRotation')
+const { withPlayerokRotation } = require('../infra/retry/withPlayerokRotation')
 
 function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
   if (!AUTOBUMP_PRIORITY_STATUS_ID) {
     throw new Error('AUTOBUMP_PRIORITY_STATUS_ID is required')
   }
 
-  return function publishItem(token, userAgent, itemId, opts = {}) {
+  function __publishItemOnce(token, userAgent, itemId, opts = {}) {
     return withPlayerokGate(
       () =>
         new Promise((resolve, reject) => {
@@ -124,6 +125,13 @@ function createPublishItem({ AUTOBUMP_PRIORITY_STATUS_ID }) {
       req.write(body)
       req.end()
         })
+    )
+  }
+
+  return function publishItem(token, userAgent, itemId, opts = {}) {
+    return withPlayerokRotation(
+      () => __publishItemOnce(token, userAgent, itemId, opts),
+      { policy: 'idempotentMutation', label: 'publishItem' }
     )
   }
 }
