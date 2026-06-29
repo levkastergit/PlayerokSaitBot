@@ -1,0 +1,813 @@
+Руководство по интеграции
+Руководство по интеграции
+Всё необходимое для создания работающего бота — аутентификация, режимы заказов, вебхуки и обработка ошибок.
+
+Введение
+Public API позволяет вашему боту выполнять покупки подарочных карт от начала до конца без браузера.
+
+Public API позволяет вашему боту выполнять покупки подарочных карт от начала до конца без браузера.
+
+Режим A — Hosted Link
+
+Вы создаёте заказ и получаете ссылку. Отправьте её покупателю — он завершит 2FA в нашем хостинговом окне. Простейшая интеграция, не требует поллинга.
+
+Режим B — Диалоговый
+
+Бот ведёт процесс 2FA через REST. Вы получаете подсказки, передаёте их пользователю и отправляете ответы обратно. Полный контроль над UX.
+
+Базовый URL
+
+https://rbcode.net/v1
+
+HTTPS only
+Быстрый старт
+От нуля до первого выполненного заказа — за 10 минут.
+
+1
+Создайте API-ключ
+
+Откройте раздел API → Ключи и нажмите «Создать API-ключ». Выберите права read_write. Сохраните ключ — он показывается только один раз.
+
+2
+Проверьте подписку
+
+Каждый заказ расходует 2 транзакции из активной подписки. Проверьте остаток перед созданием заказов.
+
+3
+Создайте заказ
+
+Отправьте POST на /v1/orders. Выберите mode=hosted_link для самого простого варианта.
+
+4
+Перенаправьте покупателя
+
+В ответе будет verification.url. Отправьте эту ссылку покупателю любым удобным способом.
+
+5
+Дождитесь результата
+
+Подпишитесь на вебхуки order.completed / order.failed или опрашивайте GET /v1/orders/:id до получения терминального статуса.
+
+curl
+
+Copy
+curl -X POST https://rbcode.net/v1/orders \
+  -H "Authorization: Bearer swz_live_xxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{
+    "mode": "hosted_link",
+    "roblox_username": "PlayerOne",
+    "items": [{
+      "product_id": "9NH6SMMZQHM9",
+      "sku_id": "0010",
+      "availability_id": "9VH3WJX9DHDB",
+      "quantity": 1
+    }]
+  }'
+response (201 Created)
+
+Copy
+{
+  "object": "order",
+  "id": "ord_01JXYZ...",
+  "status": "requires_action",
+  "verification": {
+    "mode": "hosted_link",
+    "url": "https://rbcode.net/v/tok_...",
+    "expires_at": 1715000000,
+    "display_label": "80 R$"
+  },
+  "quota_action": {
+    "consumed": 2,
+    "released": 0,
+    "remaining_after": { "transactions_used": 42, "transactions_limit": 200 }
+  }
+}
+Аутентификация
+Каждый запрос должен содержать Bearer-токен в заголовке Authorization.
+
+header
+
+Copy
+Authorization: Bearer swz_live_xxxxxxxxxxxxxxxxxxxxxxxx
+Создавайте ключи в разделе API → Ключи. Каждый ключ имеет один из двух уровней прав:
+
+Права	Доступные операции
+read	GET заказов, GET подписки, просмотр вебхук-эндпоинтов и доставок
+read_write	Всё из read + создание/отмена заказов, ответы, управление вебхуками
+Ротация ключей
+Используйте «Перевыпустить» в дашборде для получения нового ключа. Старый продолжает работать ещё 60 минут — все запросы в этот период содержат предупреждающий заголовок. Обновите ботов до окончания льготного периода.
+
+Относитесь к API-ключу как к паролю — он расходует квоту подписки при каждом успешном заказе. Храните в менеджере секретов, никогда — в исходном коде или клиентских бандлах.
+Режим A — Hosted Link
+Простейший способ интеграции. Вы создаёте заказ, мы обрабатываем 2FA.
+
+Укажите "mode": "hosted_link" при создании заказа. В ответе вернётся verification.url, действительный на всё время жизни заказа. Отправьте эту ссылку покупателю любым каналом.
+
+Запрос
+POST /v1/orders
+
+Copy
+{
+  "mode": "hosted_link",
+  "roblox_username": "PlayerOne",
+  "items": [
+    {
+      "product_id": "9NH6SMMZQHM9",
+      "sku_id": "0010",
+      "availability_id": "9VH3WJX9DHDB",
+      "quantity": 1,
+      "product_name": "80 R$",   // optional — surfaced on dashboard / events
+      "amount": 0.99             // optional — surfaced on dashboard / events
+    }
+  ],
+  "language": "en",              // optional — "en" | "ru" | "zh", drives I18nMessage prompts
+  "metadata": {                  // optional — string→string, round-tripped on every GET
+    "external_order_id": "shop-12345"
+  }
+}
+POST /v1/orders — with pre-seeded credentials
+
+Copy
+{
+  "mode": "hosted_link",
+  "credentials": {
+    "username": "PlayerOne",
+    "password": "s3cr3t_pass"
+  },
+  "items": [
+    {
+      "product_id": "9NH6SMMZQHM9",
+      "sku_id": "0010",
+      "availability_id": "9VH3WJX9DHDB",
+      "quantity": 1
+    }
+  ]
+}
+Передайте credentials вместо roblox_username — и покупатель по ссылке сразу попадает на 2FA, без ввода пароля на нашей странице. Ровно одна из двух форм идентификации на заказ: обе сразу → 400 mode_credentials_mismatch, ни одной → 400 missing_parameter. Пароль живёт в RAM и зашифрованном Redis с TTL и никогда не пишется в базу.
+
+Ник исправляется на лету: roblox_username заказа отражает аккаунт, которому реально принадлежит кука покупателя — после успешного входа показывается каноничный регистр и авто-исправляется, если покупатель ошибся, так что он всегда совпадает с аккаунтом-получателем робуксов. Читайте его из GET /v1/orders/:id после вебхука verify.cookie_ready (одинаково в Режиме A и B).
+Поля ответа
+Поле	Тип	Описание
+id	string	Публичный ID заказа — для поллинга и вебхуков
+status	string	pending_verification → requires_action → verifying → processing → completed | partially_delivered | failed | cancelled | expired
+current_step	string	Гранулярный шаг для прогресс-бара (например "purchasing_robux"). Только для UX, не строй логику.
+cancellable	boolean	true пока POST /cancel ещё безопасен; становится false при прохождении point-of-no-return
+items	array	Эхо переданных items[]
+amount_total	number	Сумма items[i].amount × quantity
+currency	string	Всегда "USD"
+roblox_username	string	Roblox-юзернейм, на который зачисляется
+language	string	Язык подсказок (или null) — управляет I18nMessage в next_action
+verification.mode	string	"hosted_link" или "conversational" — дискриминатор блока verification
+verification.url	string	URL страницы 2FA. Отправьте эту ссылку покупателю.
+verification.expires_at	number	Unix-метка времени. По истечении заказ автоматически отменяется.
+verification.display_label	string	Название продукта, отображаемое на странице 2FA
+result	object | null	Заполняется при status="completed". Сейчас всегда null — поля появятся когда данные будут персистится.
+failure_reason	object | null	Заполняется на терминальной ошибке: { code, category, retryable, message }
+quota_action	object	Показывает transactions_used / transactions_limit после списания
+metadata	object	Эхо переданного объекта metadata
+payment_reference	string | null	pmt_<base32> после успешного списания; до этого null
+created_at	number	Unix-секунды — время создания заказа
+updated_at	number	Unix-секунды — последнее изменение статуса/фазы
+Поллинг статуса
+curl
+
+Copy
+curl https://rbcode.net/v1/orders/ord_01JXYZ... \
+  -H "Authorization: Bearer swz_live_xxxxxxxxxxxx"
+terminal states
+
+Copy
+status = "completed"            // all items delivered successfully
+status = "partially_delivered"  // some items succeeded, some failed
+status = "failed"               // delivery failed after retries
+status = "cancelled"            // cancelled by bot or buyer
+status = "expired"              // verification window elapsed
+Режим B — Диалоговый
+Бот ведёт полный диалог 2FA. Максимальный контроль над пользовательским опытом.
+
+Укажите "mode": "conversational". API присылает подсказки через next_action; бот передаёт их пользователю и отправляет ответы обратно. Каждый обмен увеличивает счётчик version — при каждом вызове respond передавайте текущую версию.
+
+Схема взаимодействия
+POST /v1/orders
+
+mode=conversational → возвращает первый next_action
+
+Показать подсказку пользователю
+
+например, «Введите ваш Microsoft email»
+
+POST /v1/orders/:id/verification/respond
+
+Отправить ответ, получить следующий next_action
+
+Повторить
+
+Пока next_action.type ≠ "wait" (2FA завершена, проверьте статус)
+
+Создание диалогового заказа
+POST /v1/orders
+
+Copy
+{
+  "mode": "conversational",
+  "credentials": {
+    "username": "PlayerOne",
+    "password": "s3cr3t_pass"
+  },
+  "items": [
+    {
+      "product_id": "9NH6SMMZQHM9",
+      "sku_id": "0010",
+      "availability_id": "9VH3WJX9DHDB",
+      "quantity": 1
+    }
+  ]
+}
+next_action types
+
+Copy
+// version starts at 1 on the first response and increments by 1
+// every time the bridge advances the session. Always echo the
+// current version on the next /respond — never hardcode "2" or "3".
+
+// Email / authenticator code prompt — 6-digit OTP (input.format "digits")
+{ "type": "provide_input", "version": <current>,
+  "prompt": { "en": "Enter the code sent to your email", "ru": "Введите код из письма", "zh": "输入发送至邮件的验证码" },
+  "input": { "format": "digits", "min_length": 6, "max_length": 6 },
+  "email_hint": "p****@example.com",
+  "attempt": 1, "max_attempts": 3,   // attempt > 1 means the previous code was rejected — show "attempt N of M"
+  "expires_at": 1715000000,
+  "actions": ["cancel"], "poll_after_ms": 1500 }
+
+// Recovery / backup code prompt — ALPHANUMERIC (input.format "recovery_code",
+// NOT a 6-digit OTP). No email_hint, no "resend" (a backup code can't be re-sent).
+// Submit the code as "input" on /respond, exactly like a digits code.
+// NOTE: backup codes are NEVER sent at order creation — only here.
+{ "type": "provide_input", "version": <current>,
+  "prompt": { "en": "Enter one of your recovery codes", "ru": "Введите один из ваших резервных кодов", "zh": "请输入您的一个恢复代码" },
+  "input": { "format": "recovery_code", "min_length": 8, "max_length": 16 },
+  "attempt": 1, "max_attempts": 3,   // attempt > 1 means the previous code was rejected — show "attempt N of M"
+  "expires_at": 1715000000,
+  "actions": ["cancel"], "poll_after_ms": 1500 }
+
+// 2FA method / code selection
+{ "type": "choose_one", "version": <current>,
+  "prompt": { "en": "Choose a verification method", "ru": "Выберите метод проверки", "zh": "选择验证方式" },
+  "options": [
+    { "id": "opt_aa3bffce", "label": { "en": "Email", "ru": "Email", "zh": "邮箱" } },
+    { "id": "opt_bb7c12ff", "label": { "en": "Authenticator" } }
+  ],
+  "expires_at": 1715000000,
+  "poll_after_ms": 1500 }
+
+// Passkey / cross-device approval — buyer approves in the Roblox
+// app. NO code to submit: just show the prompt and keep polling.
+// Bounded by the 5-min hard timeout. Only "cancel" is accepted.
+{ "type": "push_approval", "version": <current>,
+  "prompt": { "en": "Approve the sign-in in the official mobile app on the buyer's phone", "ru": "Подтвердите вход в официальном мобильном приложении на телефоне покупателя", "zh": "在买家手机上的官方移动应用中批准登录" },
+  "actions": ["cancel"],
+  "expires_at": 1715000000,
+  "poll_after_ms": 1500 }
+
+// Credential re-prompt — Roblox rejected the password (up to 3 tries)
+{ "type": "credentials_retry", "version": <current>,
+  "prompt": { "en": "Password incorrect — re-enter", "ru": "Пароль неверен — введите снова", "zh": "密码不正确——请重新输入" },
+  "attempt": 2, "max_attempts": 3,
+  "expires_at": 1715000000, "poll_after_ms": 1500 }
+
+// Processing — poll again after poll_after_ms
+{ "type": "wait", "version": <current>,
+  "prompt": { "en": "Processing, please wait…", "ru": "Обработка, подождите…", "zh": "处理中，请稍候…" },
+  "poll_after_ms": 3000 }
+Ответ на подсказку
+POST /v1/orders/:id/verification/respond
+
+Copy
+// if_version MUST equal next_action.version from the most recent
+// response. A mismatch returns 409 verification_state_changed.
+
+// provide_input step — digits (email/authenticator) OR recovery_code
+// (alphanumeric backup). Both submit the value as "input"; branch your
+// UI on next_action.input.format.
+{ "if_version": <current>, "input": "123456" }            // digits
+{ "if_version": <current>, "input": "ABCD-EFGH-1234" }    // recovery_code
+
+// choose_one step
+{ "if_version": <current>, "choice_id": "opt_aa3bffce" }
+
+// choose_many step (game challenge)
+{ "if_version": <current>, "choice_ids": ["opt_aa3bffce", "opt_bb7c12ff"] }
+
+// credential re-prompt (after verify.credentials_rejected)
+{ "if_version": <current>, "credentials": { "username": "PlayerOne", "password": "newpass" } }
+
+// action (cancel)
+{ "if_version": <current>, "action": "cancel" }   // resend is not supported in conversational mode → 409
+Всегда передавайте if_version с текущим значением version из предыдущего ответа. Несоответствие означает изменение состояния сессии (например, параллельные экземпляры бота) и вернёт HTTP 409.
+Изображения
+Некоторые подсказки содержат image_url. Теперь это ПУБЛИЧНАЯ ссылка с ограниченным сроком (без API-ключа) — её можно сразу переслать покупателю, чтобы он открыл в браузере, либо по-прежнему получить самому (GET /v1/orders/:id/verification/asset/:asset_id.png) и переслать как фото. Относитесь к URL как к секрету: он раскрывает заказ и текущий шаг проверки — делитесь им только с покупателем этого заказа, не логируйте и не публикуйте.
+
+Известные ограничения
+Эти случаи сегодня не полностью автоматизированы. Они касаются обоих режимов — это ограничения самого процесса входа Roblox, а не диалогового режима.
+
+Passkey / вход с другого устройства — аккаунты, защищённые только passkey, нельзя пройти автоматически. Логин отправляется как подтверждение на другом устройстве, но challenge обычно устаревает раньше подтверждения, и заказ завершается verify.failed.
+Капча — задачи решаются автоматически решателем. Если решение не удаётся после повторов, заказ завершается verify.failed с error_code captcha_failed. Ручного next_action для капчи у покупателя нет.
+Один активный заказ на аккаунт Roblox — Roblox отклоняет одновременные входы. Повторное создание вернёт 422 buyer_concurrent_orders_limit_exceeded; дождитесь завершения активного заказа или отмените его.
+Жёсткий таймаут проверки — у всего процесса есть предел около 5 минут с момента POST /v1/orders. После него заказ завершается verify.failed с error_code verification_timeout, даже если на все подсказки были даны верные ответы.
+Таймаут на подсказку — если бот перестаёт отвечать в середине диалога, подсказка истекает (≈60 с для кода, дольше для выбора метода), заказ помечается failed, а 2 транзакции возвращаются.
+Попытки пароля — не более 3 (первая + 2 повтора). После исчерпания заказ завершается с error_code invalid_credentials_exhausted (без повторов); создайте новый заказ.
+Уже оплаченные (после списания) заказы защищены отдельно: путь восстановления автоматически повторяет доставку, даже если бот замолчал, без дополнительной оплаты.
+Повторная ссылка (докид)
+Довыдать недоставленный остаток оплаченного частичного заказа — без повторного списания.
+
+Когда заказ показывает статус partially_delivered, а покупатель уже списан (MS Store списал, часть позиций не доставлена) — соответствующее вебхук-событие order.partial_failure — POST /v1/orders/:id/relink довыдаёт ТОЛЬКО ещё не доставленные позиции. Корзина, количества и учётка продавца берутся на сервере из исходного заказа, поэтому передать items или перенаправить доставку нельзя. Требует scope read_write и заголовок Idempotency-Key.
+
+Режим A — hosted_link (по умолчанию)
+Пустое тело допустимо. Возвращает свежий verify_url, который покупатель открывает для повторной авторизации — тот же поток, что и при создании заказа в Режиме A.
+
+POST /v1/orders/:id/relink — hosted_link (Mode A)
+
+Copy
+{}
+
+// or, explicitly:
+{
+  "mode": "hosted_link",
+  "language": "en",                                   // optional — "en" | "ru" | "zh"
+  "metadata": { "external_order_id": "shop-12345" }   // optional
+}
+200 OK
+
+Copy
+{
+  "verify_url": "https://rbcode.net/v/tok_...",
+  "expires_at": "2026-06-24T12:30:00.000Z",
+  "relink": {
+    "available": true,
+    "undelivered_items": [
+      { "product_id": "9NH6SMMZQHM9", "product_name": "80 R$", "undelivered_quantity": 1 }
+    ],
+    "expected_additional_robux": 80
+  }
+}
+Режим B — диалоговый
+Передайте credentials и ведите логин/2FA по REST через POST /v1/orders/:id/verification/respond, как при создании заказа в Режиме B — вы получаете next_action вместо ссылки. credentials.username принудительно заменяется на исходный аккаунт покупателя (используются только пароль и 2FA); другой username игнорируется, поэтому доставку нельзя перенаправить.
+
+POST /v1/orders/:id/relink — conversational (Mode B)
+
+Copy
+{
+  "mode": "conversational",
+  "credentials": { "username": "PlayerOne", "password": "s3cr3t_pass" }
+}
+201 Created
+
+Copy
+{
+  "next_action": { "...": "same shape as Mode B order creation — drive via /verification/respond" },
+  "relink": {
+    "available": true,
+    "undelivered_items": [
+      { "product_id": "9NH6SMMZQHM9", "product_name": "80 R$", "undelivered_quantity": 1 }
+    ],
+    "expected_additional_robux": 80
+  }
+}
+Условия
+Условие	API вернёт
+Не ваш заказ / неизвестный id	404 order_not_found
+Не оплаченный partially_delivered заказ	409 order_not_relinkable
+Снят / нужна ручная докидка	409 relink_requires_manual_review
+Старше окна повторной ссылки	409 relink_window_expired
+Объект relink — предварительная оценка по результатам клейма заказа; воркер авторитетно перепроверяет доставку в момент клейма, поэтому relink никогда не передаёт лишнего — максимум докидывает реальный остаток.
+Неверные данные
+Что возвращает API, когда пароль или 2FA-код покупателя неверны — и что делать боту.
+
+Что случилось	Что возвращает API	Что показать покупателю
+Roblox отверг пароль	next_action.type = credentials_retry с attempt/max_attempts (всего 3). Ответ: {if_version, credentials:{username,password}}.	«Пароль не подошёл — пришлите логин и пароль ещё раз (попытка N из 3)»
+Все 3 попытки пароля неудачны	Заказ падает; failure_reason.code = invalid_credentials_exhausted (терминально).	Попросите покупателя перепроверить данные и создайте НОВЫЙ заказ.
+Roblox отверг 2FA-код	Тот же provide_input приходит снова с version+1 и увеличенным attempt (до max_attempts=3). Ошибки нет — следите за ростом attempt.	«Код не подошёл — пришлите новый код (попытка N из 3)»
+3 кода не подошли	Движок снова предлагает выбор метода (choose_one), либо верификация падает.	Дайте покупателю снова выбрать метод или пересоздайте заказ.
+Покупатель замолчал на активном промпте	Заказ падает с failure_reason.code = prompt_timeout по истечении таймаута шага.	Заранее предупредите покупателя о лимите времени.
+Каждый повторный промпт увеличивает next_action.version. Всегда отправляйте СВЕЖУЮ версию в if_version — устаревшая вернёт 409 verification_state_changed с details.current_version; перечитайте заказ и повторите.
+Продукты и номиналы
+Все product_id, sku_id и availability_id, которые можно передать в /v1/orders.
+
+Каждая позиция в items[] должна ссылаться на реальный пакет Microsoft Store. Используйте таблицы ниже — скопируйте строку, соответствующую нужному номиналу.
+
+Стандартные пакеты
+Для Roblox-аккаунтов БЕЗ активной Premium-подписки. Покупатель получает указанное количество, без бонуса.
+
+Номинал	product_id	sku_id	availability_id	Цена (USD)
+80 R$	9NH6SMMZQHM9	0010	9VH3WJX9DHDB	$0.99
+500 R$	9PH0VHQ4CNFF	0010	9XL2GVHJGV0Z	$4.99
+1000 R$	9NRQLWSN0K89	0010	9VZ9ZH7Z8GBZ	$9.99
+2000 R$	9NH22L8775FQ	0010	9XD28K6ZW97V	$19.99
+Пакеты с Premium-подпиской
+Покупатель получает Roblox Premium на 1 месяц плюс указанное количество робуксов. Используйте, когда нужно купить Premium и Robux одной покупкой.
+
+Номинал	product_id	sku_id	availability_id	Цена (USD)
+450 R$ + Premium	9NT8XD0WZ4JT	0010	B3DC4QQRM2PJ	$4.99
+1000 R$ + Premium	9PJSPHF65QVG	0010	9PXTFMW31KG0	$9.99
+2200 R$ + Premium	9PJKVXL2N2LZ	0010	9SBR9RH761MB	$19.99
+Простое правило: используйте стандартные пакеты (80 / 500 / 1000 / 2000 R$) — комбинируйте несколько в items[], чтобы набрать любую сумму. Пакеты с Premium-подпиской (450 / 1000 / 2200 + Premium) — когда покупателю нужен и Roblox Premium. Для круглых сумм готовые наборы ниже уже собирают комбинации за вас.
+Готовые наборы для популярных номиналов
+Если нужный номинал не покрывается одним SKU (например 200, 1700, 4500) — собирайте сразу несколько items в одном массиве items[]. Дашборд продавца использует те же комбинации в разделе «Быстрые наборы». API сам считает quantities × amounts — боту нужно только послать правильные items.
+
+examples — combine items[] to hit a target Robux amount
+
+Copy
+// 240 R$ — 80 × 3
+"items": [
+  { "product_id": "9NH6SMMZQHM9", "sku_id": "0010", "availability_id": "9VH3WJX9DHDB", "quantity": 3 }
+]
+
+// 500 R$ — 500 × 1
+"items": [
+  { "product_id": "9PH0VHQ4CNFF", "sku_id": "0010", "availability_id": "9XL2GVHJGV0Z", "quantity": 1 }
+]
+
+// 1000 R$ — 1000 × 1
+"items": [
+  { "product_id": "9NRQLWSN0K89", "sku_id": "0010", "availability_id": "9VZ9ZH7Z8GBZ", "quantity": 1 }
+]
+
+// 1740 R$ — 1000 + 500 + 80 × 3
+"items": [
+  { "product_id": "9NRQLWSN0K89", "sku_id": "0010", "availability_id": "9VZ9ZH7Z8GBZ", "quantity": 1 },
+  { "product_id": "9PH0VHQ4CNFF", "sku_id": "0010", "availability_id": "9XL2GVHJGV0Z", "quantity": 1 },
+  { "product_id": "9NH6SMMZQHM9", "sku_id": "0010", "availability_id": "9VH3WJX9DHDB", "quantity": 3 }
+]
+
+// 4500 R$ — 2000 × 2 + 500
+"items": [
+  { "product_id": "9NH22L8775FQ", "sku_id": "0010", "availability_id": "9XD28K6ZW97V", "quantity": 2 },
+  { "product_id": "9PH0VHQ4CNFF", "sku_id": "0010", "availability_id": "9XL2GVHJGV0Z", "quantity": 1 }
+]
+
+// 4200 R$ + Premium — 2200 prem + 2000 (Premium granted once per order)
+"items": [
+  { "product_id": "9PJKVXL2N2LZ", "sku_id": "0010", "availability_id": "9SBR9RH761MB", "quantity": 1 },
+  { "product_id": "9NH22L8775FQ", "sku_id": "0010", "availability_id": "9XD28K6ZW97V", "quantity": 1 }
+]
+Цель R$	Состав	Цена (USD)
+80	80 × 1	$0.99
+160	80 × 2	$1.98
+240	80 × 3	$2.97
+320	80 × 4	$3.96
+500	500 × 1	$4.99
+660	500 + 80 × 2	$6.97
+740	500 + 80 × 3	$7.96
+820	500 + 80 × 4	$8.95
+1000	1000 × 1	$9.99
+1240	1000 + 80 × 3	$12.96
+1660	1000 + 500 + 80 × 2	$16.96
+1740	1000 + 500 + 80 × 3	$17.95
+2000	2000 × 1	$19.99
+2500	2000 + 500	$24.98
+2740	2000 + 500 + 80 × 3	$27.95
+3240	2000 + 1000 + 80 × 3	$32.95
+3660	2000 + 1000 + 500 + 80 × 2	$36.95
+4000	2000 × 2	$39.98
+4500	2000 × 2 + 500	$44.97
+5000	2000 × 2 + 1000	$49.97
+6000	2000 × 3	$59.97
+7000	2000 × 3 + 1000	$69.96
+10000	2000 × 5	$99.95
+13000	2000 × 6 + 1000	$129.93
+22500	2000 × 11 + 500	$224.88
+2700 + Premium	2200 prem + 500	$24.98
+3200 + Premium	2200 prem + 1000	$29.98
+4200 + Premium	2200 prem + 2000	$39.98
+5200 + Premium	2200 prem + 2000 + 1000	$49.97
+6200 + Premium	2200 prem + 2000 × 2	$59.97
+8200 + Premium	2200 prem + 2000 × 3	$79.96
+12200 + Premium	2200 prem + 2000 × 5	$119.94
+Передавать items{}.product_name и items{}.amount необязательно — сервер подставит значения из каталога (например «1000 R$» / $9.99). Они остаются полезными если хочешь свой собственный лейбл в дашборде или другую цену на странице верификации.
+Подписка и квота
+Каждый заказ стоит 2 транзакции. Проверяйте баланс перед созданием заказов.
+
+GET /v1/subscription
+
+Copy
+{
+  "object": "subscription",
+  "plan_id": "business",
+  "plan_name": "Pro",
+  "status": "active",
+  "transactions_used": 40,
+  "transactions_limit": 200,
+  "transactions_remaining": 160,
+  "end_date": 1717200000,
+  "manage_url": "https://swizzyer.com/dashboard/subscription",
+  "cost_per_order": 2
+}
+Условие	Действие
+transactions_remaining >= 2	Можно создавать заказ
+transactions_remaining < 2	Обновите тариф или дождитесь продления
+status != "active"	Продлите подписку перед созданием заказов
+Квота списывается атомарно при создании заказа. Если заказ не дошёл до покупателя, 2 транзакции возвращаются автоматически.
+Лимиты параллельности
+Помимо месячной квоты API применяет три ограничителя параллельности. Они защищают сервер от ботов которые могли бы случайно или специально слить квоту/перегрузить воркер.
+
+Лимит	Значение	Права
+buyer_concurrent_orders	20	Активные заказы для одного roblox_username (учитывается между всеми командами)
+rate_limit_per_minute	1200	На API-ключ (растёт с активными заказами: cap = 60 + 5 × active)
+Превышение buyer-лимита → 422 buyer_concurrent_orders_limit_exceeded. Дождитесь пока хотя бы один in-flight заказ дойдёт до терминального статуса и повторите.
+Вебхуки
+Получайте уведомления в реальном времени вместо поллинга. Настоятельно рекомендуется.
+
+Зарегистрируйте HTTPS-эндпоинт в разделе API → Вебхуки. Мы отправляем подписанный POST-запрос для каждого события подписанного типа. Ответьте HTTP 200–299 в течение 30 секунд.
+
+Формат события
+json
+
+Copy
+{
+  "object": "event",
+  "id": "evt_01JXY...",
+  "type": "order.completed",
+  "api_version": "2026-05-06",
+  "livemode": true,
+  "created_at": 1715000000,
+  "sequence": 5,
+  "data": {
+    "object": {
+      "object": "order",
+      "id": "ord_01JXY...",
+      "status": "completed"
+    }
+  }
+}
+Основные типы событий
+Событие	Когда происходит
+verify.created	Открыта новая сессия верификации
+verify.buyer_connected	Покупатель открыл страницу верификации
+verify.awaiting_action	Бридж ждёт следующий ответ бота (Mode B)
+verify.credentials_rejected	Roblox отклонил логин/пароль
+verify.cookie_ready	Аутентификационные куки готовы
+verify.cancelled	Верификация отменена (ботом, покупателем или системой)
+verify.expired	Истёк срок верификации
+verify.failed	Верификация 2FA не прошла
+order.queued	Заказ поставлен в очередь воркера
+order.processing	Покупатель завершил 2FA; доставка выполняется
+order.charged	Списание в Microsoft Store успешно
+order.completed	Все позиции доставлены успешно
+order.partial_failure	Многопозиционный заказ — часть успешна, часть упала
+order.failed	Доставка не удалась после всех попыток
+order.cancelled	Отменён ботом или покупателем
+order.needs_retry	Воркер словил временную ошибку, заказ повторится
+subscription.activated	Подписка активирована (начался новый период)
+subscription.quota_low_warning	Осталось менее 10% квоты
+subscription.quota_exhausted	Квота полностью исчерпана
+subscription.expired	Истёк end_date подписки
+webhook.endpoint_disabled	Эндпоинт авто-отключён после 6 подряд сбоев
+Подпишитесь на "*" чтобы получать все 21 события автоматически — будущие события будут приходить без перерегистрации.
+Политика повторов
+При ответе, отличном от 2xx, повторяем с экспоненциальной задержкой: 30 сек → 5 мин → 30 мин → 2 ч → 5 ч → 18 ч (6 повторов). После 6 последовательных ошибок эндпоинт автоматически отключается. Включите его снова после исправления сервера и используйте «Повторить все неудачные» для воспроизведения пропущенных событий.
+
+Статус сервиса
+Опрашивайте уведомление от администратора, показываемое пока сервис продолжает работать.
+
+GET /v1/announcement возвращает лёгкое уведомление только для показа, которое оператор может включить во время тех-работ или деградации. Только чтение, безопасно для публичного показа — опрашивайте (например, рядом с health-проверкой) и показывайте текст пользователям, когда active. То же уведомление встроено в GET /v1/health.
+
+GET /v1/announcement
+
+Copy
+{
+  "object": "service_announcement",
+  "active": true,                 // true ONLY when enabled AND text non-empty — when false, ignore text
+  "text": "Scheduled maintenance 02:00-03:00 UTC; deliveries may be delayed.",
+  "severity": "warning"           // "info" | "warning" | "critical"  (info = safe default)
+}
+Поле	Тип	Описание
+object	string	Всегда "service_announcement".
+active	boolean	Опрашивайте это. Когда false — уведомления нет, игнорируйте text.
+text	string | null	Текст уведомления (≤ 280 симв.). null когда неактивно.
+severity	string	"info" | "warning" | "critical" — рекомендуемая важность баннера.
+Fail-closed: ошибка чтения возвращается как active: false (нет уведомления), поэтому кратковременный сбой никогда не покажет устаревший или неверный баннер.
+Проверка подписей
+Проверяйте подлинность входящих вебхуков для защиты от подделок.
+
+Каждый запрос вебхука содержит два заголовка:
+
+Заголовок	Значение
+X-Auth-Donat-Signature	t=<unix_seconds>,v1=<hex HMAC-SHA256>
+X-Auth-Donat-Event-Id	evt_<base32>
+X-Auth-Donat-Event-Type	order.completed | verify.created | …
+Алгоритм проверки
+Распарсите поля t и v1 из заголовка X-Auth-Donat-Signature (Stripe-стиль: "t=<seconds>,v1=<hex>"). Подписываемая строка — "${t}.${rawBody}" (разделитель — точка, без префикса t=). Вычислите HMAC-SHA256 с вашим секретом подписи (whsec_*), затем сравните с v1 в постоянное время. Отклоняйте запросы где t старше 5 минут или более чем на 10 минут в будущем.
+
+Node.js
+
+Copy
+import crypto from 'node:crypto';
+
+function verifyWebhook(req, signingSecret) {
+  const header = req.headers['x-auth-donat-signature'] ?? '';
+  // Header is "t=<seconds>,v1=<hex>"
+  let t = NaN, v1 = '';
+  for (const part of header.split(',')) {
+    const [k, v] = part.split('=');
+    if (k === 't')  t  = parseInt(v ?? '', 10);
+    if (k === 'v1') v1 = v ?? '';
+  }
+  if (!Number.isFinite(t) || !v1) throw new Error('Bad signature header');
+
+  const age = Math.abs(Date.now() / 1000 - t);
+  if (age > 300) throw new Error('Timestamp too old');
+
+  const payload  = `${t}.${req.body}`; // req.body MUST be the raw body bytes
+  const expected = crypto.createHmac('sha256', signingSecret)
+    .update(payload, 'utf8').digest('hex');
+
+  const ok = crypto.timingSafeEqual(
+    Buffer.from(expected, 'utf8'),
+    Buffer.from(v1, 'utf8'),
+  );
+  if (!ok) throw new Error('Signature mismatch');
+}
+Python
+
+Copy
+import hmac, hashlib, time
+
+def verify_webhook(raw_body: bytes, signature_header: str, secret: str) -> None:
+    t, v1 = None, None
+    for part in signature_header.split(','):
+        k, _, v = part.partition('=')
+        if k == 't':  t  = int(v)
+        if k == 'v1': v1 = v
+    if t is None or v1 is None:
+        raise ValueError('Bad signature header')
+
+    if abs(time.time() - t) > 300:
+        raise ValueError('Timestamp too old')
+
+    payload  = f"{t}.".encode() + raw_body
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected, v1):
+        raise ValueError('Signature mismatch')
+Cloudflare Workers (WebCrypto)
+
+Copy
+// No node:crypto in the Workers runtime — use WebCrypto. Same
+// algorithm, different primitives. Read the body as bytes (do NOT
+// call .json() before verifying) and HMAC over `${t}.${rawBody}`.
+export default {
+  async fetch(req, env) {
+    const header = req.headers.get('X-Auth-Donat-Signature') ?? '';
+    let t = NaN, v1 = '';
+    for (const part of header.split(',')) {
+      const [k, v] = part.split('=');
+      if (k === 't')  t  = parseInt(v ?? '', 10);
+      if (k === 'v1') v1 = v ?? '';
+    }
+    if (!Number.isFinite(t) || !v1) return new Response('rejected', { status: 200 });
+    if (Math.abs(Date.now() / 1000 - t) > 300) return new Response('rejected', { status: 200 });
+
+    const raw = await req.arrayBuffer();
+    const enc = new TextEncoder();
+    const tBytes = enc.encode(`${t}.`);
+    const body = new Uint8Array(raw);
+    const msg = new Uint8Array(tBytes.length + body.length);
+    msg.set(tBytes, 0); msg.set(body, tBytes.length);
+
+    const key = await crypto.subtle.importKey('raw', enc.encode(env.WEBHOOK_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, msg));
+    const expected = Array.from(sig, (b) => b.toString(16).padStart(2, '0')).join('');
+
+    // Constant-time hex compare.
+    if (expected.length !== v1.length) return new Response('rejected', { status: 200 });
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ v1.charCodeAt(i);
+    if (diff !== 0) return new Response('rejected', { status: 200 });
+
+    await dispatch(JSON.parse(new TextDecoder().decode(raw)));
+    return new Response('ok', { status: 200 });
+  },
+};
+PHP
+
+Copy
+<?php
+// Read the raw body BEFORE anything consumes it.
+$raw = file_get_contents('php://input');
+$header = $_SERVER['HTTP_X_AUTH_DONAT_SIGNATURE'] ?? '';
+$t = null; $v1 = null;
+foreach (explode(',', $header) as $kv) {
+    $i = strpos($kv, '=');
+    if ($i !== false) {
+        $k = substr($kv, 0, $i); $val = substr($kv, $i + 1);
+        if ($k === 't')  $t  = (int) $val;
+        if ($k === 'v1') $v1 = $val;
+    }
+}
+http_response_code(200); // always 2xx so a deliberate drop is not retried
+if ($t === null || $v1 === null || abs(time() - $t) > 300) { exit; }
+
+$expected = hash_hmac('sha256', $t . '.' . $raw, getenv('WEBHOOK_SECRET'));
+if (!hash_equals($expected, $v1)) { error_log('[webhook] bad signature'); exit; }
+
+$payload = json_decode($raw, true);
+// dispatch by $payload['type']
+Go
+
+Copy
+package webhook
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Handler verifies the signature over the RAW body bytes, then dispatches.
+func Handler(secret []byte, dispatch func([]byte)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		var t int64
+		var v1 string
+		for _, kv := range strings.Split(r.Header.Get("X-Auth-Donat-Signature"), ",") {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				if kv[:i] == "t" {
+					t, _ = strconv.ParseInt(kv[i+1:], 10, 64)
+				} else if kv[:i] == "v1" {
+					v1 = kv[i+1:]
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK) // 2xx even on reject — no retry storm
+		if v1 == "" || abs64(time.Now().Unix()-t) > 300 {
+			return
+		}
+		mac := hmac.New(sha256.New, secret)
+		fmt.Fprintf(mac, "%d.", t)
+		mac.Write(raw)
+		got, err := hex.DecodeString(v1)
+		if err != nil || !hmac.Equal(got, mac.Sum(nil)) {
+			return
+		}
+		dispatch(raw)
+	}
+}
+
+func abs64(x int64) int64 { if x < 0 { return -x }; return x }
+Справочник ошибок
+Все ошибки имеют единый формат. Используйте поле code для машинной обработки.
+
+error response
+
+Copy
+{
+  "error": {
+    "code": "invalid_api_key",
+    "message": { "en": "API key not found or revoked", "ru": "Ключ API не найден или отозван", "zh": "API 密钥未找到或已被吊销" },
+    "request_id": "req_01JXY...",
+    "doc_url": "https://rbcode.net/docs/errors#invalid_api_key"
+  }
+}
+Основные коды ошибок
+HTTP	код	Значение
+400	idempotency_key_required	Изменяющий эндпоинт без заголовка Idempotency-Key
+400	invalid_idempotency_key	Неверный формат Idempotency-Key (1-255 ASCII printable)
+400	invalid_parameter	Поле не прошло валидацию — error.param указывает на него, details.errors перечисляет все проблемы.
+400	missing_parameter	Отсутствует обязательное поле (например sku_id / availability_id у позиции).
+400	mode_credentials_mismatch	Поля идентификации не соответствуют режиму: hosted_link с обоими/ни одним из roblox_username+credentials, либо conversational с roblox_username на верхнем уровне.
+401	authentication_required	Отсутствует или некорректный заголовок Authorization
+401	invalid_api_key	Ключ не найден, отозван или истёк
+401	revoked_api_key	Ключ был отозван из дашборда
+401	expired_api_key	Истёк expires_at или закончился grace-период после ротации
+402	subscription_required	Нет активной подписки
+402	subscription_expired	Дата окончания подписки в прошлом
+403	scope_insufficient	У API-ключа нет нужных прав (create/respond требуют read_write).
+404	order_not_found	Заказ по этому ID не резолвится. details.reason укажет причину: id_expired_or_invalid (ID вышел из окна получения ~2 ч или некорректен — перезапросить можно только внутри окна, иначе используйте полученный вебхук order.completed/order.failed), not_owned (принадлежит другому ключу/команде) или not_found (никогда не существовал). not_owned и not_found — терминальные.
+409	verification_state_changed	Несоответствие if_version (Режим B)
+409	verification_not_ready	Форма тела respond не соответствует текущему next_action (или отправлен resend — он не поддерживается в диалоговом режиме).
+409	order_cannot_be_cancelled	Выполнение прошло точку невозврата.
+409	idempotency_key_in_use	Тот же Idempotency-Key с другим телом запроса
+409	idempotency_request_in_progress	Тот же Idempotency-Key, запрос ещё выполняется
+410	verification_step_expired	Опция/промпт, на который вы ответили, истёк — перечитайте заказ.
+410	verification_session_expired	Сессия верификации завершена (терминальный заказ или истёкшее окно).
+410	prompt_timeout	Покупатель не ответил на активный промпт вовремя; заказ падает.
+410	invalid_credentials_exhausted	Все 3 попытки пароля неудачны. Создайте новый заказ с верными данными.
+429	rate_limit_exceeded	Слишком много запросов — сделайте паузу и повторите
+429	transactions_quota_exceeded	transactions_remaining < 2
+503	service_temporarily_disabled	API kill-switch включён (плановое обслуживание / инцидент)
+503	service_unavailable	Временный сбой БД/Redis — безопасно повторить с тем же Idempotency-Key
+Идемпотентность
+POST /v1/orders и POST /v1/orders/:id/verification/respond ОБЯЗАТЕЛЬНО требуют HTTP-заголовок Idempotency-Key — без него вернётся 400 idempotency_key_required. Остальные изменяющие эндпоинты принимают его опционально. Отправьте тот же ключ для безопасного повтора после сетевого таймаута — сервер вернёт кешированный ответ. Ключи истекают через 24 часа. Формат: 1-255 ASCII printable символов.
+
+
+Telegram
