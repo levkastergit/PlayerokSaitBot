@@ -46,7 +46,10 @@ function buildBlockingSyncKey(userId, chatId) {
 }
 
 // Отзыв покупателя (testimonial) на сделке Playerok.
-const REVIEW_RECHECK_MS = 2 * 60 * 1000
+// Как часто перепроверять «отзыва ещё нет» сетью (фоновая сверка на каждом поллинге
+// троттлится этим окном). Снижено с 2 мин до 30 c — чтобы оставленный отзыв появлялся
+// в чате в течение ~30 c, а не до 2 мин (или вообще никогда — см. ниже).
+const REVIEW_RECHECK_MS = 30 * 1000
 
 function extractTestimonialFromDeal(deal) {
   const t = deal && typeof deal === 'object' ? deal.testimonial : null
@@ -711,10 +714,19 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             dealId: dealIdForReview,
             cachedOnly: true,
           })
-          // На полном пути — ЖИВАЯ сверка на skipGate (circuit обойдён v95), с жёстким таймаутом,
-          // и свежий отзыв возвращаем в ЭТОМ ответе (фон через setTimeout уходил на серийный gate
-          // и блокировался брейкером → отзывы не появлялись). resolveDealReview сам персистит в БД.
-          if (!messagesOnly && token && typeof requestDealById === 'function') {
+          // ЖИВАЯ сверка отзыва на skipGate (минуя серийный gate/брейкер), ПОКА отзыв НЕ
+          // оставлен. resolveDealReview сам троттлит (REVIEW_RECHECK_MS) и персистит в БД.
+          //
+          // КОРЕНЬ ДАВНЕЙ ПРОБЛЕМЫ: раньше сверка шла ТОЛЬКО на !messagesOnly («полном»
+          // запросе фронта). Но поллинг чата (refreshSelectedChat) идёт по умолчанию с
+          // skipSmartEmail=true → messagesOnly=true → сверка НЕ запускалась. А «полный»
+          // запрос фронт перестаёт слать, как только review!=null и почта известна. Итог:
+          // отзыв, оставленный покупателем ПОСЛЕ первой проверки, не подхватывался никогда.
+          //
+          // Теперь сверку запускаем и на БЫСТРОМ пути (поллинг) — fire-and-forget: отзыв
+          // персистится в БД и приходит на СЛЕДУЮЩЕМ поллинге (без переоткрытия чата).
+          // На «полном» пути дополнительно ждём до 5 c и отдаём свежий отзыв уже в этом ответе.
+          if (token && typeof requestDealById === 'function' && !review?.left) {
             const freshReviewPromise = runPlayerokInteractive(() =>
               resolveDealReview({
                 chatDbRepo,
@@ -727,11 +739,13 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
               })
             )
             freshReviewPromise.catch(() => {})
-            const freshReview = await Promise.race([
-              freshReviewPromise.catch(() => null),
-              new Promise((r) => setTimeout(() => r(null), 5000)),
-            ])
-            if (freshReview) review = freshReview
+            if (!messagesOnly) {
+              const freshReview = await Promise.race([
+                freshReviewPromise.catch(() => null),
+                new Promise((r) => setTimeout(() => r(null), 5000)),
+              ])
+              if (freshReview) review = freshReview
+            }
           }
         }
       }

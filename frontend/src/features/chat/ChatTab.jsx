@@ -1706,7 +1706,7 @@ export function ChatTab({
         // после бэкафилла почты у большинства Supercell-чатов почта известна, и полный запрос
         // НЕ срабатывал → отзыв никогда не дозагружался. Теперь триггерим и при отсутствии отзыва.
         // Не блокирует показ истории, идёт только для открытого чата.
-        if (isSelected && (!buyerSupercellEmail || review == null)) {
+        if (isSelected && (!buyerSupercellEmail || !review?.left)) {
           void fetchChatDbMessages(token, {
             dealId: chat.dealId || null,
             chatId,
