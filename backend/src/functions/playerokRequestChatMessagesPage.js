@@ -37,8 +37,9 @@ function createRequestChatMessagesPage() {
   ) {
     const referer = opts.referer || 'https://playerok.com/chats'
 
-    return withPlayerokGate(
-      () =>
+    const RETRYABLE_STATUS = new Set([401, 403, 429, 500, 502, 503, 504])
+    return withPlayerokGate(async () => {
+      const doOnce = () =>
         new Promise((resolve, reject) => {
       const first = Math.min(50, Math.max(1, Number(count) || 24))
       // $hasSupportAccess / $showForbiddenImage должны фигурировать в документе (как у веб-клиента),
@@ -240,7 +241,29 @@ function createRequestChatMessagesPage() {
       req.write(body)
       req.end()
         })
-    )
+      // Ретрай со СМЕНОЙ исходящего IP: playerokHttpsExtraOptions('chats') резолвится
+      // ВНУТРИ doOnce → каждая попытка идёт с нового IP ротации. chatMessages раньше был
+      // одиночным запросом без ротации, поэтому 401/429 с «плохого» IP (в 429-шторме)
+      // падал сразу (ломая перепроверку и резолв почты из сообщений). requestDealById
+      // так уже умеет (4 попытки). Делаем то же здесь.
+      let lastErr = null
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        try {
+          return await doOnce()
+        } catch (err) {
+          lastErr = err
+          const sc = Number(err && err.statusCode)
+          const transient =
+            RETRYABLE_STATUS.has(sc) ||
+            /timeout|ECONNRESET|ECONNREFUSED|socket hang up|EAI_AGAIN/i.test(
+              String((err && err.message) || '')
+            )
+          if (!transient || attempt === 4) break
+          await new Promise((r) => setTimeout(r, 250 * attempt))
+        }
+      }
+      throw lastErr
+    })
   }
 }
 

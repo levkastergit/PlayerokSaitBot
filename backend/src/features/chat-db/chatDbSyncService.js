@@ -913,6 +913,17 @@ function createChatDbSyncService({
         deal.updatedAt
       )
     }
+    // Почта Supercell из разобранных сообщений — персистим в БД
+    // (chat_deals.buyer_supercell_email), чтобы она появилась в чате и при «Перепроверке»,
+    // и при фоновом скане истории — в т.ч. для СТАРЫХ чатов (бэкфилл без открытия каждого).
+    const supercellEmail =
+      data?.buyerSupercellEmail != null ? String(data.buyerSupercellEmail).trim() : ''
+    const emailDealId = effectiveDealId || primaryDeal?.dealId || null
+    if (supercellEmail && emailDealId && typeof chatDbRepo.setDealSupercellEmail === 'function') {
+      try {
+        chatDbRepo.setDealSupercellEmail(uid, String(emailDealId), supercellEmail)
+      } catch (_) {}
+    }
     if (runAutomation && typeof runAutomationForChat === 'function') {
       await runAutomationForChat({
         userId: uid,
