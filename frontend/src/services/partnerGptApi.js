@@ -1,0 +1,31 @@
+const ENV_ORIGIN = (import.meta.env.VITE_BACKEND_ORIGIN || '').trim()
+const RUNTIME_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
+
+function inferBackendOrigin() {
+  if (ENV_ORIGIN) return ENV_ORIGIN
+  if (RUNTIME_ORIGIN && /:(5173|4173)$/i.test(RUNTIME_ORIGIN)) return 'http://localhost:3000'
+  return RUNTIME_ORIGIN || 'http://localhost:3000'
+}
+
+const BACKEND_ORIGIN = inferBackendOrigin()
+const SETTINGS_URL = `${BACKEND_ORIGIN}/api/partner-gpt/settings`
+const FETCH_CREDENTIALS = { credentials: 'include' }
+
+export async function fetchPartnerGptSettings() {
+  const response = await fetch(SETTINGS_URL, { ...FETCH_CREDENTIALS, method: 'GET' })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) return { ok: false, error: data.error || `Ошибка ${response.status}` }
+  return { ok: true, configured: Boolean(data.configured), updatedAt: data.updated_at ?? null }
+}
+
+export async function savePartnerGptApiKey(apiKey) {
+  const response = await fetch(SETTINGS_URL, {
+    ...FETCH_CREDENTIALS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: String(apiKey || '').trim() }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) return { ok: false, error: data.error || `Ошибка ${response.status}` }
+  return { ok: true, configured: Boolean(data.configured), updatedAt: data.updated_at ?? null }
+}

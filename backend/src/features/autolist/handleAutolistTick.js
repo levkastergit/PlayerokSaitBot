@@ -97,6 +97,10 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistPruneSwizzyerFlowMap,
     processActiveSwizzyerFlows,
     processSingleSwizzyerFlow,
+    autolistGetPartnerGptFlowMap,
+    autolistPrunePartnerGptFlowMap,
+    processActivePartnerGptFlows,
+    processSinglePartnerGptFlow,
     isSupercellModuleEnabled,
     handleOrderedStageAutomessage,
     handlePostPurchaseAutomessage,
@@ -196,6 +200,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     if (typeof autolistPruneClodeFlowMap === 'function') autolistPruneClodeFlowMap(tokenHash, nowTs)
     if (typeof autolistPruneGptFlowMap === 'function') autolistPruneGptFlowMap(tokenHash, nowTs)
     if (typeof autolistPruneSwizzyerFlowMap === 'function') autolistPruneSwizzyerFlowMap(tokenHash, nowTs)
+    if (typeof autolistPrunePartnerGptFlowMap === 'function') autolistPrunePartnerGptFlowMap(tokenHash, nowTs)
 
     let periodicResult = null
     const lastScanTs = Number(scanMeta?.lastScanTs || 0)
@@ -538,6 +543,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap,
         autolistGetSwizzyerFlowMap,
+        autolistGetPartnerGptFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
@@ -806,6 +812,19 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       })
     }
 
+    if (typeof processActivePartnerGptFlows === 'function' && typeof processSinglePartnerGptFlow === 'function') {
+      await processActivePartnerGptFlows({
+        tokenHash,
+        token,
+        userAgent,
+        viewerUsername: viewer?.username || null,
+        nowTs,
+        autolistGetPartnerGptFlowMap,
+        processSinglePartnerGptFlow,
+        shouldStop: shouldStopScan,
+      })
+    }
+
     const countActiveFlows = (getMap) => {
       if (typeof getMap !== 'function') return 0
       try {
@@ -820,11 +839,12 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     const fClode = countActiveFlows(autolistGetClodeFlowMap)
     const fGpt = countActiveFlows(autolistGetGptFlowMap)
     const fSwizzyer = countActiveFlows(autolistGetSwizzyerFlowMap)
-    const flowsTotal = fSupercell + fTopup + fClode + fGpt + fSwizzyer
+    const fPartnerGpt = countActiveFlows(autolistGetPartnerGptFlowMap)
+    const flowsTotal = fSupercell + fTopup + fClode + fGpt + fSwizzyer + fPartnerGpt
     stepEnd({
       status: flowsTotal > 0 ? 'ok' : 'idle',
       count: flowsTotal,
-      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt} swizzyer:${fSwizzyer}`,
+      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt} swizzyer:${fSwizzyer} pgpt:${fPartnerGpt}`,
     })
 
     if (periodicResult && periodicResult.action === 'relisted') {

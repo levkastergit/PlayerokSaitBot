@@ -26,6 +26,7 @@ const {
   autolistMarkAutomessageSent: autolistMarkAutomessageSentDefault,
   gptDealWasRedeemed,
   swizzyerDealWasDelivered,
+  partnerGptDealWasRedeemed,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
 const { handleOrderedStageAutomessage } = require('./handleChatAutomessage')
@@ -73,6 +74,7 @@ async function handlePaidChat({
   autolistGetClodeFlowMap,
   autolistGetGptFlowMap,
   autolistGetSwizzyerFlowMap,
+  autolistGetPartnerGptFlowMap,
   extractSupercellEmailFromFields,
   upsertSettings,
   createChatMessage,
@@ -698,6 +700,57 @@ async function handlePaidChat({
     }
     logApprouteAutodelivery('swizzyer: flow activated', {
       chatId: swChatId,
+      dealId: dealId || null,
+      productKey,
+    })
+  }
+
+  // Автовыдача ChatGPT (партнёрский API): покупатель даёт account_id, card_code из
+  // таблицы. card_code claim-ится в момент активации (как gpt/clode).
+  const partnerGptAlreadyRedeemed =
+    typeof partnerGptDealWasRedeemed === 'function' && lastChat?.id && dealId
+      ? partnerGptDealWasRedeemed(currentUserId, lastChat.id, dealId)
+      : false
+  if (
+    typeof autolistGetPartnerGptFlowMap === 'function' &&
+    effectiveSettings?.autogptpartner?.enabled &&
+    lastChat?.id &&
+    !dealAlreadyDelivered &&
+    !dealRefunded &&
+    !partnerGptAlreadyRedeemed
+  ) {
+    const pgMap = autolistGetPartnerGptFlowMap(tokenHash)
+    const pgChatId = String(lastChat.id)
+    const prev = pgMap[pgChatId] || {}
+    const prevDealId = prev.dealId != null ? String(prev.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDeal = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+    pgMap[pgChatId] = {
+      ...prev,
+      chatId: pgChatId,
+      dealId: dealId || null,
+      itemId: dealItemId || null,
+      userId: currentUserId,
+      productKey,
+      subtabId: String(effectiveSettings?.tableBinding?.subtabId || '').trim(),
+      cfg: {
+        ...effectiveSettings.autogptpartner,
+        autoCompleteDeal: Boolean(
+          effectiveSettings.autogptpartner?.autoCompleteDeal ||
+            effectiveSettings.autodelivery?.autoCompleteDeal
+        ),
+      },
+      stage: isNewDeal ? 'await_id' : prev.stage || 'await_id',
+      askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
+      lastActivateTs: isNewDeal ? 0 : Number(prev.lastActivateTs || 0),
+      accountId: isNewDeal ? '' : prev.accountId || '',
+      redeemed: isNewDeal ? false : Boolean(prev.redeemed),
+      active: true,
+      createdAt: isNewDeal ? nowTs : Number(prev.createdAt || nowTs),
+      updatedAt: nowTs,
+    }
+    logApprouteAutodelivery('partner-gpt: flow activated', {
+      chatId: pgChatId,
       dealId: dealId || null,
       productKey,
     })

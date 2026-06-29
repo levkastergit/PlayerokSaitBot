@@ -331,6 +331,13 @@ const {
   upsertSwizzyerOrder,
 } = setupSwizzyerOrdersRepo(db)
 
+const { setupPartnerGptRepo } = require('./src/db/partnerGptRepo')
+const {
+  loadPartnerGptApiKeyPlain,
+  savePartnerGptApiKey,
+  getPartnerGptSettingsMeta,
+} = setupPartnerGptRepo(db)
+
 const { setupUsdRateService } = require('./src/features/fx/usdRateService')
 const usdRateService = setupUsdRateService(db)
 
@@ -462,6 +469,7 @@ const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { dispatchChatDb } = require('./src/http/dispatchChatDb')
 const { dispatchRoblox } = require('./src/http/dispatchRoblox')
 const { dispatchSwizzyer } = require('./src/http/dispatchSwizzyer')
+const { dispatchPartnerGpt } = require('./src/http/dispatchPartnerGpt')
 const { dispatchDownload } = require('./src/http/dispatchDownload')
 const { isAllActionsStopped } = require('./src/infra/runtimeControl')
 
@@ -502,6 +510,13 @@ const {
   getSwizzyerItems,
   getSwizzyerDenomination,
 } = require('./src/integrations/swizzyer/swizzyerCatalog')
+const { processActivePartnerGptFlows } = require('./src/features/autolist/processActivePartnerGptFlows')
+const { createProcessSinglePartnerGptFlow } = require('./src/features/partnerGpt/runPartnerGptFlow')
+const {
+  extractAccountId: extractPartnerGptAccountId,
+  redeemPartnerGptAndConfirm,
+  isPartnerGptAccountFault,
+} = require('./src/integrations/partnerGpt/partnerGptClient')
 const {
   redeemGptAndConfirm,
   isGptTokenFaultError,
@@ -606,6 +621,10 @@ const {
   autolistPruneSwizzyerFlowMap,
   swizzyerDealWasDelivered,
   swizzyerMarkDealDelivered,
+  autolistGetPartnerGptFlowMap,
+  autolistPrunePartnerGptFlowMap,
+  partnerGptDealWasRedeemed,
+  partnerGptMarkDealRedeemed,
 } = require('./src/features/autolist/autolistState')
 
 const getViewer = createGetViewer({
@@ -897,6 +916,25 @@ const processSingleSwizzyerFlow = createProcessSingleSwizzyerFlow({
   toUnixTs,
 })
 
+const processSinglePartnerGptFlow = createProcessSinglePartnerGptFlow({
+  autolistGetPartnerGptFlowMap,
+  fetchDealChatMessagesFromPlayerok,
+  withRetry,
+  isPlayerokRateLimitError,
+  createChatMessage,
+  loadPartnerGptApiKeyPlain,
+  extractAccountId: extractPartnerGptAccountId,
+  redeemPartnerGptAndConfirm,
+  isPartnerGptAccountFault,
+  claimNextUnusedTableCode: claimNextUnusedCode,
+  markTableCodeUsed: markCodeUsed,
+  releaseTableCode: releaseCode,
+  updateDealStatus,
+  partnerGptDealWasRedeemed,
+  partnerGptMarkDealRedeemed,
+  toUnixTs,
+})
+
 /** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
 const { createFetchAllDealsFromPlayerok } = require('./src/functions/playerokFetchAllDealsFromPlayerok')
 
@@ -1114,6 +1152,18 @@ const handleHttpRequest = async (req, res) => {
         loadSwizzyerApiKeyPlain,
         publicBaseUrl: process.env.PUBLIC_BASE_URL || '',
       },
+    })
+    if (handled) return
+  }
+
+  // Автовыдача ChatGPT (партнёрский API): приватные настройки ключа (по сессии).
+  {
+    const handled = await dispatchPartnerGpt({
+      req,
+      res,
+      pathname,
+      currentUserId,
+      deps: { savePartnerGptApiKey, getPartnerGptSettingsMeta },
     })
     if (handled) return
   }
@@ -1355,6 +1405,8 @@ const handleHttpRequest = async (req, res) => {
         autolistPruneGptFlowMap,
         autolistGetSwizzyerFlowMap,
         autolistPruneSwizzyerFlowMap,
+        autolistGetPartnerGptFlowMap,
+        autolistPrunePartnerGptFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
@@ -1369,6 +1421,8 @@ const handleHttpRequest = async (req, res) => {
         processSingleGptFlow,
         processActiveSwizzyerFlows,
         processSingleSwizzyerFlow,
+        processActivePartnerGptFlows,
+        processSinglePartnerGptFlow,
         isSupercellModuleEnabled,
         handleOrderedStageAutomessage,
         handlePostPurchaseAutomessage,

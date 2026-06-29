@@ -14,6 +14,7 @@ import {
 } from '../../services/playerokApi'
 import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
 import { fetchSwizzyerCatalog, fetchSwizzyerSettings, saveSwizzyerSettings } from '../../services/swizzyerApi'
+import { fetchPartnerGptSettings, savePartnerGptApiKey } from '../../services/partnerGptApi'
 import { TopupApiFlowDiagram } from './TopupApiFlowDiagram'
 
 const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
@@ -556,6 +557,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [swizzyerWebhookInput, setSwizzyerWebhookInput] = useState('')
   const [swizzyerSaving, setSwizzyerSaving] = useState(false)
   const [swizzyerSaveMsg, setSwizzyerSaveMsg] = useState('')
+  // Partner ChatGPT API (глобальный ключ).
+  const [partnerGptSettings, setPartnerGptSettings] = useState(null)
+  const [partnerGptApiKeyInput, setPartnerGptApiKeyInput] = useState('')
+  const [partnerGptSaving, setPartnerGptSaving] = useState(false)
+  const [partnerGptSaveMsg, setPartnerGptSaveMsg] = useState('')
   const [approuteVariants, setApprouteVariants] = useState([])
   const [approuteVariantsLoading, setApprouteVariantsLoading] = useState(false)
   const [approuteVariantsError, setApprouteVariantsError] = useState(null)
@@ -642,6 +648,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           autoclode: cleaned.autoclode || { enabled: false },
           autogpt: cleaned.autogpt || { enabled: false },
           autoroblox: cleaned.autoroblox || { enabled: false },
+          autogptpartner: cleaned.autogptpartner || { enabled: false },
         }
       : { ...cleaned, settingsLabel: '' }
 
@@ -747,6 +754,19 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       successMessage: 'Готово! ✅ {robux} Robux зачислены на аккаунт {username}. Спасибо за покупку!',
       failMessage:
         'Не удалось завершить выдачу. Проверьте, пожалуйста, данные и напишите продавцу — поможем вручную.',
+      autoCompleteDeal: false,
+    },
+    autogptpartner: {
+      enabled: false,
+      askIdMessage:
+        'Напишите, пожалуйста, ваш ChatGPT Account ID (UUID) — на него активируем подписку.',
+      invalidIdMessage:
+        'Не получилось распознать Account ID. Пришлите, пожалуйста, корректный UUID ещё раз.',
+      successMessage: 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.',
+      noStockMessage:
+        'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.',
+      failMessage:
+        'Не удалось активировать подписку. Пришлите, пожалуйста, Account ID ещё раз или подождите — мы повторим.',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -1262,6 +1282,24 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             ),
           }
         })(),
+        autogptpartner: (() => {
+          const loadedPg = loaded.autogptpartner || {}
+          const pickMsg = (key) =>
+            typeof loadedPg[key] === 'string' ? loadedPg[key] : base.autogptpartner[key]
+          return {
+            ...base.autogptpartner,
+            ...loadedPg,
+            enabled: Boolean(loadedPg.enabled),
+            askIdMessage: pickMsg('askIdMessage'),
+            invalidIdMessage: pickMsg('invalidIdMessage'),
+            successMessage: pickMsg('successMessage'),
+            noStockMessage: pickMsg('noStockMessage'),
+            failMessage: pickMsg('failMessage'),
+            autoCompleteDeal: Boolean(
+              loadedPg.autoCompleteDeal || loaded.autodelivery?.autoCompleteDeal
+            ),
+          }
+        })(),
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
@@ -1540,10 +1578,40 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         if (!cancelled && res.ok) setSwizzyerSettings(res)
       })
       .catch(() => {})
+    fetchPartnerGptSettings()
+      .then((res) => {
+        if (!cancelled && res.ok) setPartnerGptSettings(res)
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
   }, [])
+
+  const handleSavePartnerGptSettings = async () => {
+    setPartnerGptSaving(true)
+    setPartnerGptSaveMsg('')
+    try {
+      if (!partnerGptApiKeyInput.trim()) {
+        setPartnerGptSaveMsg('Введите ключ')
+        setPartnerGptSaving(false)
+        return
+      }
+      const res = await savePartnerGptApiKey(partnerGptApiKeyInput.trim())
+      if (res.ok) {
+        setPartnerGptApiKeyInput('')
+        setPartnerGptSaveMsg('Сохранено')
+        const fresh = await fetchPartnerGptSettings()
+        if (fresh.ok) setPartnerGptSettings(fresh)
+      } else {
+        setPartnerGptSaveMsg(res.error || 'Ошибка сохранения')
+      }
+    } catch (e) {
+      setPartnerGptSaveMsg(e?.message || 'Ошибка сохранения')
+    } finally {
+      setPartnerGptSaving(false)
+    }
+  }
 
   const handleSaveSwizzyerSettings = async () => {
     setSwizzyerSaving(true)
@@ -4004,6 +4072,115 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                             <code>{swizzyerSettings.webhookUrl}</code>
                           </p>
                         )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача ChatGPT (партнёрский API)</h4>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autogptpartner?.enabled)}
+                      onChange={(e) => setFeature('autogptpartner', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу ChatGPT (партнёрский)</span>
+                  </label>
+                  {Boolean(productSettings?.autogptpartner?.enabled) && (
+                    <div className="lot-settings-autodelivery-extra">
+                      <p className="lot-settings-field__label">
+                        Карт-коды (card_code) берутся из таблицы, привязанной выше («Привязка к таблице»).
+                        Покупатель присылает свой ChatGPT Account ID (UUID), бот гасит код на этот аккаунт
+                        через admin.rootchatgptplus.com. Ключ API задаётся ниже (общий для всех лотов).
+                      </p>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение-запрос Account ID</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.askIdMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'askIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при некорректном ID</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.invalidIdMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'invalidIdMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение об успехе</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.successMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'successMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при провале активации</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.failMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'failMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при отсутствии свободных кодов</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.noStockMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'noStockMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-toggle" style={{ marginTop: '0.5rem' }}>
+                        <input
+                          type="checkbox"
+                          className="lot-settings-toggle__input"
+                          checked={Boolean(productSettings?.autogptpartner?.autoCompleteDeal)}
+                          onChange={(e) => setFeature('autogptpartner', 'autoCompleteDeal', e.target.checked)}
+                        />
+                        <span className="lot-settings-toggle__switch">
+                          <span className="lot-settings-toggle__knob" />
+                        </span>
+                        <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи</span>
+                      </label>
+
+                      <div className="lot-settings-field" style={{ marginTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '0.75rem' }}>
+                        <span className="lot-settings-field__label">
+                          Ключ Partner API (общий):{' '}
+                          {partnerGptSettings?.configured ? '✅ задан' : '⚠️ не задан'}
+                        </span>
+                        <input
+                          type="password"
+                          className="lot-settings-input"
+                          placeholder="API-ключ (ogp_live_…) — оставьте пустым, чтобы не менять"
+                          value={partnerGptApiKeyInput}
+                          onChange={(e) => setPartnerGptApiKeyInput(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                        <div className="lot-settings-row" style={{ alignItems: 'center', gap: 12, marginTop: '0.5rem' }}>
+                          <button
+                            type="button"
+                            className="lot-settings-btn"
+                            disabled={partnerGptSaving}
+                            onClick={handleSavePartnerGptSettings}
+                          >
+                            {partnerGptSaving ? 'Сохранение…' : 'Сохранить ключ'}
+                          </button>
+                          {partnerGptSaveMsg && (
+                            <span className="lot-settings-field__label">{partnerGptSaveMsg}</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}

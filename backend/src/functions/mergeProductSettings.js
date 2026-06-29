@@ -51,6 +51,10 @@ function mergeProductSettings(groupSettings, itemSettings) {
   const roblox = mergeAutodeliveryApi(itemSettings.autoroblox, groupSettings.autoroblox)
   if (roblox) merged.autoroblox = roblox
 
+  // Автовыдача ChatGPT через партнёрский API (card_code -> account_id).
+  const gptPartner = mergeAutodeliveryApi(itemSettings.autogptpartner, groupSettings.autogptpartner)
+  if (gptPartner) merged.autogptpartner = gptPartner
+
   return merged
 }
 
