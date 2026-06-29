@@ -93,6 +93,10 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     autolistPruneGptFlowMap,
     processActiveGptFlows,
     processSingleGptFlow,
+    autolistGetSwizzyerFlowMap,
+    autolistPruneSwizzyerFlowMap,
+    processActiveSwizzyerFlows,
+    processSingleSwizzyerFlow,
     isSupercellModuleEnabled,
     handleOrderedStageAutomessage,
     handlePostPurchaseAutomessage,
@@ -191,6 +195,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     if (typeof autolistPruneTopupFlowMap === 'function') autolistPruneTopupFlowMap(tokenHash, nowTs)
     if (typeof autolistPruneClodeFlowMap === 'function') autolistPruneClodeFlowMap(tokenHash, nowTs)
     if (typeof autolistPruneGptFlowMap === 'function') autolistPruneGptFlowMap(tokenHash, nowTs)
+    if (typeof autolistPruneSwizzyerFlowMap === 'function') autolistPruneSwizzyerFlowMap(tokenHash, nowTs)
 
     let periodicResult = null
     const lastScanTs = Number(scanMeta?.lastScanTs || 0)
@@ -532,6 +537,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         getSupercellGameByCategory,
         pickSupercellCategoryFromItemHints,
         autolistGetSupercellFlowMap,
+        autolistGetSwizzyerFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
@@ -787,6 +793,19 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
       })
     }
 
+    if (typeof processActiveSwizzyerFlows === 'function' && typeof processSingleSwizzyerFlow === 'function') {
+      await processActiveSwizzyerFlows({
+        tokenHash,
+        token,
+        userAgent,
+        viewerUsername: viewer?.username || null,
+        nowTs,
+        autolistGetSwizzyerFlowMap,
+        processSingleSwizzyerFlow,
+        shouldStop: shouldStopScan,
+      })
+    }
+
     const countActiveFlows = (getMap) => {
       if (typeof getMap !== 'function') return 0
       try {
@@ -800,11 +819,12 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     const fTopup = countActiveFlows(autolistGetTopupFlowMap)
     const fClode = countActiveFlows(autolistGetClodeFlowMap)
     const fGpt = countActiveFlows(autolistGetGptFlowMap)
-    const flowsTotal = fSupercell + fTopup + fClode + fGpt
+    const fSwizzyer = countActiveFlows(autolistGetSwizzyerFlowMap)
+    const flowsTotal = fSupercell + fTopup + fClode + fGpt + fSwizzyer
     stepEnd({
       status: flowsTotal > 0 ? 'ok' : 'idle',
       count: flowsTotal,
-      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt}`,
+      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt} swizzyer:${fSwizzyer}`,
     })
 
     if (periodicResult && periodicResult.action === 'relisted') {

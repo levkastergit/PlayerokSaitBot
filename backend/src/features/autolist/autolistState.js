@@ -78,6 +78,19 @@ function gptMarkDealRedeemed(userId, chatId, dealId, sentAt) {
   autolistMarkAutomessageSent(userId, chatId, dealId, GPT_REDEEM_KIND, sentAt)
 }
 
+// Персистентный признак «Robux по сделке уже выданы» (как у GPT). Переживает
+// перезапуск/прунинг in-memory flow-map. Защищает от повторного создания заказа
+// Swizzyer (реальное списание) после потери состояния.
+const SWIZZYER_DELIVER_KIND = 'swizzyer_redeem'
+
+function swizzyerDealWasDelivered(userId, chatId, dealId) {
+  return autolistWasAutomessageSent(userId, chatId, dealId, SWIZZYER_DELIVER_KIND)
+}
+
+function swizzyerMarkDealDelivered(userId, chatId, dealId, sentAt) {
+  autolistMarkAutomessageSent(userId, chatId, dealId, SWIZZYER_DELIVER_KIND, sentAt)
+}
+
 function autolistGetProcessedMap(tokenHash) {
   global.__autolistProcessedByTokenHash = global.__autolistProcessedByTokenHash || {}
   const key = String(tokenHash)
@@ -298,6 +311,27 @@ function autolistPruneGptFlowMap(tokenHash, nowTs) {
   }
 }
 
+function autolistGetSwizzyerFlowMap(tokenHash) {
+  global.__autolistSwizzyerFlowByTokenHash = global.__autolistSwizzyerFlowByTokenHash || {}
+  const key = String(tokenHash)
+  const map = global.__autolistSwizzyerFlowByTokenHash[key]
+  if (map && typeof map === 'object') return map
+  global.__autolistSwizzyerFlowByTokenHash[key] = {}
+  return global.__autolistSwizzyerFlowByTokenHash[key]
+}
+
+function autolistPruneSwizzyerFlowMap(tokenHash, nowTs) {
+  const map = autolistGetSwizzyerFlowMap(tokenHash)
+  for (const [chatId, state] of Object.entries(map)) {
+    const updatedAt = Number(state?.updatedAt || state?.createdAt || 0)
+    const ageSec = updatedAt ? nowTs - updatedAt : Number.MAX_SAFE_INTEGER
+    const maxAgeSec = state?.active ? 24 * 60 * 60 : 60 * 60
+    if (ageSec > maxAgeSec) {
+      delete map[chatId]
+    }
+  }
+}
+
 function buildChatAutomessageEventKey(prefix, chatId, dealId) {
   const c = String(chatId || '').trim()
   const d = String(dealId || '').trim()
@@ -410,6 +444,8 @@ module.exports = {
   autolistMarkAutomessageSent,
   gptDealWasRedeemed,
   gptMarkDealRedeemed,
+  swizzyerDealWasDelivered,
+  swizzyerMarkDealDelivered,
   autolistGetProcessedMap,
   autolistPruneProcessedMap,
   autolistWasProcessed,
@@ -435,6 +471,8 @@ module.exports = {
   autolistPruneClodeFlowMap,
   autolistGetGptFlowMap,
   autolistPruneGptFlowMap,
+  autolistGetSwizzyerFlowMap,
+  autolistPruneSwizzyerFlowMap,
   buildPostPurchaseAutomessageEventKey,
   buildDealConfirmedAutomessageEventKey,
   buildPaidChatAutomessageEventKey,

@@ -25,6 +25,7 @@ const {
   autolistWasAutomessageSent: autolistWasAutomessageSentDefault,
   autolistMarkAutomessageSent: autolistMarkAutomessageSentDefault,
   gptDealWasRedeemed,
+  swizzyerDealWasDelivered,
   PAID_CHAT_AUTOMESSAGE_MAX_DEAL_AGE_SEC,
 } = require('./autolistState')
 const { handleOrderedStageAutomessage } = require('./handleChatAutomessage')
@@ -71,6 +72,7 @@ async function handlePaidChat({
   autolistGetTopupFlowMap,
   autolistGetClodeFlowMap,
   autolistGetGptFlowMap,
+  autolistGetSwizzyerFlowMap,
   extractSupercellEmailFromFields,
   upsertSettings,
   createChatMessage,
@@ -641,6 +643,61 @@ async function handlePaidChat({
     }
     logApprouteAutodelivery('gpt: flow activated', {
       chatId: gptChatId,
+      dealId: dealId || null,
+      productKey,
+    })
+  }
+
+  // Автовыдача Roblox через Swizzyer: активируем чат-флоу (бот спросит логин/пароль).
+  // order_id создаётся внутри флоу (а не здесь): заказ = реальное списание, поэтому
+  // уже выданную сделку (персистентный журнал) повторно НЕ активируем.
+  const swizzyerDealAlreadyDelivered =
+    typeof swizzyerDealWasDelivered === 'function' && lastChat?.id && dealId
+      ? swizzyerDealWasDelivered(currentUserId, lastChat.id, dealId)
+      : false
+  if (
+    typeof autolistGetSwizzyerFlowMap === 'function' &&
+    effectiveSettings?.autoroblox?.enabled &&
+    lastChat?.id &&
+    !dealAlreadyDelivered &&
+    !dealRefunded &&
+    !swizzyerDealAlreadyDelivered
+  ) {
+    const swMap = autolistGetSwizzyerFlowMap(tokenHash)
+    const swChatId = String(lastChat.id)
+    const prev = swMap[swChatId] || {}
+    const prevDealId = prev.dealId != null ? String(prev.dealId).trim() : ''
+    const nextDealId = dealId != null ? String(dealId).trim() : ''
+    const isNewDeal = Boolean(nextDealId && prevDealId && nextDealId !== prevDealId)
+    swMap[swChatId] = {
+      ...prev,
+      chatId: swChatId,
+      dealId: dealId || null,
+      itemId: dealItemId || null,
+      userId: currentUserId,
+      productKey,
+      cfg: {
+        ...effectiveSettings.autoroblox,
+        autoCompleteDeal: Boolean(
+          effectiveSettings.autoroblox?.autoCompleteDeal ||
+            effectiveSettings.autodelivery?.autoCompleteDeal
+        ),
+      },
+      stage: isNewDeal ? 'await_credentials' : prev.stage || 'await_credentials',
+      askMsgTs: isNewDeal ? 0 : Number(prev.askMsgTs || 0),
+      orderId: isNewDeal ? null : prev.orderId || null,
+      username: isNewDeal ? '' : prev.username || '',
+      password: isNewDeal ? '' : prev.password || '',
+      version: isNewDeal ? 0 : Number(prev.version || 0),
+      promptMsgTs: isNewDeal ? 0 : Number(prev.promptMsgTs || 0),
+      lastPollTs: isNewDeal ? 0 : Number(prev.lastPollTs || 0),
+      redeemed: isNewDeal ? false : Boolean(prev.redeemed),
+      active: true,
+      createdAt: isNewDeal ? nowTs : Number(prev.createdAt || nowTs),
+      updatedAt: nowTs,
+    }
+    logApprouteAutodelivery('swizzyer: flow activated', {
+      chatId: swChatId,
       dealId: dealId || null,
       productKey,
     })

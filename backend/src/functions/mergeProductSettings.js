@@ -47,6 +47,10 @@ function mergeProductSettings(groupSettings, itemSettings) {
   const gpt = mergeAutodeliveryApi(itemSettings.autogpt, groupSettings.autogpt)
   if (gpt) merged.autogpt = gpt
 
+  // Автовыдача Roblox через Swizzyer.
+  const roblox = mergeAutodeliveryApi(itemSettings.autoroblox, groupSettings.autoroblox)
+  if (roblox) merged.autoroblox = roblox
+
   return merged
 }
 

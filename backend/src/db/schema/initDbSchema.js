@@ -24,6 +24,8 @@ const { createSessionsTable } = require('./createSessionsTable')
 const { createRobloxAccountsTable } = require('./createRobloxAccountsTable')
 const { createMicrosoftAccountsTable } = require('./createMicrosoftAccountsTable')
 const { createRobloxOrdersTable } = require('./createRobloxOrdersTable')
+const { createSwizzyerSettingsTable } = require('./createSwizzyerSettingsTable')
+const { createSwizzyerOrdersTable } = require('./createSwizzyerOrdersTable')
 
 function initDbSchema(db) {
   createUsersTable(db)
@@ -52,6 +54,8 @@ function initDbSchema(db) {
   createRobloxAccountsTable(db)
   createMicrosoftAccountsTable(db)
   createRobloxOrdersTable(db)
+  createSwizzyerSettingsTable(db)
+  createSwizzyerOrdersTable(db)
 }
 
 module.exports = { initDbSchema }

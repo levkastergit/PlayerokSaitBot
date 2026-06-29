@@ -317,6 +317,20 @@ const { loadApprouteApiKeyPlain, saveApprouteApiKey, getApprouteSettingsMeta } =
 const { setupClodeRepo } = require('./src/db/clodeRepo')
 const { loadClodeApiKeyPlain, saveClodeApiKey, getClodeSettingsMeta } = setupClodeRepo(db)
 
+const { setupSwizzyerRepo } = require('./src/db/swizzyerRepo')
+const {
+  loadSwizzyerApiKeyPlain,
+  loadSwizzyerWebhookSecretPlain,
+  saveSwizzyerSettings,
+  getSwizzyerSettingsMeta,
+} = setupSwizzyerRepo(db)
+const { setupSwizzyerOrdersRepo } = require('./src/db/swizzyerOrdersRepo')
+const {
+  getSwizzyerOrderByDeal,
+  getSwizzyerOrderByOrderId,
+  upsertSwizzyerOrder,
+} = setupSwizzyerOrdersRepo(db)
+
 const { setupUsdRateService } = require('./src/features/fx/usdRateService')
 const usdRateService = setupUsdRateService(db)
 
@@ -447,6 +461,7 @@ const { dispatchFinance } = require('./src/http/dispatchFinance')
 const { dispatchPlayerok } = require('./src/http/dispatchPlayerok')
 const { dispatchChatDb } = require('./src/http/dispatchChatDb')
 const { dispatchRoblox } = require('./src/http/dispatchRoblox')
+const { dispatchSwizzyer } = require('./src/http/dispatchSwizzyer')
 const { dispatchDownload } = require('./src/http/dispatchDownload')
 const { isAllActionsStopped } = require('./src/infra/runtimeControl')
 
@@ -469,6 +484,24 @@ const {
 } = require('./src/integrations/clode/clodeClient')
 const { processActiveGptFlows } = require('./src/features/autolist/processActiveGptFlows')
 const { createProcessSingleGptFlow } = require('./src/features/gpt/runGptRedeemFlow')
+const { processActiveSwizzyerFlows } = require('./src/features/autolist/processActiveSwizzyerFlows')
+const { createProcessSingleSwizzyerFlow } = require('./src/features/swizzyer/runSwizzyerFlow')
+const {
+  createSwizzyerOrder,
+  getSwizzyerOrder,
+  respondSwizzyerVerification,
+  extractSwizzyerNextAction,
+  extractSwizzyerStatus,
+  isSwizzyerTerminalStatus,
+  isSwizzyerSuccessStatus,
+  isSwizzyerErrorCode,
+  isSwizzyerTransientError,
+  pickI18n: pickSwizzyerI18n,
+} = require('./src/integrations/swizzyer/swizzyerClient')
+const {
+  getSwizzyerItems,
+  getSwizzyerDenomination,
+} = require('./src/integrations/swizzyer/swizzyerCatalog')
 const {
   redeemGptAndConfirm,
   isGptTokenFaultError,
@@ -569,6 +602,10 @@ const {
   autolistPruneGptFlowMap,
   gptDealWasRedeemed,
   gptMarkDealRedeemed,
+  autolistGetSwizzyerFlowMap,
+  autolistPruneSwizzyerFlowMap,
+  swizzyerDealWasDelivered,
+  swizzyerMarkDealDelivered,
 } = require('./src/features/autolist/autolistState')
 
 const getViewer = createGetViewer({
@@ -833,6 +870,33 @@ const processSingleGptFlow = createProcessSingleGptFlow({
   toUnixTs,
 })
 
+const processSingleSwizzyerFlow = createProcessSingleSwizzyerFlow({
+  autolistGetSwizzyerFlowMap,
+  fetchDealChatMessagesFromPlayerok,
+  withRetry,
+  isPlayerokRateLimitError,
+  createChatMessage,
+  loadSwizzyerApiKeyPlain,
+  createSwizzyerOrder,
+  getSwizzyerOrder,
+  respondSwizzyerVerification,
+  extractSwizzyerNextAction,
+  extractSwizzyerStatus,
+  isSwizzyerTerminalStatus,
+  isSwizzyerSuccessStatus,
+  isSwizzyerErrorCode,
+  isSwizzyerTransientError,
+  pickI18n: pickSwizzyerI18n,
+  getSwizzyerItems,
+  getSwizzyerDenomination,
+  getSwizzyerOrderByDeal,
+  upsertSwizzyerOrder,
+  swizzyerDealWasDelivered,
+  swizzyerMarkDealDelivered,
+  updateDealStatus,
+  toUnixTs,
+})
+
 /** Все сделки (продажи) с Playerok без лимита — для синхронизации в БД */
 const { createFetchAllDealsFromPlayerok } = require('./src/functions/playerokFetchAllDealsFromPlayerok')
 
@@ -921,6 +985,22 @@ const handleHttpRequest = async (req, res) => {
       res,
       pathname,
       deps: { createSession, db, verifyPassword, hashPassword },
+    })
+    if (handled) return
+  }
+
+  // Публичный вебхук Swizzyer (/swizzyer/webhook/:userId) — без сессии, подпись HMAC.
+  // Должен быть ДО сессионного гейта /api/* (путь не под /api/).
+  {
+    const handled = await dispatchSwizzyer({
+      req,
+      res,
+      pathname,
+      deps: {
+        loadSwizzyerWebhookSecretPlain,
+        getSwizzyerOrderByOrderId,
+        upsertSwizzyerOrder,
+      },
     })
     if (handled) return
   }
@@ -1016,6 +1096,23 @@ const handleHttpRequest = async (req, res) => {
           apiKey: String(process.env.ROBLOX_CAPTCHA_API_KEY || '').trim(),
           proxy: String(process.env.ROBLOX_CAPTCHA_PROXY || '').trim(),
         }),
+      },
+    })
+    if (handled) return
+  }
+
+  // Автовыдача Roblox через Swizzyer: приватные настройки/каталог/подписка (по сессии).
+  {
+    const handled = await dispatchSwizzyer({
+      req,
+      res,
+      pathname,
+      currentUserId,
+      deps: {
+        saveSwizzyerSettings,
+        getSwizzyerSettingsMeta,
+        loadSwizzyerApiKeyPlain,
+        publicBaseUrl: process.env.PUBLIC_BASE_URL || '',
       },
     })
     if (handled) return
@@ -1256,6 +1353,8 @@ const handleHttpRequest = async (req, res) => {
         autolistPruneClodeFlowMap,
         autolistGetGptFlowMap,
         autolistPruneGptFlowMap,
+        autolistGetSwizzyerFlowMap,
+        autolistPruneSwizzyerFlowMap,
         extractSupercellEmailFromFields,
         upsertSettings,
         createChatMessage,
@@ -1268,6 +1367,8 @@ const handleHttpRequest = async (req, res) => {
         processSingleClodeFlow,
         processActiveGptFlows,
         processSingleGptFlow,
+        processActiveSwizzyerFlows,
+        processSingleSwizzyerFlow,
         isSupercellModuleEnabled,
         handleOrderedStageAutomessage,
         handlePostPurchaseAutomessage,

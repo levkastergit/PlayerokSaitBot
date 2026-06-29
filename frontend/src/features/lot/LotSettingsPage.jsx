@@ -13,6 +13,7 @@ import {
   automessageImageUrl,
 } from '../../services/playerokApi'
 import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
+import { fetchSwizzyerCatalog, fetchSwizzyerSettings, saveSwizzyerSettings } from '../../services/swizzyerApi'
 import { TopupApiFlowDiagram } from './TopupApiFlowDiagram'
 
 const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
@@ -548,6 +549,13 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [approuteServices, setApprouteServices] = useState([])
   const [approuteServicesLoading, setApprouteServicesLoading] = useState(false)
   const [approuteServicesError, setApprouteServicesError] = useState(null)
+  // Swizzyer (автовыдача Roblox): каталог номиналов + глобальные настройки API.
+  const [swizzyerCatalog, setSwizzyerCatalog] = useState([])
+  const [swizzyerSettings, setSwizzyerSettings] = useState(null)
+  const [swizzyerApiKeyInput, setSwizzyerApiKeyInput] = useState('')
+  const [swizzyerWebhookInput, setSwizzyerWebhookInput] = useState('')
+  const [swizzyerSaving, setSwizzyerSaving] = useState(false)
+  const [swizzyerSaveMsg, setSwizzyerSaveMsg] = useState('')
   const [approuteVariants, setApprouteVariants] = useState([])
   const [approuteVariantsLoading, setApprouteVariantsLoading] = useState(false)
   const [approuteVariantsError, setApprouteVariantsError] = useState(null)
@@ -633,6 +641,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
           autotopupApi: cleaned.autotopupApi || { enabled: false },
           autoclode: cleaned.autoclode || { enabled: false },
           autogpt: cleaned.autogpt || { enabled: false },
+          autoroblox: cleaned.autoroblox || { enabled: false },
         }
       : { ...cleaned, settingsLabel: '' }
 
@@ -726,6 +735,18 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
         'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.',
       failMessage:
         'Не удалось активировать подписку. Пришлите, пожалуйста, ваши данные ещё раз или подождите — мы повторим.',
+      autoCompleteDeal: false,
+    },
+    autoroblox: {
+      enabled: false,
+      denominationId: '',
+      askCredentialsMessage:
+        'Для выдачи Robux пришлите, пожалуйста, логин и пароль от вашего Roblox-аккаунта одним сообщением в формате:\nлогин:пароль',
+      invalidCredentialsMessage:
+        'Не разобрал логин и пароль. Пришлите их одним сообщением в формате логин:пароль.',
+      successMessage: 'Готово! ✅ {robux} Robux зачислены на аккаунт {username}. Спасибо за покупку!',
+      failMessage:
+        'Не удалось завершить выдачу. Проверьте, пожалуйста, данные и напишите продавцу — поможем вручную.',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -1222,6 +1243,25 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             ),
           }
         })(),
+        autoroblox: (() => {
+          const loadedRb = loaded.autoroblox || {}
+          const pickMsg = (key) =>
+            typeof loadedRb[key] === 'string' ? loadedRb[key] : base.autoroblox[key]
+          return {
+            ...base.autoroblox,
+            ...loadedRb,
+            enabled: Boolean(loadedRb.enabled),
+            denominationId:
+              typeof loadedRb.denominationId === 'string' ? loadedRb.denominationId : '',
+            askCredentialsMessage: pickMsg('askCredentialsMessage'),
+            invalidCredentialsMessage: pickMsg('invalidCredentialsMessage'),
+            successMessage: pickMsg('successMessage'),
+            failMessage: pickMsg('failMessage'),
+            autoCompleteDeal: Boolean(
+              loadedRb.autoCompleteDeal || loaded.autodelivery?.autoCompleteDeal
+            ),
+          }
+        })(),
         autolist: { ...base.autolist, ...(loaded.autolist || {}) },
         automessage: (() => {
           const loadedAm = loaded.automessage || {}
@@ -1484,6 +1524,53 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       setToast({ type: 'error', message: e instanceof Error ? e.message : 'Не удалось поднять товар' })
     } finally {
       setBumpInFlight(false)
+    }
+  }
+
+  // Каталог номиналов Swizzyer + глобальные настройки API — грузим один раз.
+  useEffect(() => {
+    let cancelled = false
+    fetchSwizzyerCatalog()
+      .then((res) => {
+        if (!cancelled && res.ok) setSwizzyerCatalog(res.denominations)
+      })
+      .catch(() => {})
+    fetchSwizzyerSettings()
+      .then((res) => {
+        if (!cancelled && res.ok) setSwizzyerSettings(res)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleSaveSwizzyerSettings = async () => {
+    setSwizzyerSaving(true)
+    setSwizzyerSaveMsg('')
+    try {
+      const payload = {}
+      if (swizzyerApiKeyInput.trim()) payload.apiKey = swizzyerApiKeyInput.trim()
+      if (swizzyerWebhookInput.trim()) payload.webhookSecret = swizzyerWebhookInput.trim()
+      if (!payload.apiKey && !payload.webhookSecret) {
+        setSwizzyerSaveMsg('Введите ключ или секрет вебхука')
+        setSwizzyerSaving(false)
+        return
+      }
+      const res = await saveSwizzyerSettings(payload)
+      if (res.ok) {
+        setSwizzyerApiKeyInput('')
+        setSwizzyerWebhookInput('')
+        setSwizzyerSaveMsg('Сохранено')
+        const fresh = await fetchSwizzyerSettings()
+        if (fresh.ok) setSwizzyerSettings(fresh)
+      } else {
+        setSwizzyerSaveMsg(res.error || 'Ошибка сохранения')
+      }
+    } catch (e) {
+      setSwizzyerSaveMsg(e?.message || 'Ошибка сохранения')
+    } finally {
+      setSwizzyerSaving(false)
     }
   }
 
@@ -3773,6 +3860,153 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     </div>
                     )
                   })()}
+                </div>
+                <div className="lot-settings-logic-part">
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача Roblox (Swizzyer)</h4>
+                  <label className="lot-settings-toggle">
+                    <input
+                      type="checkbox"
+                      className="lot-settings-toggle__input"
+                      checked={Boolean(productSettings?.autoroblox?.enabled)}
+                      onChange={(e) => setFeature('autoroblox', 'enabled', e.target.checked)}
+                    />
+                    <span className="lot-settings-toggle__switch">
+                      <span className="lot-settings-toggle__knob" />
+                    </span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу Robux</span>
+                  </label>
+                  {Boolean(productSettings?.autoroblox?.enabled) && (
+                    <div className="lot-settings-autodelivery-extra">
+                      <p className="lot-settings-field__label">
+                        Покупатель присылает в чат логин и пароль от Roblox-аккаунта, бот ведёт 2FA через
+                        Swizzyer (rbcode.net) и зачисляет выбранный номинал Robux. Ключ API и секрет вебхука
+                        задаются ниже (общие для всех лотов).
+                      </p>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Номинал Robux</span>
+                        <select
+                          className="lot-settings-input"
+                          value={productSettings?.autoroblox?.denominationId ?? ''}
+                          onChange={(e) => setFeature('autoroblox', 'denominationId', e.target.value)}
+                        >
+                          <option value="">— выберите номинал —</option>
+                          <optgroup label="Стандартные">
+                            {swizzyerCatalog
+                              .filter((d) => d.group !== 'premium')
+                              .map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.label} — ${d.priceUsd}
+                                </option>
+                              ))}
+                          </optgroup>
+                          <optgroup label="С Premium">
+                            {swizzyerCatalog
+                              .filter((d) => d.group === 'premium')
+                              .map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.label} — ${d.priceUsd}
+                                </option>
+                              ))}
+                          </optgroup>
+                        </select>
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение-запрос логина и пароля</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoroblox?.askCredentialsMessage ?? ''}
+                          onChange={(e) => setFeature('autoroblox', 'askCredentialsMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при нераспознанных данных</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoroblox?.invalidCredentialsMessage ?? ''}
+                          onChange={(e) => setFeature('autoroblox', 'invalidCredentialsMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">
+                          Сообщение об успехе (доступны {'{robux}'} и {'{username}'})
+                        </span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoroblox?.successMessage ?? ''}
+                          onChange={(e) => setFeature('autoroblox', 'successMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение при ошибке выдачи</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autoroblox?.failMessage ?? ''}
+                          onChange={(e) => setFeature('autoroblox', 'failMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-toggle" style={{ marginTop: '0.5rem' }}>
+                        <input
+                          type="checkbox"
+                          className="lot-settings-toggle__input"
+                          checked={Boolean(productSettings?.autoroblox?.autoCompleteDeal)}
+                          onChange={(e) => setFeature('autoroblox', 'autoCompleteDeal', e.target.checked)}
+                        />
+                        <span className="lot-settings-toggle__switch">
+                          <span className="lot-settings-toggle__knob" />
+                        </span>
+                        <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи</span>
+                      </label>
+
+                      <div className="lot-settings-field" style={{ marginTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '0.75rem' }}>
+                        <span className="lot-settings-field__label">
+                          Настройки API Swizzyer (общие):{' '}
+                          {swizzyerSettings?.apiKeyConfigured ? '✅ ключ задан' : '⚠️ ключ не задан'}
+                          {' · '}
+                          {swizzyerSettings?.webhookConfigured ? 'вебхук задан' : 'вебхук не задан'}
+                        </span>
+                        <input
+                          type="password"
+                          className="lot-settings-input"
+                          placeholder="API-ключ (swz_live_…) — оставьте пустым, чтобы не менять"
+                          value={swizzyerApiKeyInput}
+                          onChange={(e) => setSwizzyerApiKeyInput(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                        <input
+                          type="password"
+                          className="lot-settings-input"
+                          style={{ marginTop: '0.4rem' }}
+                          placeholder="Секрет вебхука (whsec_…) — необязательно"
+                          value={swizzyerWebhookInput}
+                          onChange={(e) => setSwizzyerWebhookInput(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                        <div className="lot-settings-row" style={{ alignItems: 'center', gap: 12, marginTop: '0.5rem' }}>
+                          <button
+                            type="button"
+                            className="lot-settings-btn"
+                            disabled={swizzyerSaving}
+                            onClick={handleSaveSwizzyerSettings}
+                          >
+                            {swizzyerSaving ? 'Сохранение…' : 'Сохранить ключ/секрет'}
+                          </button>
+                          {swizzyerSaveMsg && (
+                            <span className="lot-settings-field__label">{swizzyerSaveMsg}</span>
+                          )}
+                        </div>
+                        {swizzyerSettings?.webhookUrl && (
+                          <p className="lot-settings-field__label" style={{ marginTop: '0.4rem' }}>
+                            URL вебхука для дашборда Swizzyer:{' '}
+                            <code>{swizzyerSettings.webhookUrl}</code>
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 </section>
                 </>
