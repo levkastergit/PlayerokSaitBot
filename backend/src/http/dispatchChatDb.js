@@ -1016,11 +1016,56 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       }
       const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       if (!token) return sendJson(res, 400, { error: 'token is required' }) || true
-      const result = await chatDbSyncService.recheckOneChat({
-        userId: currentUserId,
-        token,
-        userAgent: payload?.userAgent,
-        chatId: effectiveChatId,
+      // Операторская перепроверка — на БЫСТРОЙ полосе (skipGate: минуя серийный gate и
+      // circuit-breaker; это быстрые операторские запросы, не фон). Раньше шла 200 страниц
+      // истории через серийный gate (~600мс/стр + блокировка брейкером) → висело минутами и
+      // ловило nginx 504. Теперь skipGate + ограниченное число страниц → быстро.
+      const result = await runPlayerokInteractive(async () => {
+        const r = await chatDbSyncService.recheckOneChat({
+          userId: currentUserId,
+          token,
+          userAgent: payload?.userAgent,
+          chatId: effectiveChatId,
+          maxHistoryPages: 12,
+        })
+        // Дотягиваем в БД, чего не хватает: отзыв и почту Supercell по сделке чата.
+        let reviewLeft = false
+        let emailFilled = false
+        try {
+          const threadRow = chatDbRepo.getThreadByChatId.get(currentUserId, effectiveChatId)
+          const dealIdForExtras = dealId || (threadRow?.last_deal_id ? String(threadRow.last_deal_id) : null)
+          const cat = threadRow?.category || null
+          if (dealIdForExtras && typeof requestDealById === 'function') {
+            try {
+              const rev = await resolveDealReview({
+                chatDbRepo,
+                requestDealById,
+                token,
+                userAgent: payload?.userAgent,
+                userId: currentUserId,
+                dealId: dealIdForExtras,
+                cachedOnly: false,
+              })
+              reviewLeft = Boolean(rev?.left)
+            } catch (_) {}
+            if (getSupercellGameByCategory(cat)) {
+              try {
+                const email = await resolveBuyerSupercellEmailFromDeal({
+                  requestDealById,
+                  token,
+                  userAgent: payload?.userAgent,
+                  dealId: dealIdForExtras,
+                  categoryHint: cat || undefined,
+                })
+                if (email) {
+                  chatDbRepo.setDealSupercellEmail(currentUserId, dealIdForExtras, String(email).trim())
+                  emailFilled = true
+                }
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        return { ...r, reviewLeft, emailFilled }
       })
       return sendJson(res, 200, result) || true
     } catch (err) {

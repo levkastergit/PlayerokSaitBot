@@ -620,6 +620,7 @@ export function ChatTab({
   const [chatStateById, setChatStateById] = useState({})
   const [draftByChatId, setDraftByChatId] = useState({})
   const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment' | 'test'
+  const [categoryFilter, setCategoryFilter] = useState('all') // фильтр чатов по категории товара
   const [testProductKey, setTestProductKey] = useState('')
   const [testProductLabel, setTestProductLabel] = useState('')
   const [testMessages, setTestMessages] = useState([])
@@ -2364,20 +2365,45 @@ export function ChatTab({
     }
   }, [token, pageInfo.hasNextPage, pageInfo.endCursor, mergeChatEntry, enqueueChatsForPreload])
 
+  // Список категорий товаров для фильтра чатов (с количеством), по непрытым чатам.
+  const chatCategories = useMemo(() => {
+    const counts = new Map()
+    for (const chat of chats) {
+      if (chat?.isHidden) continue
+      const cat = String(chat?.category || '').trim() || 'Без категории'
+      counts.set(cat, (counts.get(cat) || 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], 'ru'))
+      .map(([category, count]) => ({ category, count }))
+  }, [chats])
+
+  // Если выбранная категория исчезла из списка — сбрасываем фильтр.
+  useEffect(() => {
+    if (categoryFilter !== 'all' && !chatCategories.some((c) => c.category === categoryFilter)) {
+      setCategoryFilter('all')
+    }
+  }, [chatCategories, categoryFilter])
+
   const visibleChats = useMemo(() => {
     if (chatFilter === 'test') {
       return [TEST_CHAT, TEST_CHAT_BUYER]
     }
+    let base
     if (chatFilter === 'hide-completed') {
-      const base = chats.filter((chat) => !chat.isHidden)
-      return base.filter((chat) => !isChatCompleted(chat))
+      base = chats.filter((chat) => !chat.isHidden).filter((chat) => !isChatCompleted(chat))
+    } else if (chatFilter === 'only-fulfillment') {
+      base = chats.filter((chat) => !chat.isHidden).filter((chat) => isFulfillmentChat(chat))
+    } else {
+      base = chats
     }
-    if (chatFilter === 'only-fulfillment') {
-      const base = chats.filter((chat) => !chat.isHidden)
-      return base.filter((chat) => isFulfillmentChat(chat))
+    if (categoryFilter !== 'all') {
+      base = base.filter(
+        (chat) => (String(chat?.category || '').trim() || 'Без категории') === categoryFilter
+      )
     }
-    return chats
-  }, [chats, chatFilter, chatStateById])
+    return base
+  }, [chats, chatFilter, categoryFilter, chatStateById])
 
   useEffect(() => {
     visibleChatsRef.current = visibleChats
@@ -2488,6 +2514,7 @@ export function ChatTab({
     if (!chatId) return
     pendingDeepLinkChatIdRef.current = chatId
     setChatFilter('all') // чтобы целевой чат не был скрыт фильтром
+    setCategoryFilter('all') // и категорийным фильтром тоже
     setSelectedChatId(chatId)
   }, [location.pathname, location.key])
 
@@ -3674,6 +3701,29 @@ export function ChatTab({
                   <span aria-hidden="true">🧪</span>
                 </button>
               </div>
+              {chatFilter !== 'test' && chatCategories.length > 1 && (
+                <div
+                  className="chat-category-filter"
+                  style={{ padding: '0.4rem 0.6rem 0' }}
+                >
+                  <select
+                    className="input-theme"
+                    style={{ width: '100%', fontSize: '0.85rem', padding: '0.3rem 0.5rem' }}
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    title="Фильтр чатов по категории товара"
+                  >
+                    <option value="all">
+                      Все категории ({chats.filter((c) => !c.isHidden).length})
+                    </option>
+                    {chatCategories.map((c) => (
+                      <option key={c.category} value={c.category}>
+                        {c.category} ({c.count})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div
                 ref={listRef}
                 className="chat-list"
