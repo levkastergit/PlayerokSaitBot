@@ -55,6 +55,41 @@ function gatherDealFields(fullDeal) {
   return fieldArrays.length > 0 ? fieldArrays.flat() : []
 }
 
+// Извлекает почту Supercell из УЖЕ загруженной сделки (без сети). Вынесено отдельно, чтобы
+// фоновый бэкфилл мог одним запросом сделки достать и почту, и отзыв (см. supercellEmailBackfill).
+function extractSupercellEmailFromDealObject(fullDeal, categoryHint) {
+  if (!fullDeal || typeof fullDeal !== 'object') return null
+  const itemCategory =
+    pickSupercellCategoryFromDeal(fullDeal) ||
+    (categoryHint != null ? String(categoryHint).trim() : '') ||
+    null
+  const supercellGame = getSupercellGameByCategory(itemCategory)
+  if (!supercellGame) return null
+
+  const fields = gatherDealFields(fullDeal)
+  let email = extractSupercellEmailFromFields(fields)
+  if (!email) {
+    email = pickBuyerEmailFromFieldsForSupercellDeal(fields)
+  }
+  if (!email) {
+    for (const k of ['buyerEmail', 'buyerSupercellEmail', 'contactEmail', 'email']) {
+      const v = fullDeal[k]
+      if (typeof v === 'string' && isEmailValid(v)) {
+        email = String(v).trim()
+        break
+      }
+    }
+  }
+  if (!email) {
+    const deep = collectDeepScanEmailCandidates(fullDeal)
+    if (deep.candidates.length > 0) {
+      email = deep.candidates[0].email
+    }
+  }
+  const trimmed = email != null ? String(email).trim() : ''
+  return trimmed && isEmailValid(trimmed) ? trimmed : null
+}
+
 async function resolveBuyerSupercellEmailFromDeal({
   requestDealById,
   token,
@@ -68,40 +103,10 @@ async function resolveBuyerSupercellEmailFromDeal({
     // БЕЗ ретрая: вызывается на front-polled /api/chat-db/messages — ретрай умножал бы
     // нагрузку на каждый поллинг и усиливал 429-шторм (регрессия v90).
     const fullDeal = await requestDealById(token, userAgent, id)
-    if (!fullDeal || typeof fullDeal !== 'object') return null
-
-    const itemCategory =
-      pickSupercellCategoryFromDeal(fullDeal) ||
-      (categoryHint != null ? String(categoryHint).trim() : '') ||
-      null
-    const supercellGame = getSupercellGameByCategory(itemCategory)
-    if (!supercellGame) return null
-
-    const fields = gatherDealFields(fullDeal)
-    let email = extractSupercellEmailFromFields(fields)
-    if (!email) {
-      email = pickBuyerEmailFromFieldsForSupercellDeal(fields)
-    }
-    if (!email) {
-      for (const k of ['buyerEmail', 'buyerSupercellEmail', 'contactEmail', 'email']) {
-        const v = fullDeal[k]
-        if (typeof v === 'string' && isEmailValid(v)) {
-          email = String(v).trim()
-          break
-        }
-      }
-    }
-    if (!email) {
-      const deep = collectDeepScanEmailCandidates(fullDeal)
-      if (deep.candidates.length > 0) {
-        email = deep.candidates[0].email
-      }
-    }
-    const trimmed = email != null ? String(email).trim() : ''
-    return trimmed && isEmailValid(trimmed) ? trimmed : null
+    return extractSupercellEmailFromDealObject(fullDeal, categoryHint)
   } catch (_) {
     return null
   }
 }
 
-module.exports = { resolveBuyerSupercellEmailFromDeal }
+module.exports = { resolveBuyerSupercellEmailFromDeal, extractSupercellEmailFromDealObject }

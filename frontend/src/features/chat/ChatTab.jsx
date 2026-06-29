@@ -3367,7 +3367,7 @@ export function ChatTab({
         dealId: selectedChat.dealId || undefined,
       })
       try {
-        const { list, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
+        const { list, buyerSupercellEmail, itemTitle, itemImageUrl, itemCategory, deals, viewerUsername, review } =
           await fetchChatDbMessages(token, {
             dealId: selectedChat.dealId || null,
             chatId: selectedChat.id,
@@ -3378,7 +3378,9 @@ export function ChatTab({
           list,
           itemTitle,
           itemImageUrl,
-          null,
+          // Перепроверка только что записала почту в БД — показываем её сразу (из ответа
+          // refresh-фетча, либо из ответа самой перепроверки), не дожидаясь следующего поллинга.
+          buyerSupercellEmail || result?.buyerSupercellEmail || null,
           itemCategory,
           deals,
           review || null

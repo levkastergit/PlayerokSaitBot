@@ -6,6 +6,10 @@ const {
 } = require('../debug/chatSyncStepLog')
 const { getSupercellGameByCategory } = require('../functions/supercellHelpers')
 const { resolveBuyerSupercellEmailFromDeal } = require('../functions/resolveBuyerSupercellEmailFromDeal')
+const {
+  reviewFromDealRow,
+  resolveDealReview,
+} = require('../functions/dealReviewHelpers')
 const { runPlayerokInteractive } = require('../infra/playerokRequestGate')
 const {
   handleTestPurchaseStart,
@@ -45,25 +49,9 @@ function buildBlockingSyncKey(userId, chatId) {
   return `${Number(userId)}::${String(chatId || '')}`
 }
 
-// Отзыв покупателя (testimonial) на сделке Playerok.
-// Как часто перепроверять «отзыва ещё нет» сетью (фоновая сверка на каждом поллинге
-// троттлится этим окном). Снижено с 2 мин до 30 c — чтобы оставленный отзыв появлялся
-// в чате в течение ~30 c, а не до 2 мин (или вообще никогда — см. ниже).
-const REVIEW_RECHECK_MS = 30 * 1000
-
-function extractTestimonialFromDeal(deal) {
-  const t = deal && typeof deal === 'object' ? deal.testimonial : null
-  if (t == null || typeof t !== 'object') {
-    return { left: false, rating: null, status: null }
-  }
-  const ratingRaw = Number(t.rating)
-  return {
-    left: true,
-    rating: Number.isFinite(ratingRaw) ? Math.trunc(ratingRaw) : null,
-    status: t.status != null ? String(t.status) : null,
-    createdAt: t.createdAt != null ? String(t.createdAt) : (t.updatedAt != null ? String(t.updatedAt) : null),
-  }
-}
+// Отзыв покупателя (testimonial) — общие помощники в ../functions/dealReviewHelpers
+// (extractTestimonialFromDeal / reviewFromDealRow / resolveDealReview, REVIEW_RECHECK_MS),
+// чтобы их переиспользовал и фоновый бэкфилл старых чатов.
 
 // Есть ли у чата открытая (нерешённая) проблема по сделке: последний маркер
 // {{DEAL_HAS_PROBLEM}} новее последнего {{DEAL_PROBLEM_RESOLVED}}.
@@ -75,49 +63,6 @@ function hasOpenDealProblem(chatDbRepo, userId, chatId) {
   if (!problemTs) return false
   const resolvedTs = Number(row?.last_resolved_ts || 0)
   return problemTs > resolvedTs
-}
-
-function reviewFromDealRow(dealRow) {
-  if (!dealRow || dealRow.testimonial_left == null) return null
-  return {
-    left: Number(dealRow.testimonial_left) === 1,
-    rating:
-      dealRow.testimonial_rating != null && Number.isFinite(Number(dealRow.testimonial_rating))
-        ? Math.trunc(Number(dealRow.testimonial_rating))
-        : null,
-    createdAt: dealRow.testimonial_created_at != null ? String(dealRow.testimonial_created_at) : null,
-  }
-}
-
-// Возвращает {left, rating} для сделки. Берёт из БД, иначе тянет deal с Playerok и сохраняет.
-async function resolveDealReview({ chatDbRepo, requestDealById, token, userAgent, userId, dealId, cachedOnly = false }) {
-  const id = dealId != null ? String(dealId).trim() : ''
-  if (!id) return null
-  const row = chatDbRepo.getDealById.get(userId, id)
-  const stored = reviewFromDealRow(row)
-  const checkedAt = Number(row?.testimonial_checked_at || 0)
-  // Отзыв уже оставлен и дата известна — он не изменится; сеть не дёргаем.
-  if (stored?.left && stored.createdAt) return stored
-  // Отзыв оставлен, но дата отсутствует (запись из БД до миграции) — разово дотягиваем createdAt.
-  // Недавно проверяли «нет отзыва» — отдаём кеш из БД.
-  if (!stored?.left && stored && Date.now() - checkedAt < REVIEW_RECHECK_MS) return stored
-  // Быстрый путь открытия чата — сеть за отзывом не дёргаем, отдаём, что есть в БД.
-  if (cachedOnly) return stored
-  if (typeof requestDealById !== 'function' || !token) return stored
-  try {
-    const deal = await requestDealById(token, userAgent, id)
-    const t = extractTestimonialFromDeal(deal)
-    chatDbRepo.setDealTestimonial(userId, id, {
-      status: t.status,
-      rating: t.rating,
-      left: t.left,
-      checkedAt: Date.now(),
-      createdAt: t.createdAt || null,
-    })
-    return { left: t.left, rating: t.rating, createdAt: t.createdAt || null }
-  } catch (_) {
-    return stored
-  }
 }
 
 const VIEWER_USERNAME_CACHE_TTL_MS = 10 * 60 * 1000
@@ -1073,21 +1018,22 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         } catch (_) {}
       }
       // Операторская перепроверка — на БЫСТРОЙ полосе (skipGate: минуя серийный gate и
-      // circuit-breaker; это быстрые операторские запросы, не фон). Раньше шла 200 страниц
-      // истории через серийный gate (~600мс/стр + блокировка брейкером) → висело минутами и
-      // ловило nginx 504. Теперь skipGate + ограниченное число страниц → быстро.
+      // circuit-breaker; это быстрые операторские запросы, не фон).
+      //
+      // КОРЕНЬ 504 (исправлено): раньше СНАЧАЛА шла выкачка истории (до 12 страниц
+      // chatMessages × до 4 IP-ретраев каждая) и ТОЛЬКО ПОТОМ — быстрый резолв почты/отзыва
+      // по сделке. В 429-шторме история тянулась дольше nginx-таймаута → 504, и быстрый
+      // резолв (почта/отзыв ~0.5с) даже не успевал выполниться. Теперь порядок обратный:
+      //   1) СНАЧАЛА почта Supercell + отзыв по сделке (1–2 быстрых запроса) — это то, что
+      //      оператор реально хочет увидеть; персистим сразу.
+      //   2) ПОТОМ история сообщений — с жёстким бюджетом времени (Promise.race). Если не
+      //      успели — продолжаем в фоне (внутри skipGate-контекста), а ответ уже несёт
+      //      почту/отзыв. Так перепроверка ВСЕГДА отвечает быстро и не ловит 504.
       const result = await runPlayerokInteractive(async () => {
-        const r = await chatDbSyncService.recheckOneChat({
-          userId: currentUserId,
-          token,
-          userAgent: payload?.userAgent,
-          chatId: effectiveChatId,
-          maxHistoryPages: 12,
-          viewerUsername: recheckViewerUsername || null,
-        })
-        // Дотягиваем в БД, чего не хватает: отзыв и почту Supercell по сделке чата.
+        // (1) Быстрый резолв почты/отзыва по сделке — СНАЧАЛА.
         let reviewLeft = false
         let emailFilled = false
+        let buyerSupercellEmail = null
         try {
           const threadRow = chatDbRepo.getThreadByChatId.get(currentUserId, effectiveChatId)
           const dealIdForExtras = dealId || (threadRow?.last_deal_id ? String(threadRow.last_deal_id) : null)
@@ -1115,14 +1061,47 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
                   categoryHint: cat || undefined,
                 })
                 if (email) {
-                  chatDbRepo.setDealSupercellEmail(currentUserId, dealIdForExtras, String(email).trim())
+                  buyerSupercellEmail = String(email).trim()
+                  chatDbRepo.setDealSupercellEmail(currentUserId, dealIdForExtras, buyerSupercellEmail)
                   emailFilled = true
                 }
               } catch (_) {}
             }
           }
         } catch (_) {}
-        return { ...r, reviewLeft, emailFilled }
+
+        // (2) История сообщений — с бюджетом времени; не успели → продолжаем в фоне.
+        const before = Number(chatDbRepo.countMessagesByChatId.get(currentUserId, effectiveChatId)?.total || 0)
+        let historyDone = false
+        const historyPromise = chatDbSyncService
+          .recheckOneChat({
+            userId: currentUserId,
+            token,
+            userAgent: payload?.userAgent,
+            chatId: effectiveChatId,
+            maxHistoryPages: 12,
+            viewerUsername: recheckViewerUsername || null,
+          })
+          .then((r) => { historyDone = true; return r })
+          .catch(() => { historyDone = true; return null })
+        historyPromise.catch(() => {})
+        const r = await Promise.race([
+          historyPromise,
+          new Promise((resolve) => setTimeout(() => resolve(null), 18000)),
+        ])
+        const after = Number(chatDbRepo.countMessagesByChatId.get(currentUserId, effectiveChatId)?.total || 0)
+        return {
+          ok: true,
+          chatId: effectiveChatId,
+          ...(r || {}),
+          before,
+          after,
+          added: Math.max(0, after - before),
+          historyDone,
+          reviewLeft,
+          emailFilled,
+          buyerSupercellEmail,
+        }
       })
       return sendJson(res, 200, result) || true
     } catch (err) {

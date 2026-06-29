@@ -252,6 +252,21 @@ function setupChatDbRepo(db) {
     LIMIT 1
   `)
 
+  // Сделки с НЕзаполненной почтой Supercell, но с известной категорией — кандидаты на
+  // фоновый бэкфилл почты (старые чаты, синканутые до появления резолва почты). Категорию
+  // Supercell-ность проверяем в JS (getSupercellGameByCategory) — в SQL её не выразить.
+  // Берём свежие первыми; deal_id обязателен (по нему резолвим почту из полей сделки).
+  const listDealsMissingSupercellEmail = db.prepare(`
+    SELECT deal_id, chat_id, category, status, buyer_name
+    FROM chat_deals
+    WHERE user_id = ?
+      AND deal_id IS NOT NULL AND TRIM(deal_id) <> ''
+      AND (buyer_supercell_email IS NULL OR TRIM(buyer_supercell_email) = '')
+      AND category IS NOT NULL AND TRIM(category) <> ''
+    ORDER BY last_seen_at DESC, id DESC
+    LIMIT ?
+  `)
+
   const updateDealTestimonial = db.prepare(`
     UPDATE chat_deals
     SET testimonial_status = ?,
@@ -544,6 +559,7 @@ function setupChatDbRepo(db) {
     listDealsByChatId,
     getDealProblemState,
     getDealById,
+    listDealsMissingSupercellEmail,
     setDealTestimonial,
     setDealSupercellEmail,
     getSyncState,

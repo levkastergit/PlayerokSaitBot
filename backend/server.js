@@ -1557,6 +1557,7 @@ server.listen(PORT, BIND_HOST, () => {
   const { setupAutobumpBackgroundJob } = require('./src/jobs/autobumpBackgroundJob')
   const { setupChatsWarmupBackgroundJob } = require('./src/jobs/chatsWarmupBackgroundJob')
   const { setupChatsSyncBackgroundJob } = require('./src/jobs/chatsSyncBackgroundJob')
+  const { setupSupercellEmailBackfillBackgroundJob } = require('./src/jobs/supercellEmailBackfillBackgroundJob')
   const { setupDealStatusWatchBackgroundJob } = require('./src/jobs/dealStatusWatchBackgroundJob')
 
   setupAutolistBackgroundJob({
@@ -1611,6 +1612,19 @@ server.listen(PORT, BIND_HOST, () => {
     // 500мс на 1-CPU + общий последовательный гейт перегружали очередь и провоцировали
     // 429/504. 1500мс достаточно «живо» для чата и втрое разгружает гейт. Настраивается env.
     intervalMs: Number(process.env.CHATS_SYNC_INTERVAL_MS) || 1500,
+  })
+
+  // Проактивный бэкфилл почты Supercell/отзыва для СТАРЫХ чатов: без него почта чинилась
+  // только при ручном открытии каждого чата (или «Перепроверкой»). Медленно, малыми
+  // батчами, через серийный gate и при закрытом circuit-breaker — нагрузку на 429 не растит.
+  setupSupercellEmailBackfillBackgroundJob({
+    getAllStoredTokens,
+    loadStoredTokenPlain,
+    getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    chatDbRepo,
+    requestDealById,
+    isAllActionsStopped,
+    intervalMs: Number(process.env.SUPERCELL_BACKFILL_INTERVAL_MS) || 45000,
   })
 
   // Наблюдатель статусов сделок: триггерит автосообщения этапов «Отправка/Подтверждение
