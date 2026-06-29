@@ -381,8 +381,39 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       const offsetRaw = Number(payload?.offset)
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.floor(limitRaw)) : 24
       const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0
-      const rows = chatDbRepo.listThreads.all(currentUserId, limit, offset)
-      const totalRow = chatDbRepo.countThreads.get(currentUserId)
+
+      // Серверная фильтрация/поиск ПО ВСЕМ чатам (а не только загруженным на фронте):
+      // категория, имя заказчика, текст сообщений, диапазон дат. Активна, если задан
+      // хоть один параметр — тогда пагинация идёт по отфильтрованному набору.
+      const fCategory = payload?.category != null ? String(payload.category).trim() : ''
+      const fBuyer = payload?.buyerQuery != null ? String(payload.buyerQuery).trim() : ''
+      const fMessage = payload?.messageQuery != null ? String(payload.messageQuery).trim() : ''
+      const fDateFrom = Number(payload?.dateFrom) || 0
+      const fDateTo = Number(payload?.dateTo) || 0
+      const searchActive =
+        (Boolean(fCategory) && fCategory !== 'all') ||
+        Boolean(fBuyer) ||
+        Boolean(fMessage) ||
+        fDateFrom > 0 ||
+        fDateTo > 0
+      let rows
+      let total
+      if (searchActive && typeof chatDbRepo.searchThreads === 'function') {
+        const r = chatDbRepo.searchThreads(currentUserId, {
+          category: fCategory,
+          buyerQuery: fBuyer,
+          messageQuery: fMessage,
+          dateFrom: fDateFrom,
+          dateTo: fDateTo,
+          limit,
+          offset,
+        })
+        rows = r.rows
+        total = r.total
+      } else {
+        rows = chatDbRepo.listThreads.all(currentUserId, limit, offset)
+        total = Number(chatDbRepo.countThreads.get(currentUserId)?.total || 0)
+      }
       const hiddenRows = getHiddenChats.all(currentUserId)
       const hiddenSet = new Set((hiddenRows || []).map((x) => String(x.chat_id || '')).filter(Boolean))
       // Непрочитанность считаем сами по локальной метке прочтения. Для исключения
@@ -409,11 +440,18 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
         mapped.unreadCount = computeLocalUnread(chatDbRepo, currentUserId, row, listViewerUsername)
         list.push(mapped)
       }
+      let categories = []
+      try {
+        if (typeof chatDbRepo.listThreadCategories?.all === 'function') {
+          categories = chatDbRepo.listThreadCategories.all(currentUserId)
+        }
+      } catch (_) {}
       return sendJson(res, 200, {
         list,
-        total: Number(totalRow?.total || 0),
+        total,
+        categories,
         pageInfo: {
-          hasNextPage: offset + limit < Number(totalRow?.total || 0),
+          hasNextPage: offset + limit < total,
           endCursor: null,
         },
       }) || true

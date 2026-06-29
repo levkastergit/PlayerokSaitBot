@@ -620,7 +620,50 @@ export function ChatTab({
   const [chatStateById, setChatStateById] = useState({})
   const [draftByChatId, setDraftByChatId] = useState({})
   const [chatFilter, setChatFilter] = useState('all') // 'all' | 'hide-completed' | 'only-fulfillment' | 'test'
-  const [categoryFilter, setCategoryFilter] = useState('all') // фильтр чатов по категории товара
+  const [categoryFilter, setCategoryFilter] = useState('all') // фильтр чатов по категории товара (серверный)
+  const [chatSearchText, setChatSearchText] = useState('') // поиск по имени заказчика / сообщениям
+  const [chatSearchMode, setChatSearchMode] = useState('buyer') // 'buyer' | 'message'
+  const [chatDateFrom, setChatDateFrom] = useState('') // 'YYYY-MM-DD'
+  const [chatDateTo, setChatDateTo] = useState('')
+  const [serverCategories, setServerCategories] = useState([]) // [{category, count}] из БД (по всем чатам)
+  // Применённые (debounced) серверные фильтры — по ним грузится список чатов из БД.
+  const [appliedFilters, setAppliedFilters] = useState({
+    category: 'all',
+    buyerQuery: '',
+    messageQuery: '',
+    dateFrom: 0,
+    dateTo: 0,
+  })
+  const appliedFiltersRef = useRef(appliedFilters)
+  useEffect(() => {
+    appliedFiltersRef.current = appliedFilters
+  }, [appliedFilters])
+  // Debounce ввода → appliedFilters (категория/дата применяются сразу, текст — с задержкой).
+  useEffect(() => {
+    const dayStartSec = (s) => (s ? Math.floor(new Date(`${s}T00:00:00`).getTime() / 1000) : 0)
+    const dayEndSec = (s) => (s ? Math.floor(new Date(`${s}T23:59:59`).getTime() / 1000) : 0)
+    const t = setTimeout(() => {
+      const text = chatSearchText.trim()
+      const next = {
+        category: categoryFilter,
+        buyerQuery: chatSearchMode === 'buyer' ? text : '',
+        messageQuery: chatSearchMode === 'message' ? text : '',
+        dateFrom: dayStartSec(chatDateFrom),
+        dateTo: dayEndSec(chatDateTo),
+      }
+      // Сохраняем ССЫЛКУ, если значения не изменились — чтобы не перезагружать список зря.
+      setAppliedFilters((prev) =>
+        prev.category === next.category &&
+        prev.buyerQuery === next.buyerQuery &&
+        prev.messageQuery === next.messageQuery &&
+        prev.dateFrom === next.dateFrom &&
+        prev.dateTo === next.dateTo
+          ? prev
+          : next
+      )
+    }, 350)
+    return () => clearTimeout(t)
+  }, [chatSearchText, chatSearchMode, chatDateFrom, chatDateTo, categoryFilter])
   const [testProductKey, setTestProductKey] = useState('')
   const [testProductLabel, setTestProductLabel] = useState('')
   const [testMessages, setTestMessages] = useState([])
@@ -2201,8 +2244,13 @@ export function ChatTab({
       setError(null)
       try {
         logChatLogging('fetchUserChats:start', { limit: 24 })
-        const { list, pageInfo: info } = await fetchChatDbList(token, { limit: 24, offset: 0 })
+        const { list, pageInfo: info, categories } = await fetchChatDbList(token, {
+          limit: 24,
+          offset: 0,
+          ...appliedFiltersRef.current,
+        })
         if (cancelled) return
+        if (Array.isArray(categories)) setServerCategories(categories)
 
         logChatLogging('fetchUserChats:success', {
           count: list.length,
@@ -2268,7 +2316,7 @@ export function ChatTab({
       preloadQueueRef.current = []
       initialLoadDoneRef.current = false
     }
-  }, [token, loadChatsMessagesBatch, mergeChatEntry, enqueueChatsForPreload])
+  }, [token, appliedFilters, loadChatsMessagesBatch, mergeChatEntry, enqueueChatsForPreload])
 
   // Загрузка команд по категориям
   useEffect(() => {
@@ -2324,6 +2372,7 @@ export function ChatTab({
       const { list, pageInfo: info } = await fetchChatDbList(token, {
         limit: requestParams.limit,
         offset: chatsRef.current.length,
+        ...appliedFiltersRef.current,
       })
 
       if (!list || list.length === 0) {
@@ -2365,45 +2414,31 @@ export function ChatTab({
     }
   }, [token, pageInfo.hasNextPage, pageInfo.endCursor, mergeChatEntry, enqueueChatsForPreload])
 
-  // Список категорий товаров для фильтра чатов (с количеством), по непрытым чатам.
-  const chatCategories = useMemo(() => {
-    const counts = new Map()
-    for (const chat of chats) {
-      if (chat?.isHidden) continue
-      const cat = String(chat?.category || '').trim() || 'Без категории'
-      counts.set(cat, (counts.get(cat) || 0) + 1)
-    }
-    return [...counts.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0], 'ru'))
-      .map(([category, count]) => ({ category, count }))
-  }, [chats])
-
-  // Если выбранная категория исчезла из списка — сбрасываем фильтр.
+  // Сброс выбранной категории, если её больше нет среди серверных категорий.
   useEffect(() => {
-    if (categoryFilter !== 'all' && !chatCategories.some((c) => c.category === categoryFilter)) {
+    if (
+      categoryFilter !== 'all' &&
+      serverCategories.length > 0 &&
+      !serverCategories.some((c) => c.category === categoryFilter)
+    ) {
       setCategoryFilter('all')
     }
-  }, [chatCategories, categoryFilter])
+  }, [serverCategories, categoryFilter])
 
+  // Категория/поиск/дата применяются СЕРВЕРНО (список уже отфильтрован при загрузке из БД).
+  // Здесь — только клиентский режим chatFilter (все / в работе / выполнение / тест).
   const visibleChats = useMemo(() => {
     if (chatFilter === 'test') {
       return [TEST_CHAT, TEST_CHAT_BUYER]
     }
-    let base
     if (chatFilter === 'hide-completed') {
-      base = chats.filter((chat) => !chat.isHidden).filter((chat) => !isChatCompleted(chat))
-    } else if (chatFilter === 'only-fulfillment') {
-      base = chats.filter((chat) => !chat.isHidden).filter((chat) => isFulfillmentChat(chat))
-    } else {
-      base = chats
+      return chats.filter((chat) => !chat.isHidden).filter((chat) => !isChatCompleted(chat))
     }
-    if (categoryFilter !== 'all') {
-      base = base.filter(
-        (chat) => (String(chat?.category || '').trim() || 'Без категории') === categoryFilter
-      )
+    if (chatFilter === 'only-fulfillment') {
+      return chats.filter((chat) => !chat.isHidden).filter((chat) => isFulfillmentChat(chat))
     }
-    return base
-  }, [chats, chatFilter, categoryFilter, chatStateById])
+    return chats
+  }, [chats, chatFilter, chatStateById])
 
   useEffect(() => {
     visibleChatsRef.current = visibleChats
@@ -2515,6 +2550,9 @@ export function ChatTab({
     pendingDeepLinkChatIdRef.current = chatId
     setChatFilter('all') // чтобы целевой чат не был скрыт фильтром
     setCategoryFilter('all') // и категорийным фильтром тоже
+    setChatSearchText('')
+    setChatDateFrom('')
+    setChatDateTo('')
     setSelectedChatId(chatId)
   }, [location.pathname, location.key])
 
@@ -2852,8 +2890,13 @@ export function ChatTab({
           ? chatsRef.current.find((c) => c.id === selectedId)
           : null
 
-        const { list } = await fetchChatDbList(token, { limit: 24, offset: 0 })
+        const { list, categories } = await fetchChatDbList(token, {
+          limit: 24,
+          offset: 0,
+          ...appliedFiltersRef.current,
+        })
         if (cancelled) return
+        if (Array.isArray(categories) && categories.length) setServerCategories(categories)
 
         const nextSelected = selectedId ? list.find((c) => c.id === selectedId) : null
         const selectedHasNewListMessage =
@@ -3463,6 +3506,7 @@ export function ChatTab({
         const { list, pageInfo: info } = await fetchChatDbList(token, {
           limit: 24,
           offset: 0,
+          ...appliedFiltersRef.current,
         })
         saveChatListScrollAnchor('prepend')
         setChats((prev) => mergeChatsWithRefresh(prev, list || []))
@@ -3701,27 +3745,98 @@ export function ChatTab({
                   <span aria-hidden="true">🧪</span>
                 </button>
               </div>
-              {chatFilter !== 'test' && chatCategories.length > 1 && (
+              {chatFilter !== 'test' && (
                 <div
-                  className="chat-category-filter"
-                  style={{ padding: '0.4rem 0.6rem 0' }}
+                  className="chat-search-bar"
+                  style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', padding: '0.4rem 0.6rem 0' }}
                 >
-                  <select
-                    className="input-theme"
-                    style={{ width: '100%', fontSize: '0.85rem', padding: '0.3rem 0.5rem' }}
-                    value={categoryFilter}
-                    onChange={(e) => setCategoryFilter(e.target.value)}
-                    title="Фильтр чатов по категории товара"
-                  >
-                    <option value="all">
-                      Все категории ({chats.filter((c) => !c.isHidden).length})
-                    </option>
-                    {chatCategories.map((c) => (
-                      <option key={c.category} value={c.category}>
-                        {c.category} ({c.count})
+                  <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="chat-filter-toggle__btn"
+                      title={
+                        chatSearchMode === 'buyer'
+                          ? 'Поиск по имени заказчика (нажмите — переключить на поиск по сообщениям)'
+                          : 'Поиск по сообщениям в чате (нажмите — переключить на поиск по имени)'
+                      }
+                      onClick={() => setChatSearchMode((m) => (m === 'buyer' ? 'message' : 'buyer'))}
+                      style={{ flex: '0 0 auto' }}
+                    >
+                      <span aria-hidden="true">{chatSearchMode === 'buyer' ? '👤' : '💬'}</span>
+                    </button>
+                    <input
+                      type="text"
+                      className="input-theme"
+                      style={{ flex: 1, fontSize: '0.85rem', padding: '0.3rem 0.5rem', minWidth: 0 }}
+                      placeholder={chatSearchMode === 'buyer' ? '🔍 Имя заказчика…' : '🔍 Поиск по сообщениям…'}
+                      value={chatSearchText}
+                      onChange={(e) => setChatSearchText(e.target.value)}
+                    />
+                    {(chatSearchText || categoryFilter !== 'all' || chatDateFrom || chatDateTo) && (
+                      <button
+                        type="button"
+                        className="chat-filter-toggle__btn"
+                        title="Сбросить поиск и фильтры"
+                        onClick={() => {
+                          setChatSearchText('')
+                          setCategoryFilter('all')
+                          setChatDateFrom('')
+                          setChatDateTo('')
+                        }}
+                        style={{ flex: '0 0 auto' }}
+                      >
+                        <span aria-hidden="true">✖</span>
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select
+                      className="input-theme"
+                      style={{ flex: '1 1 130px', fontSize: '0.8rem', padding: '0.25rem 0.4rem', minWidth: 0 }}
+                      value={categoryFilter}
+                      onChange={(e) => setCategoryFilter(e.target.value)}
+                      title="Категория товара"
+                    >
+                      <option value="all">
+                        🏷 Все категории ({serverCategories.reduce((n, c) => n + (Number(c.count) || 0), 0)})
                       </option>
-                    ))}
-                  </select>
+                      {serverCategories.map((c) => (
+                        <option key={c.category} value={c.category}>
+                          {c.category} ({c.count})
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      className="input-theme"
+                      title="Дата с"
+                      style={{ fontSize: '0.75rem', padding: '0.2rem 0.3rem' }}
+                      value={chatDateFrom}
+                      max={chatDateTo || undefined}
+                      onChange={(e) => setChatDateFrom(e.target.value)}
+                    />
+                    <span style={{ opacity: 0.6, fontSize: '0.75rem' }} aria-hidden="true">📅—</span>
+                    <input
+                      type="date"
+                      className="input-theme"
+                      title="Дата по"
+                      style={{ fontSize: '0.75rem', padding: '0.2rem 0.3rem' }}
+                      value={chatDateTo}
+                      min={chatDateFrom || undefined}
+                      onChange={(e) => setChatDateTo(e.target.value)}
+                    />
+                  </div>
+                  {(appliedFilters.buyerQuery ||
+                    appliedFilters.messageQuery ||
+                    appliedFilters.category !== 'all' ||
+                    appliedFilters.dateFrom > 0 ||
+                    appliedFilters.dateTo > 0) &&
+                    visibleChats.length === 0 &&
+                    !loading && (
+                      <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: '0.2rem 0' }}>
+                        Ничего не найдено по фильтру.
+                      </p>
+                    )}
                 </div>
               )}
               <div

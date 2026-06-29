@@ -428,6 +428,12 @@ export async function fetchChatDbList(token, opts = {}) {
       ...(token ? { token } : {}),
       ...(opts.limit != null ? { limit: opts.limit } : {}),
       ...(opts.offset != null ? { offset: opts.offset } : {}),
+      // Серверная фильтрация/поиск по всем чатам (опционально).
+      ...(opts.category && opts.category !== 'all' ? { category: opts.category } : {}),
+      ...(opts.buyerQuery ? { buyerQuery: opts.buyerQuery } : {}),
+      ...(opts.messageQuery ? { messageQuery: opts.messageQuery } : {}),
+      ...(opts.dateFrom ? { dateFrom: opts.dateFrom } : {}),
+      ...(opts.dateTo ? { dateTo: opts.dateTo } : {}),
     }),
   })
   if (!response.ok) {
@@ -438,6 +444,7 @@ export async function fetchChatDbList(token, opts = {}) {
   return {
     list: Array.isArray(data?.list) ? data.list : [],
     total: Number(data?.total || 0),
+    categories: Array.isArray(data?.categories) ? data.categories : [],
     pageInfo:
       data && typeof data.pageInfo === 'object'
         ? {

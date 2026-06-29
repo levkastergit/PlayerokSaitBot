@@ -34,6 +34,68 @@ function setupChatDbRepo(db) {
     WHERE user_id = ?
   `)
 
+  // Список категорий товаров по ВСЕМ чатам (с количеством) — для фильтра на фронте.
+  const listThreadCategories = db.prepare(`
+    SELECT COALESCE(NULLIF(TRIM(category), ''), 'Без категории') AS category, COUNT(*) AS count
+    FROM chat_threads
+    WHERE user_id = ?
+    GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'Без категории')
+    ORDER BY category COLLATE NOCASE
+  `)
+
+  // Серверный поиск/фильтрация чатов ПО ВСЕЙ БД (а не только по загруженным на фронте):
+  // категория, имя заказчика (LIKE), текст сообщений (EXISTS по chat_messages), диапазон
+  // дат (updated_at, unix-сек). SQL строится динамически; better-sqlite3 кэширует prepare
+  // по тексту запроса, поэтому повторные одинаковые формы фильтра переиспользуют statement.
+  function escapeLike(s) {
+    return String(s).replace(/[\\%_]/g, '\\$&')
+  }
+  function searchThreads(userId, opts = {}) {
+    const where = ['t.user_id = ?']
+    const params = [userId]
+    const cat = opts.category != null ? String(opts.category).trim() : ''
+    if (cat && cat !== 'all') {
+      if (cat === 'Без категории') {
+        where.push("(t.category IS NULL OR TRIM(t.category) = '')")
+      } else {
+        where.push('t.category = ?')
+        params.push(cat)
+      }
+    }
+    const buyer = opts.buyerQuery != null ? String(opts.buyerQuery).trim().toLowerCase() : ''
+    if (buyer) {
+      where.push("LOWER(COALESCE(t.buyer_name,'')) LIKE ? ESCAPE '\\'")
+      params.push('%' + escapeLike(buyer) + '%')
+    }
+    const dFrom = Number(opts.dateFrom)
+    if (Number.isFinite(dFrom) && dFrom > 0) {
+      where.push('t.updated_at >= ?')
+      params.push(Math.floor(dFrom))
+    }
+    const dTo = Number(opts.dateTo)
+    if (Number.isFinite(dTo) && dTo > 0) {
+      where.push('t.updated_at <= ?')
+      params.push(Math.floor(dTo))
+    }
+    const msg = opts.messageQuery != null ? String(opts.messageQuery).trim().toLowerCase() : ''
+    if (msg) {
+      where.push(
+        "EXISTS (SELECT 1 FROM chat_messages m WHERE m.user_id = t.user_id AND m.chat_id = t.chat_id AND LOWER(COALESCE(m.text,'')) LIKE ? ESCAPE '\\')"
+      )
+      params.push('%' + escapeLike(msg) + '%')
+    }
+    const whereSql = where.join(' AND ')
+    const limit = Math.min(200, Math.max(1, Math.floor(Number(opts.limit) || 50)))
+    const offset = Math.max(0, Math.floor(Number(opts.offset) || 0))
+    const rows = db
+      .prepare(
+        `SELECT t.* FROM chat_threads t WHERE ${whereSql} ORDER BY t.updated_at DESC, t.id DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset)
+    const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM chat_threads t WHERE ${whereSql}`).get(...params)
+    return { rows, total: Number(totalRow?.total || 0) }
+  }
+
   const listThreadsWithoutHistoryOldest = db.prepare(`
     SELECT t.*
     FROM chat_threads t
@@ -469,6 +531,8 @@ function setupChatDbRepo(db) {
     getThreadByChatId,
     listThreads,
     countThreads,
+    searchThreads,
+    listThreadCategories,
     listThreadsWithoutHistoryOldest,
     countThreadsWithoutHistory,
     listMessages,
