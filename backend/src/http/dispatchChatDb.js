@@ -624,7 +624,13 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       // Результат ВСЕГДА персистится в БД в фоне (даже если ответ не дождался) → на следующем
       // поллинге почта точно будет, и навсегда. Это chat-open частота (раз на открытие, не на
       // поллинг) → не усиливает 429-шторм; skipGate-троттлинг сохраняется.
-      if (!buyerSupercellEmail && !messagesOnly) {
+      // ПОЧТА Supercell: резолвим ВСЕГДА, когда её ещё нет (а не только на «полном» запросе).
+      // Раньше было `&& !messagesOnly` → на поллинге (messagesOnly=true) почта не резолвилась,
+      // а «полный» запрос фронт перестаёт слать → почта новой сделки не появлялась (тот же
+      // корень, что и у отзыва). Теперь на поллинге запускаем лёгкий резолв (поля сделки)
+      // fire-and-forget: персистится+кэшируется (негатив-кэш 30с) и приходит на след. поллинге.
+      // Тяжёлый путь (разбор сообщений) остаётся только на «полном» запросе (skipSmartEmail).
+      if (!buyerSupercellEmail) {
         const dealIdForEmail =
           requestedDealId || primaryDeal?.deal_id || thread?.last_deal_id || null
         const cacheKey = buildSmartEmailCacheKey({
@@ -686,12 +692,15 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
             })
             // Персист/кэш произойдёт внутри resolvePromise независимо от гонки ниже.
             resolvePromise.catch(() => {})
-            // Вернуть почту в ЭТОМ ответе, если резолв успел за 6с; иначе null (фон допишет в БД).
-            const fastEmail = await Promise.race([
-              resolvePromise.catch(() => null),
-              new Promise((r) => setTimeout(() => r(null), 6000)),
-            ])
-            if (fastEmail) buyerSupercellEmail = fastEmail
+            if (!messagesOnly) {
+              // Полный запрос: ждём почту до 6с и отдаём в ЭТОМ ответе; иначе фон допишет в БД.
+              const fastEmail = await Promise.race([
+                resolvePromise.catch(() => null),
+                new Promise((r) => setTimeout(() => r(null), 6000)),
+              ])
+              if (fastEmail) buyerSupercellEmail = fastEmail
+            }
+            // На быстром пути/поллинге — fire-and-forget: почта персистится и придёт на след. поллинге.
           }
         }
       }
@@ -1016,6 +1025,15 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
       }
       const { token } = getTokenFromBodyOrStored(currentUserId, payload)
       if (!token) return sendJson(res, 400, { error: 'token is required' }) || true
+      // Имя продавца резолвим в ОБЫЧНОМ контексте (вне skipGate): getViewer на быстрой
+      // полосе изредка отдаёт пустой viewer → «токен неверный или истёк». Обычно мгновенно
+      // из кэша (греется на каждом поллинге чата).
+      let recheckViewerUsername = getCachedViewerUsername(token)
+      if (!recheckViewerUsername && typeof getViewer === 'function') {
+        try {
+          recheckViewerUsername = await resolveViewerUsername(getViewer, token, payload?.userAgent)
+        } catch (_) {}
+      }
       // Операторская перепроверка — на БЫСТРОЙ полосе (skipGate: минуя серийный gate и
       // circuit-breaker; это быстрые операторские запросы, не фон). Раньше шла 200 страниц
       // истории через серийный gate (~600мс/стр + блокировка брейкером) → висело минутами и
@@ -1027,6 +1045,7 @@ async function dispatchChatDb({ req, res, pathname, currentUserId, deps }) {
           userAgent: payload?.userAgent,
           chatId: effectiveChatId,
           maxHistoryPages: 12,
+          viewerUsername: recheckViewerUsername || null,
         })
         // Дотягиваем в БД, чего не хватает: отзыв и почту Supercell по сделке чата.
         let reviewLeft = false

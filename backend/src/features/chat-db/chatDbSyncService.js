@@ -733,7 +733,7 @@ function createChatDbSyncService({
 
   // Принудительная перепроверка одного чата: тянет историю с Playerok и доливает
   // недостающие сообщения в БД (putMessages — upsert по message_id, ничего не удаляет).
-  async function recheckOneChat({ userId, token, userAgent, chatId, maxHistoryPages = 200 }) {
+  async function recheckOneChat({ userId, token, userAgent, chatId, maxHistoryPages = 200, viewerUsername: providedViewerUsername = null }) {
     const uid = Number(userId)
     const cid = chatId != null ? String(chatId).trim() : ''
     if (!Number.isFinite(uid) || uid <= 0 || !cid) {
@@ -743,8 +743,19 @@ function createChatDbSyncService({
     const thread = threadRowToThread(row)
     if (!thread) throw new Error('chat not found')
     const ua = userAgent || (typeof userAgentProvider === 'function' ? userAgentProvider() : null)
-    const viewer = await getViewer(token, ua)
-    const viewerUsername = normalizeText(viewer?.username || null)
+    // Имя продавца: предпочтительно из переданного (резолвится в обычном контексте на
+    // стороне вызывающего). getViewer на БЫСТРОЙ полосе (skipGate) изредка отдаёт пустой
+    // viewer → ошибка «токен неверный»; поэтому НЕ валим перепроверку из-за getViewer —
+    // ловим и продолжаем (детекция отправителя деградирует, но история сохраняется).
+    let viewerUsername = providedViewerUsername != null ? normalizeText(providedViewerUsername) : null
+    if (!viewerUsername) {
+      try {
+        const viewer = await getViewer(token, ua)
+        viewerUsername = normalizeText(viewer?.username || null)
+      } catch (_) {
+        viewerUsername = normalizeText(thread?.lastMessageSenderUsername || null) || null
+      }
+    }
     const before = Number(chatDbRepo.countMessagesByChatId.get(uid, cid)?.total || 0)
     const result = await processChatHistoryForThread({
       userId: uid,
