@@ -20,6 +20,8 @@ import {
   saveClodeApiKey,
   clearClodeApiKey,
 } from '../../services/clodeApi'
+import { fetchSwizzyerSettings, saveSwizzyerSettings } from '../../services/swizzyerApi'
+import { fetchPartnerGptSettings, savePartnerGptApiKey } from '../../services/partnerGptApi'
 
 const SETTINGS_SUB_TABS = [
   { id: '', label: 'Основные' },
@@ -70,6 +72,21 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
   const [clodeSaving, setClodeSaving] = useState(false)
   const [clodeMessage, setClodeMessage] = useState(null)
   const [clodeError, setClodeError] = useState(null)
+  // Swizzyer (автовыдача Roblox): ключ API + секрет вебхука.
+  const [swizzyerKeyValue, setSwizzyerKeyValue] = useState('')
+  const [swizzyerWebhookValue, setSwizzyerWebhookValue] = useState('')
+  const [swizzyerMeta, setSwizzyerMeta] = useState(null)
+  const [swizzyerLoading, setSwizzyerLoading] = useState(true)
+  const [swizzyerSaving, setSwizzyerSaving] = useState(false)
+  const [swizzyerMessage, setSwizzyerMessage] = useState(null)
+  const [swizzyerError, setSwizzyerError] = useState(null)
+  // Partner ChatGPT API: ключ.
+  const [partnerGptKeyValue, setPartnerGptKeyValue] = useState('')
+  const [partnerGptConfigured, setPartnerGptConfigured] = useState(false)
+  const [partnerGptLoading, setPartnerGptLoading] = useState(true)
+  const [partnerGptSaving, setPartnerGptSaving] = useState(false)
+  const [partnerGptMessage, setPartnerGptMessage] = useState(null)
+  const [partnerGptError, setPartnerGptError] = useState(null)
 
   useEffect(() => {
     setValue(token ?? '')
@@ -173,6 +190,32 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
         setClodeError(r.error || null)
       }
       setClodeLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setSwizzyerLoading(true)
+    setSwizzyerError(null)
+    fetchSwizzyerSettings().then((r) => {
+      if (cancelled) return
+      if (r.ok) setSwizzyerMeta(r)
+      else setSwizzyerError(r.error || null)
+      setSwizzyerLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setPartnerGptLoading(true)
+    setPartnerGptError(null)
+    fetchPartnerGptSettings().then((r) => {
+      if (cancelled) return
+      if (r.ok) setPartnerGptConfigured(Boolean(r.configured))
+      else setPartnerGptError(r.error || null)
+      setPartnerGptLoading(false)
     })
     return () => { cancelled = true }
   }, [])
@@ -333,6 +376,84 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
       setClodeMessage(null)
     } else {
       setClodeError(r.error || 'Ошибка')
+    }
+  }
+
+  const refreshSwizzyerMeta = async () => {
+    const fresh = await fetchSwizzyerSettings()
+    if (fresh.ok) setSwizzyerMeta(fresh)
+  }
+
+  const handleSaveSwizzyer = async (event) => {
+    event.preventDefault()
+    setSwizzyerSaving(true)
+    setSwizzyerMessage(null)
+    setSwizzyerError(null)
+    // Отправляем только непустые поля — пустое не затирает уже сохранённое.
+    const payload = {}
+    if (swizzyerKeyValue.trim()) payload.apiKey = swizzyerKeyValue.trim()
+    if (swizzyerWebhookValue.trim()) payload.webhookSecret = swizzyerWebhookValue.trim()
+    if (!payload.apiKey && !payload.webhookSecret) {
+      setSwizzyerSaving(false)
+      setSwizzyerError('Введите ключ или секрет вебхука')
+      return
+    }
+    const r = await saveSwizzyerSettings(payload)
+    setSwizzyerSaving(false)
+    if (r.ok) {
+      setSwizzyerKeyValue('')
+      setSwizzyerWebhookValue('')
+      setSwizzyerMessage('Настройки Swizzyer сохранены')
+      await refreshSwizzyerMeta()
+    } else {
+      setSwizzyerError(r.error || 'Ошибка сохранения')
+    }
+  }
+
+  const handleClearSwizzyer = async () => {
+    setSwizzyerSaving(true)
+    setSwizzyerMessage(null)
+    setSwizzyerError(null)
+    const r = await saveSwizzyerSettings({ apiKey: '', webhookSecret: '' })
+    setSwizzyerSaving(false)
+    if (r.ok) {
+      setSwizzyerKeyValue('')
+      setSwizzyerWebhookValue('')
+      setSwizzyerMessage(null)
+      await refreshSwizzyerMeta()
+    } else {
+      setSwizzyerError(r.error || 'Ошибка')
+    }
+  }
+
+  const handleSavePartnerGpt = async (event) => {
+    event.preventDefault()
+    setPartnerGptSaving(true)
+    setPartnerGptMessage(null)
+    setPartnerGptError(null)
+    const r = await savePartnerGptApiKey(partnerGptKeyValue)
+    setPartnerGptSaving(false)
+    if (r.ok) {
+      setPartnerGptConfigured(Boolean(r.configured))
+      setPartnerGptKeyValue('')
+      setPartnerGptMessage('Ключ Partner ChatGPT сохранён')
+    } else {
+      setPartnerGptError(r.error || 'Ошибка сохранения')
+    }
+  }
+
+  const handleClearPartnerGpt = async () => {
+    setPartnerGptSaving(true)
+    setPartnerGptMessage(null)
+    setPartnerGptError(null)
+    const r = await savePartnerGptApiKey('')
+    setPartnerGptSaving(false)
+    if (r.ok) {
+      setPartnerGptConfigured(false)
+      setPartnerGptKeyValue('')
+      setPartnerGptMessage(null)
+    } else {
+      setPartnerGptError(r.error || 'Ошибка')
     }
   }
 
@@ -509,6 +630,116 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
               )}
               {clodeError && (
                 <p className="settings-message settings-message--error">{clodeError}</p>
+              )}
+            </form>
+          )}
+        </section>
+
+        <section className="card settings-card settings-card--swizzyer">
+          <h2 className="card-title">Swizzyer API (Roblox)</h2>
+          <p className="card-text settings-hint">
+            Ключ для автовыдачи Robux через{' '}
+            <a href="https://swizzyer.com/" target="_blank" rel="noopener noreferrer">
+              swizzyer.com
+            </a>{' '}
+            (rbcode.net). Заголовок: Authorization: Bearer. Секрет вебхука — необязательно.
+          </p>
+          {swizzyerLoading ? (
+            <p className="card-text">Загрузка…</p>
+          ) : (
+            <form className="settings-form" onSubmit={handleSaveSwizzyer}>
+              <label htmlFor="swizzyer-api-key" className="settings-label">
+                API-ключ {swizzyerMeta?.apiKeyConfigured ? '(сохранён)' : ''}
+              </label>
+              <input
+                id="swizzyer-api-key"
+                className="input-theme"
+                type="password"
+                value={swizzyerKeyValue}
+                onChange={(e) => setSwizzyerKeyValue(e.target.value)}
+                placeholder={swizzyerMeta?.apiKeyConfigured ? 'Ключ сохранён (скрыт)' : 'Вставьте API-ключ (swz_live_…)'}
+                autoComplete="off"
+              />
+              <label htmlFor="swizzyer-webhook" className="settings-label">
+                Секрет вебхука {swizzyerMeta?.webhookConfigured ? '(сохранён)' : ''}
+              </label>
+              <input
+                id="swizzyer-webhook"
+                className="input-theme"
+                type="password"
+                value={swizzyerWebhookValue}
+                onChange={(e) => setSwizzyerWebhookValue(e.target.value)}
+                placeholder={swizzyerMeta?.webhookConfigured ? 'Секрет сохранён (скрыт)' : 'whsec_… (необязательно)'}
+                autoComplete="off"
+              />
+              <div className="token-actions">
+                <button type="submit" className="btn-primary" disabled={swizzyerSaving}>
+                  Сохранить
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={swizzyerSaving}
+                  onClick={handleClearSwizzyer}
+                >
+                  Очистить
+                </button>
+              </div>
+              {swizzyerMeta?.webhookUrl && (
+                <p className="card-text settings-hint">
+                  URL вебхука для дашборда Swizzyer: <code>{swizzyerMeta.webhookUrl}</code>
+                </p>
+              )}
+              {swizzyerMessage && (
+                <p className="settings-message settings-message--success">{swizzyerMessage}</p>
+              )}
+              {swizzyerError && (
+                <p className="settings-message settings-message--error">{swizzyerError}</p>
+              )}
+            </form>
+          )}
+        </section>
+
+        <section className="card settings-card settings-card--partner-gpt">
+          <h2 className="card-title">Partner ChatGPT API</h2>
+          <p className="card-text settings-hint">
+            Ключ для автовыдачи ChatGPT-аккаунтов (card_code → account_id) через
+            admin.rootchatgptplus.com. Заголовок: Authorization: Bearer.
+          </p>
+          {partnerGptLoading ? (
+            <p className="card-text">Загрузка…</p>
+          ) : (
+            <form className="settings-form" onSubmit={handleSavePartnerGpt}>
+              <label htmlFor="partner-gpt-api-key" className="settings-label">
+                API-ключ
+              </label>
+              <input
+                id="partner-gpt-api-key"
+                className="input-theme"
+                type="password"
+                value={partnerGptKeyValue}
+                onChange={(e) => setPartnerGptKeyValue(e.target.value)}
+                placeholder={partnerGptConfigured ? 'Ключ сохранён (скрыт)' : 'Вставьте API-ключ (ogp_live_…)'}
+                autoComplete="off"
+              />
+              <div className="token-actions">
+                <button type="submit" className="btn-primary" disabled={partnerGptSaving}>
+                  Сохранить ключ
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={partnerGptSaving}
+                  onClick={handleClearPartnerGpt}
+                >
+                  Очистить
+                </button>
+              </div>
+              {partnerGptMessage && (
+                <p className="settings-message settings-message--success">{partnerGptMessage}</p>
+              )}
+              {partnerGptError && (
+                <p className="settings-message settings-message--error">{partnerGptError}</p>
               )}
             </form>
           )}

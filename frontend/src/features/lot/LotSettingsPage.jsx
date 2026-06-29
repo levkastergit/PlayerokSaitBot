@@ -13,8 +13,8 @@ import {
   automessageImageUrl,
 } from '../../services/playerokApi'
 import { fetchApprouteServices, fetchApprouteServiceVariants, formatApprouteVariantLabel } from '../../services/approuteApi'
-import { fetchSwizzyerCatalog, fetchSwizzyerSettings, saveSwizzyerSettings } from '../../services/swizzyerApi'
-import { fetchPartnerGptSettings, savePartnerGptApiKey } from '../../services/partnerGptApi'
+import { fetchSwizzyerCatalog, fetchSwizzyerSettings } from '../../services/swizzyerApi'
+import { fetchPartnerGptSettings } from '../../services/partnerGptApi'
 import { TopupApiFlowDiagram } from './TopupApiFlowDiagram'
 
 const IMAGE_AUTO_TRIGGERS = ['purchase', 'sent', 'confirmed']
@@ -550,18 +550,11 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
   const [approuteServices, setApprouteServices] = useState([])
   const [approuteServicesLoading, setApprouteServicesLoading] = useState(false)
   const [approuteServicesError, setApprouteServicesError] = useState(null)
-  // Swizzyer (автовыдача Roblox): каталог номиналов + глобальные настройки API.
+  // Swizzyer (автовыдача Roblox): каталог номиналов + статус ключа (подсказка; сам ключ — в «Настройках»).
   const [swizzyerCatalog, setSwizzyerCatalog] = useState([])
   const [swizzyerSettings, setSwizzyerSettings] = useState(null)
-  const [swizzyerApiKeyInput, setSwizzyerApiKeyInput] = useState('')
-  const [swizzyerWebhookInput, setSwizzyerWebhookInput] = useState('')
-  const [swizzyerSaving, setSwizzyerSaving] = useState(false)
-  const [swizzyerSaveMsg, setSwizzyerSaveMsg] = useState('')
-  // Partner ChatGPT API (глобальный ключ).
+  // Partner ChatGPT API — статус ключа для подсказки (ключ задаётся в «Настройках»).
   const [partnerGptSettings, setPartnerGptSettings] = useState(null)
-  const [partnerGptApiKeyInput, setPartnerGptApiKeyInput] = useState('')
-  const [partnerGptSaving, setPartnerGptSaving] = useState(false)
-  const [partnerGptSaveMsg, setPartnerGptSaveMsg] = useState('')
   const [approuteVariants, setApprouteVariants] = useState([])
   const [approuteVariantsLoading, setApprouteVariantsLoading] = useState(false)
   const [approuteVariantsError, setApprouteVariantsError] = useState(null)
@@ -1587,60 +1580,6 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
       cancelled = true
     }
   }, [])
-
-  const handleSavePartnerGptSettings = async () => {
-    setPartnerGptSaving(true)
-    setPartnerGptSaveMsg('')
-    try {
-      if (!partnerGptApiKeyInput.trim()) {
-        setPartnerGptSaveMsg('Введите ключ')
-        setPartnerGptSaving(false)
-        return
-      }
-      const res = await savePartnerGptApiKey(partnerGptApiKeyInput.trim())
-      if (res.ok) {
-        setPartnerGptApiKeyInput('')
-        setPartnerGptSaveMsg('Сохранено')
-        const fresh = await fetchPartnerGptSettings()
-        if (fresh.ok) setPartnerGptSettings(fresh)
-      } else {
-        setPartnerGptSaveMsg(res.error || 'Ошибка сохранения')
-      }
-    } catch (e) {
-      setPartnerGptSaveMsg(e?.message || 'Ошибка сохранения')
-    } finally {
-      setPartnerGptSaving(false)
-    }
-  }
-
-  const handleSaveSwizzyerSettings = async () => {
-    setSwizzyerSaving(true)
-    setSwizzyerSaveMsg('')
-    try {
-      const payload = {}
-      if (swizzyerApiKeyInput.trim()) payload.apiKey = swizzyerApiKeyInput.trim()
-      if (swizzyerWebhookInput.trim()) payload.webhookSecret = swizzyerWebhookInput.trim()
-      if (!payload.apiKey && !payload.webhookSecret) {
-        setSwizzyerSaveMsg('Введите ключ или секрет вебхука')
-        setSwizzyerSaving(false)
-        return
-      }
-      const res = await saveSwizzyerSettings(payload)
-      if (res.ok) {
-        setSwizzyerApiKeyInput('')
-        setSwizzyerWebhookInput('')
-        setSwizzyerSaveMsg('Сохранено')
-        const fresh = await fetchSwizzyerSettings()
-        if (fresh.ok) setSwizzyerSettings(fresh)
-      } else {
-        setSwizzyerSaveMsg(res.error || 'Ошибка сохранения')
-      }
-    } catch (e) {
-      setSwizzyerSaveMsg(e?.message || 'Ошибка сохранения')
-    } finally {
-      setSwizzyerSaving(false)
-    }
-  }
 
   const setFeature = (name, field, value) => {
     setProductSettings((prev) => ({
@@ -4029,50 +3968,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                         <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи</span>
                       </label>
 
-                      <div className="lot-settings-field" style={{ marginTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '0.75rem' }}>
-                        <span className="lot-settings-field__label">
-                          Настройки API Swizzyer (общие):{' '}
-                          {swizzyerSettings?.apiKeyConfigured ? '✅ ключ задан' : '⚠️ ключ не задан'}
-                          {' · '}
-                          {swizzyerSettings?.webhookConfigured ? 'вебхук задан' : 'вебхук не задан'}
-                        </span>
-                        <input
-                          type="password"
-                          className="lot-settings-input"
-                          placeholder="API-ключ (swz_live_…) — оставьте пустым, чтобы не менять"
-                          value={swizzyerApiKeyInput}
-                          onChange={(e) => setSwizzyerApiKeyInput(e.target.value)}
-                          autoComplete="new-password"
-                        />
-                        <input
-                          type="password"
-                          className="lot-settings-input"
-                          style={{ marginTop: '0.4rem' }}
-                          placeholder="Секрет вебхука (whsec_…) — необязательно"
-                          value={swizzyerWebhookInput}
-                          onChange={(e) => setSwizzyerWebhookInput(e.target.value)}
-                          autoComplete="new-password"
-                        />
-                        <div className="lot-settings-row" style={{ alignItems: 'center', gap: 12, marginTop: '0.5rem' }}>
-                          <button
-                            type="button"
-                            className="lot-settings-btn"
-                            disabled={swizzyerSaving}
-                            onClick={handleSaveSwizzyerSettings}
-                          >
-                            {swizzyerSaving ? 'Сохранение…' : 'Сохранить ключ/секрет'}
-                          </button>
-                          {swizzyerSaveMsg && (
-                            <span className="lot-settings-field__label">{swizzyerSaveMsg}</span>
-                          )}
-                        </div>
-                        {swizzyerSettings?.webhookUrl && (
-                          <p className="lot-settings-field__label" style={{ marginTop: '0.4rem' }}>
-                            URL вебхука для дашборда Swizzyer:{' '}
-                            <code>{swizzyerSettings.webhookUrl}</code>
-                          </p>
-                        )}
-                      </div>
+                      <p className="lot-settings-field__label" style={{ marginTop: '0.5rem' }}>
+                        Ключ API Swizzyer и секрет вебхука задаются в разделе «Настройки».{' '}
+                        {swizzyerSettings
+                          ? swizzyerSettings.apiKeyConfigured
+                            ? '✅ ключ задан'
+                            : '⚠️ ключ не задан'
+                          : ''}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -4155,33 +4058,14 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                         <span className="lot-settings-toggle__label">Автозавершение сделки после выдачи</span>
                       </label>
 
-                      <div className="lot-settings-field" style={{ marginTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '0.75rem' }}>
-                        <span className="lot-settings-field__label">
-                          Ключ Partner API (общий):{' '}
-                          {partnerGptSettings?.configured ? '✅ задан' : '⚠️ не задан'}
-                        </span>
-                        <input
-                          type="password"
-                          className="lot-settings-input"
-                          placeholder="API-ключ (ogp_live_…) — оставьте пустым, чтобы не менять"
-                          value={partnerGptApiKeyInput}
-                          onChange={(e) => setPartnerGptApiKeyInput(e.target.value)}
-                          autoComplete="new-password"
-                        />
-                        <div className="lot-settings-row" style={{ alignItems: 'center', gap: 12, marginTop: '0.5rem' }}>
-                          <button
-                            type="button"
-                            className="lot-settings-btn"
-                            disabled={partnerGptSaving}
-                            onClick={handleSavePartnerGptSettings}
-                          >
-                            {partnerGptSaving ? 'Сохранение…' : 'Сохранить ключ'}
-                          </button>
-                          {partnerGptSaveMsg && (
-                            <span className="lot-settings-field__label">{partnerGptSaveMsg}</span>
-                          )}
-                        </div>
-                      </div>
+                      <p className="lot-settings-field__label" style={{ marginTop: '0.5rem' }}>
+                        Ключ Partner ChatGPT API задаётся в разделе «Настройки».{' '}
+                        {partnerGptSettings
+                          ? partnerGptSettings.configured
+                            ? '✅ ключ задан'
+                            : '⚠️ ключ не задан'
+                          : ''}
+                      </p>
                     </div>
                   )}
                 </div>
