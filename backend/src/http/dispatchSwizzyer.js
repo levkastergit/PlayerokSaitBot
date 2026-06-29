@@ -76,6 +76,11 @@ async function dispatchSwizzyer({ req, res, pathname, currentUserId, deps = {} }
 
   if (!pathname.startsWith('/api/swizzyer/')) return false
 
+  // Публичная точка монтирования (вебхук, до сессионного гейта) НЕ передаёт
+  // currentUserId — она не должна обрабатывать приватные /api/swizzyer/* маршруты
+  // (иначе обошли бы авторизацию). Пропускаем их к гейту и приватной точке монтирования.
+  if (currentUserId == null) return false
+
   // ── Приватные маршруты (currentUserId уже проверен сессией) ───────────────
 
   // Номиналы для выпадающего списка в настройках лота.
