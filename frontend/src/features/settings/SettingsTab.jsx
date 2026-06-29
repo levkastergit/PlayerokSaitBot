@@ -701,10 +701,10 @@ export function SettingsTab({ token, onTokenChange, onLogout, subTab = '', onSub
         </section>
 
         <section className="card settings-card settings-card--partner-gpt">
-          <h2 className="card-title">Partner ChatGPT API</h2>
+          <h2 className="card-title">Partner ChatGPT / Claude API</h2>
           <p className="card-text settings-hint">
-            Ключ для автовыдачи ChatGPT-аккаунтов (card_code → account_id) через
-            admin.rootchatgptplus.com. Заголовок: Authorization: Bearer.
+            Ключ для автовыдачи ChatGPT / Claude Pro (card_code → account_id или organization_id)
+            через rootchatgptplus.com. Заголовок: Authorization: Bearer.
           </p>
           {partnerGptLoading ? (
             <p className="card-text">Загрузка…</p>

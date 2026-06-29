@@ -514,8 +514,13 @@ const { processActivePartnerGptFlows } = require('./src/features/autolist/proces
 const { createProcessSinglePartnerGptFlow } = require('./src/features/partnerGpt/runPartnerGptFlow')
 const {
   extractAccountId: extractPartnerGptAccountId,
-  redeemPartnerGptAndConfirm,
+  createRedemption: createPartnerGptRedemption,
+  getRedemption: getPartnerGptRedemption,
   isPartnerGptAccountFault,
+  isPartnerGptBadCard,
+  isPartnerGptStockFault,
+  isPartnerGptTransientError,
+  isPartnerGptTerminalStatus,
 } = require('./src/integrations/partnerGpt/partnerGptClient')
 const {
   redeemGptAndConfirm,
@@ -924,8 +929,13 @@ const processSinglePartnerGptFlow = createProcessSinglePartnerGptFlow({
   createChatMessage,
   loadPartnerGptApiKeyPlain,
   extractAccountId: extractPartnerGptAccountId,
-  redeemPartnerGptAndConfirm,
+  createRedemption: createPartnerGptRedemption,
+  getRedemption: getPartnerGptRedemption,
   isPartnerGptAccountFault,
+  isPartnerGptBadCard,
+  isPartnerGptStockFault,
+  isPartnerGptTransientError,
+  isPartnerGptTerminalStatus,
   claimNextUnusedTableCode: claimNextUnusedCode,
   markTableCodeUsed: markCodeUsed,
   releaseTableCode: releaseCode,

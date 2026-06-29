@@ -15,19 +15,24 @@
 // Документация — файл partner-api.md в корне репозитория.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE = 'https://admin.rootchatgptplus.com/api/partner/v1'
+// Рекомендованный базовый URL (новая дока 含ClaudePro). Легаси
+// admin.rootchatgptplus.com тоже работает — переопределяется env PARTNER_GPT_API_BASE.
+const DEFAULT_BASE = 'https://rootchatgptplus.com/api/partner/v1'
 const PARTNER_GPT_POLL_MAX_MS = Math.max(5000, Number(process.env.PARTNER_GPT_POLL_MAX_MS) || 90000)
 const PARTNER_GPT_POLL_INTERVAL_MS = Math.max(500, Number(process.env.PARTNER_GPT_POLL_INTERVAL_MS) || 2500)
 const PARTNER_GPT_FETCH_TIMEOUT_MS = Math.max(3000, Number(process.env.PARTNER_GPT_FETCH_TIMEOUT_MS) || 25000)
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
-// Коды ошибок API, означающие проблему НАШЕГО card_code (не покупателя) —
-// карта недействительна/использована/просрочена/нет в наличии. Такой код нужно
-// вернуть/списать и попробовать следующий.
-const CARD_FAULT_CODES = new Set([100101, 100102, 100103, 100501])
-// Невалидный account_id/запрос — вина данных покупателя, переспросить ID.
+// Плохая карта (наша) — недействительна/использована/просрочена. Такую карту
+// помечаем использованной (skip) и берём следующую — НЕ возвращаем в пул.
+const BAD_CARD_CODES = new Set([100101, 100102, 100103])
+// Нет стока на стороне поставщика — карта норм, вернуть в пул и повторить позже.
+const STOCK_FAULT_CODES = new Set([100501])
+// Невалидный account_id/organization_id — вина данных покупателя, переспросить.
 const ACCOUNT_FAULT_CODES = new Set([40000])
+// Терминальные статусы заказа.
+const PARTNER_GPT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'review'])
 
 function getBaseUrl() {
   const raw = process.env.PARTNER_GPT_API_BASE || DEFAULT_BASE
@@ -51,16 +56,29 @@ function buildPartnerGptError(json, status) {
   return err
 }
 
-function isPartnerGptCardFault(err) {
+/** Плохая карта (недействительна/использована/просрочена) — пометить used, взять следующую. */
+function isPartnerGptBadCard(err) {
   if (!err) return false
-  if (err.partnerCode != null && CARD_FAULT_CODES.has(Number(err.partnerCode))) return true
-  return Number(err.httpStatus) === 422 || Number(err.httpStatus) === 503
+  if (err.partnerCode != null && BAD_CARD_CODES.has(Number(err.partnerCode))) return true
+  // Без явного кода: 422 — почти всегда невалидная/просроченная карта.
+  return !err.partnerCode && Number(err.httpStatus) === 422
+}
+
+/** Нет стока у поставщика — карту в пул, повторить позже. */
+function isPartnerGptStockFault(err) {
+  if (!err) return false
+  if (err.partnerCode != null && STOCK_FAULT_CODES.has(Number(err.partnerCode))) return true
+  return Number(err.httpStatus) === 503
 }
 
 function isPartnerGptAccountFault(err) {
   if (!err) return false
   if (err.partnerCode != null && ACCOUNT_FAULT_CODES.has(Number(err.partnerCode))) return true
-  return Number(err.httpStatus) === 400
+  return !err.partnerCode && Number(err.httpStatus) === 400
+}
+
+function isPartnerGptTerminalStatus(status) {
+  return PARTNER_GPT_TERMINAL_STATUSES.has(String(status || '').trim().toLowerCase())
 }
 
 function isPartnerGptTransientError(err) {
@@ -104,19 +122,38 @@ async function partnerGptFetch(apiKey, method, path, { body, idempotencyKey } = 
   return json
 }
 
-/** POST /redemptions. Возвращает { orderNo, status, raw }. */
-async function createRedemption(apiKey, { cardCode, accountId, confirmOverwrite = true, idempotencyKey } = {}) {
+// Idempotency-Key: 8–128 символов из [A-Za-z0-9._:-]. Чистим запрещённые символы.
+function sanitizeIdempotencyKey(raw) {
+  let k = String(raw || '').replace(/[^A-Za-z0-9._:-]/g, '-')
+  if (k.length > 128) k = k.slice(0, 128)
+  if (k.length < 8) k = (k + '-00000000').slice(0, 8)
+  return k
+}
+
+/**
+ * POST /redemptions. Цель зависит от продукта карты:
+ *   ChatGPT (plus/pro5x/pro20x/plusyear) -> account_id (UUID);
+ *   Claude Pro (claude_pro)              -> organization_id (UUID).
+ * Передавайте РОВНО одно из accountId / organizationId.
+ * Возвращает { orderNo, status, productCode, raw }.
+ */
+async function createRedemption(apiKey, { cardCode, accountId, organizationId, confirmOverwrite = true, idempotencyKey } = {}) {
   if (!idempotencyKey) throw new Error('createRedemption requires idempotencyKey')
   const body = {
     card_code: String(cardCode || '').trim(),
-    account_id: String(accountId || '').trim(),
     confirm_overwrite: Boolean(confirmOverwrite),
   }
-  const json = await partnerGptFetch(apiKey, 'POST', 'redemptions', { body, idempotencyKey })
+  if (organizationId) body.organization_id = String(organizationId).trim()
+  else body.account_id = String(accountId || '').trim()
+  const json = await partnerGptFetch(apiKey, 'POST', 'redemptions', {
+    body,
+    idempotencyKey: sanitizeIdempotencyKey(idempotencyKey),
+  })
   const data = json && json.data ? json.data : {}
   return {
     orderNo: data.order_no ? String(data.order_no) : '',
     status: data.status ? String(data.status) : 'pending',
+    productCode: data.product_code ? String(data.product_code) : '',
     raw: json,
   }
 }
@@ -135,64 +172,22 @@ async function getRedemption(apiKey, orderNo) {
   }
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * Создаёт погашение и дожидается терминального статуса.
- * succeeded -> { succeeded:true }; failed -> { failed:true, accountFault, failureCode };
- * таймаут опроса -> { inProgress:true }. Ошибки create пробрасываются вызывающему.
- */
-async function redeemPartnerGptAndConfirm(apiKey, { cardCode, accountId, idempotencyKey } = {}) {
-  const created = await createRedemption(apiKey, { cardCode, accountId, idempotencyKey })
-  if (!created.orderNo) {
-    const err = new Error('Partner GPT create-redemption did not return order_no')
-    err.partnerBody = created.raw
-    throw err
-  }
-  // Уже терминальный в ответе на create?
-  if (created.status === 'succeeded') return { succeeded: true, failed: false, orderNo: created.orderNo }
-  if (created.status === 'failed') return { succeeded: false, failed: true, orderNo: created.orderNo }
-
-  const started = Date.now()
-  let last = null
-  while (Date.now() - started < PARTNER_GPT_POLL_MAX_MS) {
-    await delay(PARTNER_GPT_POLL_INTERVAL_MS)
-    try {
-      last = await getRedemption(apiKey, created.orderNo)
-    } catch (pollErr) {
-      // Транзиентный сбой опроса — продолжаем.
-      continue
-    }
-    if (last.status === 'succeeded') {
-      return { succeeded: true, failed: false, orderNo: created.orderNo }
-    }
-    if (last.status === 'failed') {
-      const codeNum = Number(last.failureCode)
-      return {
-        succeeded: false,
-        failed: true,
-        orderNo: created.orderNo,
-        failureCode: last.failureCode,
-        failureMessage: last.failureMessage,
-        accountFault: Number.isFinite(codeNum) && ACCOUNT_FAULT_CODES.has(codeNum),
-        cardFault: Number.isFinite(codeNum) && CARD_FAULT_CODES.has(codeNum),
-      }
-    }
-    // pending | processing — продолжаем опрос.
-  }
-  return { succeeded: false, failed: false, inProgress: true, orderNo: created.orderNo }
-}
+// Поллинг статуса заказа ведёт сам чат-флоу по тикам (по order_no), чтобы НЕ
+// пересоздавать заказ и не списывать карту повторно (дока запрещает resubmit).
+// PARTNER_GPT_POLL_* оставлены как ENV-настройки таймаутов одиночных запросов.
+void PARTNER_GPT_POLL_MAX_MS
+void PARTNER_GPT_POLL_INTERVAL_MS
 
 module.exports = {
   getBaseUrl,
   extractAccountId,
   createRedemption,
   getRedemption,
-  redeemPartnerGptAndConfirm,
-  isPartnerGptCardFault,
+  isPartnerGptBadCard,
+  isPartnerGptStockFault,
   isPartnerGptAccountFault,
   isPartnerGptTransientError,
+  isPartnerGptTerminalStatus,
+  sanitizeIdempotencyKey,
   buildPartnerGptError,
 }

@@ -751,15 +751,16 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
     },
     autogptpartner: {
       enabled: false,
-      askIdMessage:
-        'Напишите, пожалуйста, ваш ChatGPT Account ID (UUID) — на него активируем подписку.',
-      invalidIdMessage:
-        'Не получилось распознать Account ID. Пришлите, пожалуйста, корректный UUID ещё раз.',
-      successMessage: 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.',
+      targetType: 'chatgpt',
+      askIdMessage: '',
+      invalidIdMessage: '',
+      successMessage: 'Готово! Подписка активирована. Спасибо за покупку.',
       noStockMessage:
         'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.',
       failMessage:
-        'Не удалось активировать подписку. Пришлите, пожалуйста, Account ID ещё раз или подождите — мы повторим.',
+        'Не удалось активировать подписку. Напишите, пожалуйста, продавцу — поможем вручную.',
+      reviewMessage:
+        'Заявка отправлена и проверяется поставщиком — это может занять время. Мы сообщим, как только активируется.',
       autoCompleteDeal: false,
     },
     autolist: { enabled: false },
@@ -1283,11 +1284,13 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
             ...base.autogptpartner,
             ...loadedPg,
             enabled: Boolean(loadedPg.enabled),
+            targetType: ['chatgpt', 'claude'].includes(loadedPg.targetType) ? loadedPg.targetType : 'chatgpt',
             askIdMessage: pickMsg('askIdMessage'),
             invalidIdMessage: pickMsg('invalidIdMessage'),
             successMessage: pickMsg('successMessage'),
             noStockMessage: pickMsg('noStockMessage'),
             failMessage: pickMsg('failMessage'),
+            reviewMessage: pickMsg('reviewMessage'),
             autoCompleteDeal: Boolean(
               loadedPg.autoCompleteDeal || loaded.autodelivery?.autoCompleteDeal
             ),
@@ -3980,7 +3983,7 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                   )}
                 </div>
                 <div className="lot-settings-logic-part">
-                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача ChatGPT (партнёрский API)</h4>
+                  <h4 className="lot-settings-block__title lot-settings-block__title--sub">Автовыдача ChatGPT / Claude (партнёрский API)</h4>
                   <label className="lot-settings-toggle">
                     <input
                       type="checkbox"
@@ -3991,17 +3994,30 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                     <span className="lot-settings-toggle__switch">
                       <span className="lot-settings-toggle__knob" />
                     </span>
-                    <span className="lot-settings-toggle__label">Включить автовыдачу ChatGPT (партнёрский)</span>
+                    <span className="lot-settings-toggle__label">Включить автовыдачу ChatGPT / Claude (партнёрский)</span>
                   </label>
                   {Boolean(productSettings?.autogptpartner?.enabled) && (
                     <div className="lot-settings-autodelivery-extra">
                       <p className="lot-settings-field__label">
-                        Карт-коды (card_code) берутся из таблицы, привязанной выше («Привязка к таблице»).
-                        Покупатель присылает свой ChatGPT Account ID (UUID), бот гасит код на этот аккаунт
-                        через admin.rootchatgptplus.com. Ключ API задаётся ниже (общий для всех лотов).
+                        Карт-коды (card_code) берутся из таблицы, привязанной выше («Привязка к таблице») —
+                        тариф (Plus/Pro/Claude Pro) определяется самой картой. Покупатель присылает целевой ID,
+                        бот гасит код через rootchatgptplus.com. Ключ API задаётся в разделе «Настройки».
                       </p>
                       <label className="lot-settings-field">
-                        <span className="lot-settings-field__label">Сообщение-запрос Account ID</span>
+                        <span className="lot-settings-field__label">Тип цели</span>
+                        <select
+                          className="lot-settings-input"
+                          value={productSettings?.autogptpartner?.targetType ?? 'chatgpt'}
+                          onChange={(e) => setFeature('autogptpartner', 'targetType', e.target.value)}
+                        >
+                          <option value="chatgpt">ChatGPT — Account ID</option>
+                          <option value="claude">Claude Pro — Organization ID</option>
+                        </select>
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">
+                          Сообщение-запрос ID (пусто = текст по умолчанию для выбранного типа)
+                        </span>
                         <textarea
                           className="lot-settings-input lot-settings-textarea"
                           rows={2}
@@ -4034,6 +4050,15 @@ export function LotSettingsPage({ lot, token, onBack, loading = false }) {
                           rows={2}
                           value={productSettings?.autogptpartner?.failMessage ?? ''}
                           onChange={(e) => setFeature('autogptpartner', 'failMessage', e.target.value)}
+                        />
+                      </label>
+                      <label className="lot-settings-field">
+                        <span className="lot-settings-field__label">Сообщение «на проверке» (статус review)</span>
+                        <textarea
+                          className="lot-settings-input lot-settings-textarea"
+                          rows={2}
+                          value={productSettings?.autogptpartner?.reviewMessage ?? ''}
+                          onChange={(e) => setFeature('autogptpartner', 'reviewMessage', e.target.value)}
                         />
                       </label>
                       <label className="lot-settings-field">

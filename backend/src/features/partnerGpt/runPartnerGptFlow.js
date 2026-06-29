@@ -6,20 +6,24 @@ const { toUnixTs: defaultToUnixTs } = require('../../functions/toUnixTs')
 const { isDealDeliveredOrFinished, isDealRefunded } = require('../approute/approuteAutodeliveryGuards')
 
 // ---------------------------------------------------------------------------
-// Чат-флоу «Автовыдача ChatGPT (партнёрский API)» — admin.rootchatgptplus.com.
+// Чат-флоу «Автовыдача ChatGPT / Claude (партнёрский API)» — rootchatgptplus.com.
 //
-// Покупатель присылает свой ChatGPT account_id (UUID). Бот берёт следующий
-// card_code из привязанной таблицы и гасит его на этот account_id через
-// POST /redemptions с опросом до терминального статуса. При провале:
-//   • вина данных покупателя (invalid account_id) -> снова await_id;
-//   • вина нашей карты (использована/просрочена/нет стока) -> карта в пул,
-//     await_stock (авто-ретрай со следующей картой).
+// Карта определяет продукт (plus/pro5x/pro20x/plusyear/claude_pro). Целевой
+// идентификатор зависит от типа (cfg.targetType):
+//   • chatgpt -> account_id (UUID ChatGPT-аккаунта);
+//   • claude  -> organization_id (UUID организации Claude, claude.ai/settings/account).
 //
-// Стадия в in-memory flow-map (как gpt/clode); двойное гашение исключено
-// стадией 'ordering' + идемпотентным ключом по card_code.
+// Поток: await_id (UUID из чата) -> claim card_code из таблицы -> POST /redemptions
+//   -> await_result (поллинг GET /redemptions/:order_no ПО ТИКАМ, БЕЗ повторного
+//      создания — дока запрещает resubmit) -> succeeded | failed | review.
+//
+// Карта помечается used при succeeded/failed/review (она потреблена поставщиком);
+// возвращается в пул только если заказ НЕ был создан (account-fault/сток/транзиент).
+// Плохая карта (invalid/expired/used) помечается used и берётся следующая.
 // ---------------------------------------------------------------------------
 
 const PARTNER_GPT_STOCK_RETRY_SEC = Math.max(5, Number(process.env.PARTNER_GPT_STOCK_RETRY_SEC) || 20)
+const PARTNER_GPT_RESULT_POLL_SEC = Math.max(2, Number(process.env.PARTNER_GPT_RESULT_POLL_SEC) || 3)
 
 function normText(t) {
   return String(t == null ? '' : t).trim()
@@ -85,8 +89,13 @@ function createProcessSinglePartnerGptFlow(deps) {
     createChatMessage,
     loadPartnerGptApiKeyPlain,
     extractAccountId,
-    redeemPartnerGptAndConfirm,
+    createRedemption,
+    getRedemption,
     isPartnerGptAccountFault,
+    isPartnerGptBadCard,
+    isPartnerGptStockFault,
+    isPartnerGptTransientError,
+    isPartnerGptTerminalStatus,
     claimNextUnusedTableCode,
     markTableCodeUsed,
     releaseTableCode,
@@ -129,20 +138,29 @@ function createProcessSinglePartnerGptFlow(deps) {
       return { ran: true, action: 'skipped', reason: 'no_api_key', chatId: String(chatId) }
     }
 
-    const askIdMessage =
-      normText(cfg.askIdMessage) ||
-      'Напишите, пожалуйста, ваш ChatGPT Account ID (UUID) — на него активируем подписку.'
+    const targetType = String(cfg.targetType || 'chatgpt').toLowerCase() === 'claude' ? 'claude' : 'chatgpt'
+    const isClaude = targetType === 'claude'
+
+    const defaultAsk = isClaude
+      ? 'Напишите, пожалуйста, ваш Claude Organization ID (UUID) из настроек аккаунта (https://claude.ai/settings/account) — на него активируем Claude Pro.'
+      : 'Напишите, пожалуйста, ваш ChatGPT Account ID (UUID) — на него активируем подписку.'
+    const askIdMessage = normText(cfg.askIdMessage) || defaultAsk
     const invalidIdMessage =
       normText(cfg.invalidIdMessage) ||
-      'Не получилось распознать Account ID. Пришлите, пожалуйста, корректный UUID ещё раз.'
+      (isClaude
+        ? 'Не получилось распознать Organization ID. Пришлите, пожалуйста, корректный UUID ещё раз.'
+        : 'Не получилось распознать Account ID. Пришлите, пожалуйста, корректный UUID ещё раз.')
     const successMessage =
-      normText(cfg.successMessage) || 'Готово! Подписка ChatGPT активирована. Спасибо за покупку.'
+      normText(cfg.successMessage) || 'Готово! Подписка активирована. Спасибо за покупку.'
     const noStockMessage =
       normText(cfg.noStockMessage) ||
       'Извините, коды временно закончились. Мы скоро пополним и активируем вашу подписку.'
     const failMessage =
       normText(cfg.failMessage) ||
-      'Не удалось активировать подписку. Пришлите, пожалуйста, Account ID ещё раз или подождите — мы повторим.'
+      'Не удалось активировать подписку. Напишите, пожалуйста, продавцу — поможем вручную.'
+    const reviewMessage =
+      normText(cfg.reviewMessage) ||
+      'Заявка отправлена и проверяется поставщиком — это может занять время. Мы сообщим, как только активируется.'
 
     const category = `subtab:${subtabId}`
 
@@ -165,9 +183,91 @@ function createProcessSinglePartnerGptFlow(deps) {
         return { ran: true, action: 'skipped_already_redeemed', chatId: String(chatId), dealId: redeemDealKey }
       }
 
-      const runActivation = async (accountId, { notify = true } = {}) => {
-        done(flowMap, chatId, state, nowTs, { stage: 'ordering', accountId })
+      const markUsed = (cardId) => {
+        if (typeof markTableCodeUsed === 'function' && cardId != null) {
+          try {
+            markTableCodeUsed(state.userId, cardId, { nowTs })
+          } catch (e) {
+            logApprouteAutodelivery('partner-gpt: mark used failed', { chatId: String(chatId), dealId, cardId, error: e?.message || String(e) })
+          }
+        }
+      }
+      const release = (cardId) => {
+        if (typeof releaseTableCode === 'function' && cardId != null) {
+          try {
+            releaseTableCode(state.userId, cardId, { nowTs })
+          } catch (e) {
+            logApprouteAutodelivery('partner-gpt: release failed', { chatId: String(chatId), dealId, cardId, error: e?.message || String(e) })
+          }
+        }
+      }
 
+      // Терминальный результат заказа (карта уже потреблена поставщиком).
+      const finishOrder = async (status, cardId) => {
+        markUsed(cardId)
+        if (status === 'succeeded') {
+          const already = sellerMessageTs(messages, successMessage, viewer, toUnixTs)
+          if (!already) await sendChat(token, userAgent, chatId, successMessage, 'pgpt-success')
+          let autoCompleteDealDone = false
+          if (cfg.autoCompleteDeal && (effectiveDealId || dealId) && typeof updateDealStatus === 'function') {
+            try {
+              await withRetry(() => updateDealStatus(token, userAgent, effectiveDealId || dealId, 'SENT'), {
+                label: 'updateDealStatus(partner-gpt autoComplete)',
+                retries: 2,
+                shouldRetry: isPlayerokRateLimitError,
+              })
+              autoCompleteDealDone = true
+            } catch (err) {
+              logApprouteAutodelivery('partner-gpt: auto-complete failed', { chatId: String(chatId), dealId, error: err?.message || String(err) })
+            }
+          }
+          if (redeemDealKey) {
+            try { partnerGptMarkDealRedeemed(state.userId, chatId, redeemDealKey, nowTs) } catch (_) {}
+          }
+          done(flowMap, chatId, state, nowTs, { stage: 'done', active: false, redeemed: true })
+          logApprouteAutodelivery('partner-gpt: completed', { chatId: String(chatId), dealId, cardId, autoCompleteDealDone })
+          return { ran: true, action: 'redeemed', chatId: String(chatId), dealId, autoCompleteDealDone }
+        }
+        if (status === 'review') {
+          await sendChat(token, userAgent, chatId, reviewMessage, 'pgpt-review')
+          done(flowMap, chatId, state, nowTs, { stage: 'review', active: false })
+          logApprouteAutodelivery('partner-gpt: review', { chatId: String(chatId), dealId, cardId })
+          return { ran: true, action: 'review', chatId: String(chatId), dealId }
+        }
+        // failed
+        await sendChat(token, userAgent, chatId, failMessage, 'pgpt-failed')
+        done(flowMap, chatId, state, nowTs, { stage: 'failed', active: false })
+        logApprouteAutodelivery('partner-gpt: failed', { chatId: String(chatId), dealId, cardId })
+        return { ran: true, action: 'failed', chatId: String(chatId), dealId }
+      }
+
+      // Поллинг результата по order_no (без повторного создания заказа).
+      const pollResult = async () => {
+        const orderNo = String(state.orderNo || '').trim()
+        const cardId = state.cardId != null ? state.cardId : null
+        if (!orderNo) {
+          done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs })
+          return { ran: true, action: 'reask_id', reason: 'no_order', chatId: String(chatId), dealId }
+        }
+        let res
+        try {
+          res = await getRedemption(apiKey, orderNo)
+        } catch (err) {
+          // Транзиентный сбой опроса — повторим на следующем тике.
+          done(flowMap, chatId, state, nowTs, { stage: 'await_result', lastPollTs: nowTs })
+          return { ran: true, action: 'poll_error', reason: err?.message || String(err), chatId: String(chatId), dealId }
+        }
+        if (isPartnerGptTerminalStatus(res.status)) {
+          return finishOrder(res.status, cardId)
+        }
+        // pending | processing — продолжаем опрос.
+        done(flowMap, chatId, state, nowTs, { stage: 'await_result', lastPollTs: nowTs })
+        return { ran: true, action: 'awaiting_result', chatId: String(chatId), dealId }
+      }
+
+      // Создание заказа: claim карты + POST /redemptions.
+      const runCreate = async (target, { notify = true } = {}) => {
+        done(flowMap, chatId, state, nowTs, { stage: 'ordering', accountId: target })
         const claimed =
           typeof claimNextUnusedTableCode === 'function'
             ? claimNextUnusedTableCode(state.userId, category, {
@@ -181,110 +281,85 @@ function createProcessSinglePartnerGptFlow(deps) {
         const cardCode = claimed?.code ? String(claimed.code).trim() : ''
         if (!cardCode) {
           if (notify) await sendChat(token, userAgent, chatId, noStockMessage, 'pgpt-no-stock')
-          done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId, lastActivateTs: nowTs })
+          done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId: target, lastActivateTs: nowTs })
           return { ran: true, action: 'no_stock', chatId: String(chatId), dealId }
         }
-
-        const releaseClaimed = () => {
-          if (typeof releaseTableCode === 'function' && claimed?.id) {
-            try {
-              releaseTableCode(state.userId, claimed.id, { nowTs })
-            } catch (e) {
-              logApprouteAutodelivery('partner-gpt: release code failed', {
-                chatId: String(chatId),
-                dealId,
-                codeId: claimed.id,
-                error: e?.message || String(e),
-              })
-            }
-          }
-        }
-
         const idemKey = `pgpt-${state.userId}-${redeemDealKey || chatId}-${claimed.id}`
         try {
-          const result = await redeemPartnerGptAndConfirm(apiKey, { cardCode, accountId, idempotencyKey: idemKey })
-
-          if (result.succeeded) {
-            if (typeof markTableCodeUsed === 'function' && claimed?.id != null) {
-              try {
-                markTableCodeUsed(state.userId, claimed.id, { nowTs })
-              } catch (e) {
-                logApprouteAutodelivery('partner-gpt: mark code used failed', {
-                  chatId: String(chatId), dealId, codeId: claimed.id, error: e?.message || String(e),
-                })
-              }
-            }
-            const successAlready = sellerMessageTs(messages, successMessage, viewer, toUnixTs)
-            if (!successAlready) await sendChat(token, userAgent, chatId, successMessage, 'pgpt-success')
-
-            let autoCompleteDealDone = false
-            if (cfg.autoCompleteDeal && (effectiveDealId || dealId) && typeof updateDealStatus === 'function') {
-              try {
-                await withRetry(() => updateDealStatus(token, userAgent, effectiveDealId || dealId, 'SENT'), {
-                  label: 'updateDealStatus(partner-gpt autoComplete)',
-                  retries: 2,
-                  shouldRetry: isPlayerokRateLimitError,
-                })
-                autoCompleteDealDone = true
-              } catch (err) {
-                logApprouteAutodelivery('partner-gpt: auto-complete failed', {
-                  chatId: String(chatId), dealId, error: err?.message || String(err),
-                })
-              }
-            }
-            if (redeemDealKey) {
-              try {
-                partnerGptMarkDealRedeemed(state.userId, chatId, redeemDealKey, nowTs)
-              } catch (_) {}
-            }
-            done(flowMap, chatId, state, nowTs, { stage: 'done', active: false, redeemed: true })
-            logApprouteAutodelivery('partner-gpt: completed', {
-              chatId: String(chatId), dealId, codeId: claimed.id, autoCompleteDealDone,
-            })
-            return { ran: true, action: 'redeemed', chatId: String(chatId), dealId, autoCompleteDealDone }
+          const created = await createRedemption(apiKey, {
+            cardCode,
+            accountId: isClaude ? undefined : target,
+            organizationId: isClaude ? target : undefined,
+            confirmOverwrite: true,
+            idempotencyKey: idemKey,
+          })
+          const orderNo = String(created.orderNo || '').trim()
+          if (!orderNo) {
+            // Нет order_no — считаем плохой картой, помечаем used, пробуем следующую.
+            markUsed(claimed.id)
+            done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId: target, lastActivateTs: nowTs })
+            return { ran: true, action: 'no_order_no', chatId: String(chatId), dealId }
           }
-
-          // failed / inProgress -> карту в пул.
-          releaseClaimed()
-          if (result.accountFault) {
-            // Невалидный account_id покупателя — просим прислать снова.
+          // Заказ создан — карта потреблена; держим её claimed, переходим к поллингу.
+          done(flowMap, chatId, state, nowTs, {
+            stage: 'await_result',
+            accountId: target,
+            orderNo,
+            cardId: claimed.id != null ? claimed.id : null,
+            lastPollTs: 0,
+          })
+          state.orderNo = orderNo
+          state.cardId = claimed.id != null ? claimed.id : null
+          logApprouteAutodelivery('partner-gpt: order created', { chatId: String(chatId), dealId, orderNo, cardId: claimed.id, targetType })
+          // Если create уже вернул терминальный статус — обработаем сразу.
+          if (isPartnerGptTerminalStatus(created.status)) {
+            return finishOrder(created.status, claimed.id)
+          }
+          return pollResult()
+        } catch (err) {
+          if (isPartnerGptAccountFault && isPartnerGptAccountFault(err)) {
+            release(claimed.id)
             await sendChat(token, userAgent, chatId, invalidIdMessage, 'pgpt-account-fault')
             done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs, accountId: '' })
             return { ran: true, action: 'account_fault', chatId: String(chatId), dealId }
           }
-          // Карта/сток/таймаут — авто-ретрай со следующей картой, accountId сохраняем.
-          if (notify) await sendChat(token, userAgent, chatId, failMessage, 'pgpt-redeem-failed')
-          done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId, lastActivateTs: nowTs })
-          logApprouteAutodelivery('partner-gpt: redeem not completed', {
-            chatId: String(chatId), dealId, codeId: claimed.id,
-            inProgress: Boolean(result.inProgress), failureCode: result.failureCode || null,
-          })
-          return { ran: true, action: result.inProgress ? 'redeem_timeout' : 'redeem_failed', chatId: String(chatId), dealId }
-        } catch (err) {
-          releaseClaimed()
-          if (isPartnerGptAccountFault && isPartnerGptAccountFault(err)) {
-            await sendChat(token, userAgent, chatId, invalidIdMessage, 'pgpt-create-account-fault')
-            done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs, accountId: '' })
-            return { ran: true, action: 'account_fault', chatId: String(chatId), dealId }
+          if (isPartnerGptBadCard && isPartnerGptBadCard(err)) {
+            // Плохая карта — помечаем used (skip), берём следующую на ретрае.
+            markUsed(claimed.id)
+            done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId: target, lastActivateTs: nowTs })
+            logApprouteAutodelivery('partner-gpt: bad card, skipping', { chatId: String(chatId), dealId, cardId: claimed.id, code: err?.partnerCode || null })
+            return { ran: true, action: 'bad_card', chatId: String(chatId), dealId }
           }
-          if (notify) await sendChat(token, userAgent, chatId, failMessage, 'pgpt-create-error')
-          done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId, lastActivateTs: nowTs })
-          logApprouteAutodelivery('partner-gpt: redeem error', {
-            chatId: String(chatId), dealId, codeId: claimed?.id, error: err?.message || String(err),
-          })
-          return { ran: true, action: 'error', reason: err?.message || String(err), chatId: String(chatId), dealId }
+          // Сток/транзиент/прочее — карту в пул, повторим позже.
+          release(claimed.id)
+          if (notify && isPartnerGptStockFault && isPartnerGptStockFault(err)) {
+            await sendChat(token, userAgent, chatId, noStockMessage, 'pgpt-stock')
+          } else if (notify && !(isPartnerGptTransientError && isPartnerGptTransientError(err))) {
+            await sendChat(token, userAgent, chatId, failMessage, 'pgpt-create-error')
+          }
+          done(flowMap, chatId, state, nowTs, { stage: 'await_stock', accountId: target, lastActivateTs: nowTs })
+          logApprouteAutodelivery('partner-gpt: create transient/error', { chatId: String(chatId), dealId, cardId: claimed.id, error: err?.message || String(err), code: err?.partnerCode || null })
+          return { ran: true, action: 'create_retry', chatId: String(chatId), dealId }
         }
       }
 
       const stage = String(state.stage || 'await_id')
 
-      // Товар отправлен/подтверждён вручную -> закрываем флоу.
       if (isDealDeliveredOrFinished(chatData?.dealStatus)) {
         done(flowMap, chatId, state, nowTs, { active: false, stage: 'aborted' })
         return { ran: true, action: 'skipped_deal_done', chatId: String(chatId), dealId }
       }
 
-      // --- Стадия 1: запрос account_id ---------------------------------------
+      // --- await_result: опрос созданного заказа ----------------------------
+      if (stage === 'await_result') {
+        const lastPoll = Number(state.lastPollTs || 0)
+        if (lastPoll && nowTs - lastPoll < PARTNER_GPT_RESULT_POLL_SEC) {
+          return { ran: true, action: 'awaiting_result', chatId: String(chatId), dealId }
+        }
+        return pollResult()
+      }
+
+      // --- await_id: запрос целевого UUID -----------------------------------
       if (stage === 'await_id') {
         let askTs = Number(state.askMsgTs || 0)
         if (!askTs) {
@@ -296,48 +371,46 @@ function createProcessSinglePartnerGptFlow(deps) {
           }
           done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: askTs })
         }
-
         const buyer = latestBuyerMessageAfter(messages, askTs, viewer, toUnixTs)
         if (!buyer) {
           done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: askTs })
           return { ran: true, action: 'waiting_id', chatId: String(chatId), dealId }
         }
-        const accountId = extractAccountId(buyer.message.text)
-        if (!accountId) {
+        const target = extractAccountId(buyer.message.text)
+        if (!target) {
           await sendChat(token, userAgent, chatId, invalidIdMessage, 'pgpt-invalid-id')
           done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs })
           return { ran: true, action: 'id_invalid', chatId: String(chatId), dealId }
         }
-        return runActivation(accountId, { notify: true })
+        return runCreate(target, { notify: true })
       }
 
-      // --- Стадия 2: авто-ретрай (сток/сбой), accountId уже есть -------------
+      // --- await_stock: нет карты / сток / транзиент — ретрай создания ------
       if (stage === 'await_stock') {
-        const accountId = normText(state.accountId)
-        if (!accountId) {
+        const target = normText(state.accountId)
+        if (!target) {
           done(flowMap, chatId, state, nowTs, { stage: 'await_id', askMsgTs: nowTs })
-          return { ran: true, action: 'reask_id', reason: 'no_account', chatId: String(chatId), dealId }
+          return { ran: true, action: 'reask_id', reason: 'no_target', chatId: String(chatId), dealId }
         }
-        // Покупатель мог прислать новый ID.
         const lastTry = Number(state.lastActivateTs || 0)
         const buyer = latestBuyerMessageAfter(messages, lastTry, viewer, toUnixTs)
         if (buyer) {
           const newId = extractAccountId(buyer.message.text)
-          if (newId && newId !== accountId) return runActivation(newId, { notify: true })
+          if (newId && newId !== target) return runCreate(newId, { notify: true })
         }
         if (!buyer && nowTs - lastTry < PARTNER_GPT_STOCK_RETRY_SEC) {
           return { ran: true, action: 'waiting_stock', chatId: String(chatId), dealId }
         }
-        return runActivation(accountId, { notify: false })
+        return runCreate(target, { notify: false })
       }
 
+      // ordering или неизвестная стадия — подождём следующий тик.
       return { ran: true, action: 'skipped', reason: `stage_${stage}`, chatId: String(chatId), dealId }
     } catch (err) {
       return { ran: true, action: 'error', reason: err?.message || String(err), chatId: String(chatId), dealId }
     }
   }
 
-  // Глобальный per-(token,chatId) лок (как gpt) — против параллельного прогона.
   return function processSinglePartnerGptFlow(chatId, token, userAgent, viewerUsername, nowTs) {
     const flowLockKey = `${String(token)}::${String(chatId)}`
     global.__partnerGptFlowInFlight = global.__partnerGptFlowInFlight || new Set()
