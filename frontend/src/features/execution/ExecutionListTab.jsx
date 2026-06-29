@@ -200,13 +200,114 @@ function AutolistDetails({ details }) {
   )
 }
 
+// Параллельные под-задачи (флоу выдачи) — каждая отдельной мини-карточкой в сетке.
+function ParallelTasks({ steps }) {
+  const list = Array.isArray(steps) ? steps : []
+  if (list.length === 0) return null
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+        gap: '0.6rem',
+        marginTop: '0.5rem',
+      }}
+    >
+      {list.map((s, i) => {
+        const meta = STEP_STATUS[s.status] || { label: s.status, cls: 'muted' }
+        const running = s.status === 'run'
+        return (
+          <div
+            key={s.id || i}
+            className={`card exec-tile exec-tile--${running ? 'run' : 'idle'}`}
+            style={{ padding: '0.7rem 0.8rem', gap: '0.4rem', minHeight: 0 }}
+          >
+            <div className="exec-tile__top" style={{ gap: '0.4rem' }}>
+              <span className="exec-tile__dot" aria-hidden="true" />
+              <h2 className="exec-tile__title" style={{ fontSize: '0.92rem' }} title={s.label}>{s.label}</h2>
+              <span className={`exec-chip exec-chip--${meta.cls}`}>{meta.label}</span>
+            </div>
+            <div className="exec-pipe__meta">
+              {Number(s.count) > 0 ? (
+                <span className="exec-pipe__count">{formatNumber(s.count)} активн.</span>
+              ) : (
+                <span className="exec-pipe__note">нет работы</span>
+              )}
+              <span className="exec-pipe__dur">{formatDuration(s.ms)}</span>
+            </div>
+            {s.note ? <span className="exec-pipe__note" title={s.note}>· {s.note}</span> : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// Детали задачи на основе под-шагов: последовательные — конвейером (одна цепочка),
+// параллельные (parallel:true) — отдельными мини-карточками.
+function StepsDetails({ details }) {
+  const users = Array.isArray(details?.users) ? details.users : []
+  const allSteps = Array.isArray(details?.steps) ? details.steps : []
+  const seqSteps = allSteps.filter((s) => s && !s.parallel)
+  const parSteps = allSteps.filter((s) => s && s.parallel)
+  const [seqOpen, setSeqOpen] = useState(true)
+  const seqRunning = seqSteps.filter((s) => s.status === 'run').length
+  return (
+    <div>
+      {seqSteps.length > 0 ? (
+        <div className="exec-pipe-wrap">
+          <button
+            type="button"
+            className="exec-pipe-toggle"
+            onClick={() => setSeqOpen((v) => !v)}
+            aria-expanded={seqOpen}
+          >
+            <span className="exec-pipe-toggle__title">Под-шаги (последовательно)</span>
+            <span className="exec-pipe-toggle__count">{seqSteps.length}</span>
+            {seqRunning > 0 ? <span className="exec-pipe-toggle__live">▶ {seqRunning} идёт</span> : null}
+            <span className="exec-pipe-toggle__chevron" aria-hidden="true">{seqOpen ? '▲' : '▼'}</span>
+          </button>
+          {seqOpen ? <AutolistPipeline steps={seqSteps} /> : null}
+        </div>
+      ) : null}
+      {parSteps.length > 0 ? (
+        <div className="exec-pipe-wrap">
+          <div className="exec-pipe-toggle" style={{ cursor: 'default' }}>
+            <span className="exec-pipe-toggle__title">Параллельно — каждая задача отдельно</span>
+            <span className="exec-pipe-toggle__count">{parSteps.length}</span>
+          </div>
+          <ParallelTasks steps={parSteps} />
+        </div>
+      ) : null}
+      <div className="exec-details__metric">
+        Последний проход: <b>{formatDuration(details?.totalMs)}</b> · интервал {formatInterval(details?.intervalMs)}
+      </div>
+      {users.length === 0 ? (
+        <p className="exec-details__empty">Нет активных пользователей с токеном.</p>
+      ) : (
+        <ul className="exec-details__list">
+          {users.map((u, i) => (
+            <li key={`${u.userId}-${i}`} className="exec-details__row">
+              <span className="exec-details__title">Пользователь #{u.userId}</span>
+              <span className={`exec-chip exec-chip--${Number(u.ms) > 8000 ? 'err' : 'idle'}`}>{formatDuration(u.ms)}</span>
+              <span className="exec-details__when">{u.outcome}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+const STEPS_JOB_IDS = new Set(['autolist', 'relist', 'paid-delivery', 'automessages', 'delivery-flows'])
+
 function JobDetails({ jobId, entry }) {
   if (!entry) return <p className="exec-details__empty">Загрузка деталей…</p>
   if (!entry.ok || !entry.details) {
     return <p className="exec-details__empty">Нет детальных данных (задача ещё не выполняла проход).</p>
   }
   if (jobId === 'autobump') return <BumpDetails details={entry.details} />
-  if (jobId === 'autolist') return <AutolistDetails details={entry.details} />
+  if (STEPS_JOB_IDS.has(jobId)) return <StepsDetails details={entry.details} />
   return <p className="exec-details__empty">—</p>
 }
 

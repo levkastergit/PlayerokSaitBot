@@ -1,41 +1,25 @@
 const { registerJob, markTickStart, markTickEnd, setJobDetails } = require('../infra/jobsRegistry')
 const { isOutboundCircuitOpen } = require('../infra/playerokOutboundIp')
+const { mergeJobSteps } = require('./mergeJobSteps')
 
-const JOB_ID = 'autolist'
-// Порог «медленного» прохода по одному пользователю — выше пишем предупреждение в лог.
+// Быстрый цикл обработки чатов. Делится на ТРИ карточки на /execution (по одному
+// fetch чатов на проход — без дублей). «Перевыставление» вынесено в отдельный
+// медленный цикл (job 'relist'), чтобы не задерживать выдачу/2FA.
+const JOB_PAID = 'paid-delivery'
+const JOB_AUTOMSG = 'automessages'
+const JOB_FLOWS = 'delivery-flows'
+
 const SLOW_USER_MS = 8000
 
-// Приоритет статусов при слиянии подзадач по нескольким пользователям:
-// если хоть у кого-то ошибка — показываем ошибку; затем «выполняется», «готово» и т.д.
-const STEP_STATUS_RANK = { err: 5, run: 4, ok: 3, idle: 2, skip: 1 }
-
-// Сливаем массивы подзадач (steps) от каждого пользователя в один общий список
-// для плитки «Список выполнения»: суммируем длительность и счётчики, эскалируем
-// статус по приоритету, сохраняем порядок первого появления подзадачи.
-function mergeAutolistSteps(stepArrays) {
-  const order = []
-  const byId = new Map()
-  for (const arr of stepArrays) {
-    if (!Array.isArray(arr)) continue
-    for (const s of arr) {
-      if (!s || !s.id) continue
-      let m = byId.get(s.id)
-      if (!m) {
-        m = { id: s.id, label: s.label || s.id, status: 'idle', ms: 0, count: 0, note: null }
-        byId.set(s.id, m)
-        order.push(s.id)
-      }
-      m.ms += Number(s.ms) || 0
-      m.count += Number(s.count) || 0
-      if (s.label) m.label = s.label
-      const incoming = String(s.status || 'idle')
-      if ((STEP_STATUS_RANK[incoming] || 0) > (STEP_STATUS_RANK[m.status] || 0)) {
-        m.status = incoming
-      }
-      if (s.note != null && String(s.note).trim() !== '') m.note = String(s.note).slice(0, 200)
-    }
-  }
-  return order.map((id) => byId.get(id))
+// Какие под-шаги тика идут в какую карточку. flow-* помечены parallel:true (рендерятся
+// отдельными мини-карточками внутри «Выдача»).
+const GROUPS = {
+  [JOB_PAID]: { label: 'Оплаченные чаты и автовыдача', stepIds: ['chats', 'paid-chats'] },
+  [JOB_AUTOMSG]: { label: 'Автосообщения по стадиям', stepIds: ['automessages'] },
+  [JOB_FLOWS]: {
+    label: 'Выдача (флоу)',
+    stepIds: ['flow-supercell', 'flow-topup', 'flow-clode', 'flow-gpt', 'flow-swizzyer', 'flow-pgpt'],
+  },
 }
 
 function setupAutolistBackgroundJob({
@@ -46,42 +30,38 @@ function setupAutolistBackgroundJob({
   isAllActionsStopped = () => false,
   intervalMs = 15000,
 }) {
-  registerJob({
-    id: JOB_ID,
-    label: 'Автовыставление',
-    description: 'Сканирует оплаченные чаты и запускает автовыдачу товара',
-    intervalMs,
-  })
+  registerJob({ id: JOB_PAID, label: GROUPS[JOB_PAID].label, description: 'Обрабатывает оплаченные чаты и запускает автовыдачу/AppRoute', intervalMs })
+  registerJob({ id: JOB_AUTOMSG, label: GROUPS[JOB_AUTOMSG].label, description: 'Отправляет автосообщения по стадиям сделки', intervalMs })
+  registerJob({ id: JOB_FLOWS, label: GROUPS[JOB_FLOWS].label, description: 'Интерактивные флоу выдачи (Supercell/Topup/Clode/GPT/Swizzyer/Partner) — параллельно', intervalMs })
+
+  const JOB_IDS = [JOB_PAID, JOB_AUTOMSG, JOB_FLOWS]
 
   // Важно: не допускаем наложения вызовов, иначе легко ловим rate limit Playerok.
-  let autolistInFlight = false
+  let inFlight = false
 
   setInterval(async () => {
     if (isAllActionsStopped()) return
     if (isOutboundCircuitOpen()) return
-    if (autolistInFlight) return
+    if (inFlight) return
     let tickError = null
     let tickStarted = false
     let tickStartedAt = 0
     const perUser = []
     const allUserSteps = []
     try {
-      autolistInFlight = true
+      inFlight = true
       const rows = getAllStoredTokens.all()
       if (!Array.isArray(rows) || rows.length === 0) return
 
-      markTickStart(JOB_ID)
+      for (const id of JOB_IDS) markTickStart(id)
       tickStarted = true
       tickStartedAt = Date.now()
       for (const row of rows) {
         const userId = Number(row?.user_id)
         if (!Number.isFinite(userId) || userId <= 0) continue
-
         const stored = loadStoredTokenPlain(userId)
         if (!stored || !stored.token) continue
 
-        // Замеряем длительность прохода по каждому пользователю — чтобы было видно,
-        // что именно (и насколько) удлиняет общий цикл; пишем в лог при превышении.
         const t0 = Date.now()
         let outcome = 'ok'
         try {
@@ -109,28 +89,21 @@ function setupAutolistBackgroundJob({
     } catch (err) {
       tickError = err
     } finally {
-      autolistInFlight = false
+      inFlight = false
       if (tickStarted) {
         const totalMs = Date.now() - tickStartedAt
-        if (totalMs > Math.max(intervalMs * 2, 20000)) {
-          console.warn(
-            `[autolist] проход занял ${(totalMs / 1000).toFixed(1)} с при интервале ${Math.round(intervalMs / 1000)} с — ` +
-              'новый цикл стартует только после завершения текущего (наложения нет). Разбивка по пользователям:',
-            perUser
-          )
+        const merged = mergeJobSteps(allUserSteps)
+        const updatedAt = Math.floor(tickStartedAt / 1000)
+        // Раскладываем под-шаги по трём карточкам.
+        for (const id of JOB_IDS) {
+          const wanted = new Set(GROUPS[id].stepIds)
+          const groupSteps = merged.filter((s) => wanted.has(s.id))
+          setJobDetails(id, { updatedAt, totalMs, intervalMs, users: perUser.slice(0, 50), steps: groupSteps })
+          markTickEnd(id, tickError)
         }
-        setJobDetails(JOB_ID, {
-          updatedAt: Math.floor(tickStartedAt / 1000),
-          totalMs,
-          intervalMs,
-          users: perUser.slice(0, 50),
-          steps: mergeAutolistSteps(allUserSteps),
-        })
-        markTickEnd(JOB_ID, tickError)
       }
     }
   }, intervalMs)
 }
 
 module.exports = { setupAutolistBackgroundJob }
-

@@ -137,10 +137,10 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     return s
   }
   const stepChats = mkStep('chats', 'Получение чатов')
-  const stepRelist = mkStep('relist', 'Скан и перевыставление')
   const stepPaid = mkStep('paid-chats', 'Оплаченные чаты и автовыдача')
   const stepAuto = mkStep('automessages', 'Автосообщения по стадиям')
-  const stepFlows = mkStep('flows', 'Флоу: Supercell / Topup / Clode / GPT')
+  // Флоу выдачи отображаются как ПАРАЛЛЕЛЬНЫЕ под-задачи (отдельные карточки).
+  const stepFlows = mkStep('flows', 'Флоу выдачи')
   let stepInFlight = null
   let stepT0 = 0
   const stepStart = (s) => {
@@ -202,52 +202,10 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     if (typeof autolistPruneSwizzyerFlowMap === 'function') autolistPruneSwizzyerFlowMap(tokenHash, nowTs)
     if (typeof autolistPrunePartnerGptFlowMap === 'function') autolistPrunePartnerGptFlowMap(tokenHash, nowTs)
 
-    let periodicResult = null
-    const lastScanTs = Number(scanMeta?.lastScanTs || 0)
-    const shouldPeriodicScan =
-      !lastScanTs || nowTs - lastScanTs >= AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC
-
-    if (shouldPeriodicScan) {
-      stepStart(stepRelist)
-      periodicResult = await scanCompletedAndRelist({
-        trigger: 'periodic',
-        scanMeta,
-        nowTs,
-        currentUserId,
-        tokenHash,
-        token,
-        userAgent,
-        AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC,
-        AUTOBUMP_PRIORITY_STATUS_ID,
-        withRetry,
-        isPlayerokRateLimitError,
-        isPlayerokPublishRetryable,
-        fetchCompletedItemsFromPlayerok,
-        autolistGetItemState,
-        autolistWasProcessed,
-        autolistMarkProcessed,
-        autolistSetItemState,
-        getSettings,
-        getGroupSettingsKey,
-        requestItemById,
-        fetchItemPriorityStatuses,
-        publishItem,
-        insertListingFee,
-        normalizeKeyPart,
-        buildProductKey,
-      })
-      stepEnd({
-        status: periodicResult?.action === 'relisted' ? 'ok' : 'idle',
-        count: Array.isArray(periodicResult?.relisted) ? periodicResult.relisted.length : 0,
-        note:
-          periodicResult?.action === 'relisted'
-            ? `перевыставлено: ${periodicResult.relisted.length}`
-            : null,
-      })
-    } else {
-      stepRelist.status = 'skip'
-      stepRelist.note = 'не по расписанию'
-    }
+    // Периодический скан/перевыставление вынесен в ОТДЕЛЬНЫЙ фоновый цикл
+    // (job 'relist' / handleRelistTick), чтобы медленный скан не задерживал быстрые
+    // задачи выдачи/2FA. Здесь остаётся только paid_chat-перевыставление (ниже).
+    const periodicResult = null
 
     dealItemId = null
 
@@ -746,85 +704,7 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
     }
 
     stepStart(stepFlows)
-    if (supercellModuleEnabled) {
-      await processActiveSupercellFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetSupercellFlowMap,
-        processSingleSupercellFlow,
-        shouldStop: shouldStopScan,
-        currentUserId,
-      })
-    }
-
-    if (typeof processActiveTopupFlows === 'function' && typeof processSingleTopupFlow === 'function') {
-      await processActiveTopupFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetTopupFlowMap,
-        processSingleTopupFlow,
-        shouldStop: shouldStopScan,
-      })
-    }
-
-    if (typeof processActiveClodeFlows === 'function' && typeof processSingleClodeFlow === 'function') {
-      await processActiveClodeFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetClodeFlowMap,
-        processSingleClodeFlow,
-        shouldStop: shouldStopScan,
-      })
-    }
-
-    if (typeof processActiveGptFlows === 'function' && typeof processSingleGptFlow === 'function') {
-      await processActiveGptFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetGptFlowMap,
-        processSingleGptFlow,
-        shouldStop: shouldStopScan,
-      })
-    }
-
-    if (typeof processActiveSwizzyerFlows === 'function' && typeof processSingleSwizzyerFlow === 'function') {
-      await processActiveSwizzyerFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetSwizzyerFlowMap,
-        processSingleSwizzyerFlow,
-        shouldStop: shouldStopScan,
-      })
-    }
-
-    if (typeof processActivePartnerGptFlows === 'function' && typeof processSinglePartnerGptFlow === 'function') {
-      await processActivePartnerGptFlows({
-        tokenHash,
-        token,
-        userAgent,
-        viewerUsername: viewer?.username || null,
-        nowTs,
-        autolistGetPartnerGptFlowMap,
-        processSinglePartnerGptFlow,
-        shouldStop: shouldStopScan,
-      })
-    }
-
+    const viewerUsername = viewer?.username || null
     const countActiveFlows = (getMap) => {
       if (typeof getMap !== 'function') return 0
       try {
@@ -834,17 +714,61 @@ async function handleAutolistTick({ payload, currentUserId, deps }) {
         return 0
       }
     }
-    const fSupercell = supercellModuleEnabled ? countActiveFlows(autolistGetSupercellFlowMap) : 0
-    const fTopup = countActiveFlows(autolistGetTopupFlowMap)
-    const fClode = countActiveFlows(autolistGetClodeFlowMap)
-    const fGpt = countActiveFlows(autolistGetGptFlowMap)
-    const fSwizzyer = countActiveFlows(autolistGetSwizzyerFlowMap)
-    const fPartnerGpt = countActiveFlows(autolistGetPartnerGptFlowMap)
-    const flowsTotal = fSupercell + fTopup + fClode + fGpt + fSwizzyer + fPartnerGpt
+
+    // 6 флоу выдачи запускаются КОНКУРЕНТНО (Promise.all): они независимы (разные
+    // чаты/флоу-мапы), а общий серийный gate Playerok сам упорядочивает HTTP — поэтому
+    // 429 не ловим, но быстрый 2FA-ответ одного флоу не ждёт другой. Каждый флоу — это
+    // отдельная ПАРАЛЛЕЛЬНАЯ под-задача (parallel:true) → своя карточка на /execution.
+    const flowDefs = [
+      { id: 'flow-supercell', label: 'Supercell', getMap: autolistGetSupercellFlowMap,
+        enabled: supercellModuleEnabled && typeof processActiveSupercellFlows === 'function',
+        run: () => processActiveSupercellFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetSupercellFlowMap, processSingleSupercellFlow, shouldStop: shouldStopScan, currentUserId }) },
+      { id: 'flow-topup', label: 'Topup (пополнение)', getMap: autolistGetTopupFlowMap,
+        enabled: typeof processActiveTopupFlows === 'function' && typeof processSingleTopupFlow === 'function',
+        run: () => processActiveTopupFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetTopupFlowMap, processSingleTopupFlow, shouldStop: shouldStopScan }) },
+      { id: 'flow-clode', label: 'Clode (Claude CDK)', getMap: autolistGetClodeFlowMap,
+        enabled: typeof processActiveClodeFlows === 'function' && typeof processSingleClodeFlow === 'function',
+        run: () => processActiveClodeFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetClodeFlowMap, processSingleClodeFlow, shouldStop: shouldStopScan }) },
+      { id: 'flow-gpt', label: 'GPT (987ai)', getMap: autolistGetGptFlowMap,
+        enabled: typeof processActiveGptFlows === 'function' && typeof processSingleGptFlow === 'function',
+        run: () => processActiveGptFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetGptFlowMap, processSingleGptFlow, shouldStop: shouldStopScan }) },
+      { id: 'flow-swizzyer', label: 'Swizzyer (Roblox)', getMap: autolistGetSwizzyerFlowMap,
+        enabled: typeof processActiveSwizzyerFlows === 'function' && typeof processSingleSwizzyerFlow === 'function',
+        run: () => processActiveSwizzyerFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetSwizzyerFlowMap, processSingleSwizzyerFlow, shouldStop: shouldStopScan }) },
+      { id: 'flow-pgpt', label: 'ChatGPT/Claude (partner)', getMap: autolistGetPartnerGptFlowMap,
+        enabled: typeof processActivePartnerGptFlows === 'function' && typeof processSinglePartnerGptFlow === 'function',
+        run: () => processActivePartnerGptFlows({ tokenHash, token, userAgent, viewerUsername, nowTs, autolistGetPartnerGptFlowMap, processSinglePartnerGptFlow, shouldStop: shouldStopScan }) },
+    ]
+
+    const flowSubSteps = await Promise.all(
+      flowDefs.map(async (def) => {
+        const activeBefore = countActiveFlows(def.getMap)
+        const sub = { id: def.id, label: def.label, status: 'idle', ms: 0, count: activeBefore, note: null, parallel: true }
+        if (!def.enabled) {
+          sub.status = 'skip'
+          return sub
+        }
+        const t = Date.now()
+        try {
+          await def.run()
+          const activeAfter = countActiveFlows(def.getMap)
+          sub.count = Math.max(activeBefore, activeAfter)
+          sub.status = sub.count > 0 ? 'ok' : 'idle'
+        } catch (err) {
+          sub.status = 'err'
+          sub.note = (err && err.message ? String(err.message) : String(err)).slice(0, 160)
+        }
+        sub.ms = Date.now() - t
+        return sub
+      })
+    )
+    for (const sub of flowSubSteps) steps.push(sub)
+
+    const flowsTotal = flowSubSteps.reduce((n, s) => n + (Number(s.count) || 0), 0)
     stepEnd({
-      status: flowsTotal > 0 ? 'ok' : 'idle',
+      status: flowSubSteps.some((s) => s.status === 'err') ? 'err' : flowsTotal > 0 ? 'ok' : 'idle',
       count: flowsTotal,
-      note: `supercell:${fSupercell} topup:${fTopup} clode:${fClode} gpt:${fGpt} swizzyer:${fSwizzyer} pgpt:${fPartnerGpt}`,
+      note: flowSubSteps.map((s) => `${String(s.label).split(' ')[0].toLowerCase()}:${s.count}`).join(' '),
     })
 
     if (periodicResult && periodicResult.action === 'relisted') {

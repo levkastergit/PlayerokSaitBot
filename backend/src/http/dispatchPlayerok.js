@@ -16,6 +16,7 @@ const { handleHideChat } = require('../features/playerok/chats/handleHideChat')
 const { handleUnhideChat } = require('../features/playerok/chats/handleUnhideChat')
 const { handleBump } = require('../features/playerok/bump/handleBump')
 const { handleAutolistTick } = require('../features/autolist/handleAutolistTick')
+const { handleRelistTick } = require('../features/autolist/handleRelistTick')
 const { handleRelistItem } = require('../features/playerok/relistItem/handleRelistItem')
 const { handleItemPriorityStatuses } = require('../features/playerok/itemPriorityStatuses/handleItemPriorityStatuses')
 const { handleCompletedLots } = require('../features/playerok/completedLots/handleCompletedLots')
@@ -281,6 +282,46 @@ async function dispatchPlayerok({ req, res, pathname, currentUserId, nowTs, deps
         isOutboundCircuitOpen: require('../infra/playerokOutboundIp').isOutboundCircuitOpen,
       },
     }))
+    return sendJson(res, result.statusCode, result.data) || true
+  }
+
+  if (req.method === 'POST' && pathname === '/api/playerok/relist-tick') {
+    if (actionsStopped) {
+      return sendJson(res, 423, { ok: false, error: 'Фоновые действия остановлены' }) || true
+    }
+    const payload = await readUnlimited()
+    if (payload == null) return true
+    const effectiveUserId = effectiveUserIdFromPayload(payload, currentUserId)
+    const result = await runWithPlayerokUser(effectiveUserId, () =>
+      handleRelistTick({
+        payload,
+        currentUserId: effectiveUserId,
+        deps: {
+          getTokenFromBodyOrStored: deps.getTokenFromBodyOrStored,
+          withRetry: deps.withRetry,
+          isPlayerokRateLimitError: deps.isPlayerokRateLimitError,
+          isPlayerokPublishRetryable: deps.isPlayerokPublishRetryable,
+          AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC: deps.AUTOLIST_COMPLETED_SCAN_INTERVAL_SEC,
+          AUTOBUMP_PRIORITY_STATUS_ID: deps.AUTOBUMP_PRIORITY_STATUS_ID,
+          scanCompletedAndRelist: deps.scanCompletedAndRelist,
+          fetchCompletedItemsFromPlayerok: deps.fetchCompletedItemsFromPlayerok,
+          autolistGetItemState: deps.autolistGetItemState,
+          autolistWasProcessed: deps.autolistWasProcessed,
+          autolistMarkProcessed: deps.autolistMarkProcessed,
+          autolistSetItemState: deps.autolistSetItemState,
+          autolistGetCompletedScanMap: deps.autolistGetCompletedScanMap,
+          getSettings: deps.getSettings,
+          getGroupSettingsKey: deps.getGroupSettingsKey,
+          requestItemById: deps.requestItemById,
+          fetchItemPriorityStatuses: deps.fetchItemPriorityStatuses,
+          publishItem: deps.publishItem,
+          insertListingFee: deps.insertListingFee,
+          normalizeKeyPart: deps.normalizeKeyPart,
+          buildProductKey: deps.buildProductKey,
+          isOutboundCircuitOpen: require('../infra/playerokOutboundIp').isOutboundCircuitOpen,
+        },
+      })
+    )
     return sendJson(res, result.statusCode, result.data) || true
   }
 

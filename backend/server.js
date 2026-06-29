@@ -1553,6 +1553,7 @@ server.listen(PORT, BIND_HOST, () => {
   postLocalRef = postLocal
 
   const { setupAutolistBackgroundJob } = require('./src/jobs/autolistBackgroundJob')
+  const { setupRelistBackgroundJob } = require('./src/jobs/relistBackgroundJob')
   const { setupAutobumpBackgroundJob } = require('./src/jobs/autobumpBackgroundJob')
   const { setupChatsWarmupBackgroundJob } = require('./src/jobs/chatsWarmupBackgroundJob')
   const { setupChatsSyncBackgroundJob } = require('./src/jobs/chatsSyncBackgroundJob')
@@ -1564,6 +1565,16 @@ server.listen(PORT, BIND_HOST, () => {
     loadStoredTokenPlain,
     getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
     isAllActionsStopped,
+  })
+
+  // Отдельный медленный цикл «Перевыставление» (вынесен из autolist-тика).
+  setupRelistBackgroundJob({
+    postLocal,
+    getAllStoredTokens,
+    loadStoredTokenPlain,
+    getUserAgent: () => PLAYEROK_USER_AGENT || DEFAULT_USER_AGENT,
+    isAllActionsStopped,
+    intervalMs: Math.max(30000, Number(process.env.RELIST_TICK_MS) || 120000),
   })
 
   setupAutobumpBackgroundJob({

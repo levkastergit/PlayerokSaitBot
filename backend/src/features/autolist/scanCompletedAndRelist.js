@@ -327,9 +327,9 @@ async function scanCompletedAndRelist({
     })
 
     if (relistedItems.length > 0) {
-      return { ok: true, action: 'relisted', trigger, relisted: relistedItems, errors: relistErrors }
+      return { ok: true, action: 'relisted', trigger, relisted: relistedItems, errors: relistErrors, scanned: itemsToProcess.length }
     }
-    return { ok: true, action: 'none', trigger }
+    return { ok: true, action: 'none', trigger, scanned: itemsToProcess.length }
   } catch (err) {
     warnAutolistTick('сканирование завершённых не удалось', { trigger, error: err?.message })
     if (isPlayerokRateLimitError(err)) {
